@@ -113,11 +113,12 @@ impl Ragdoll {
         }
     }
 
-    pub fn plant(&mut self, face: f32) {
+    pub fn plant(&mut self, face: f32, slide: f32) {
         let sign = if face < 0.0 { -1.0 } else { 1.0 };
         let first = !self.planted;
         self.planted = true;
         self.live = true;
+        let drag = (slide / 500.0).clamp(-2.4, 2.4);
         for joint in &mut self.joints {
             let target = match joint.name.as_str() {
                 "torso" => sign * 1.42,
@@ -137,9 +138,11 @@ impl Ragdoll {
             if joint.name == "torso" {
                 joint.omega += sign * 7.0;
             } else if joint.name == "left-hand" {
-                joint.omega -= 3.2;
+                joint.omega -= 3.2 + drag * 1.4;
             } else if joint.name == "right-hand" {
-                joint.omega += 3.2;
+                joint.omega += 3.2 - drag * 1.4;
+            } else if joint.name == "left-leg" || joint.name == "right-leg" {
+                joint.omega -= drag * 0.8;
             }
         }
     }
@@ -313,7 +316,7 @@ mod tests {
     #[test]
     fn a_landing_falls_flat_on_the_face() {
         let mut rag = Ragdoll::new(&Pack::builtin());
-        rag.plant(1.0);
+        rag.plant(1.0, 900.0);
         for _ in 0..50 {
             rag.step(1.0 / 60.0, 0.0, GRAVITY, 1.0);
         }

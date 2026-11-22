@@ -13,7 +13,7 @@ use crate::i18n::{
     Catalog, ID_CHIBI, ID_DARK, ID_ENGLISH, ID_LANGUAGE, ID_LIGHT, ID_NAME, ID_QUIT, ID_RUSSIAN,
     ID_SIZE, ID_SYSTEM, ID_THEME,
 };
-use crate::pack::{Choice, Pack, BUILTIN_ID};
+use crate::pack::{Choice, Pack, Pose, BUILTIN_ID};
 use crate::sim::{FEET_X, FEET_Y, SPRITE_H, SPRITE_W};
 
 pub const MENU_W: f32 = 228.0;
@@ -319,38 +319,56 @@ fn draw_pet(pixmap: &mut Pixmap, origin_x: f32, scene: &Scene, pack: &Pack, scal
         .post_scale(scale as f32, scale as f32);
     let mut order: Vec<usize> = (0..pack.bones.len()).collect();
     order.sort_by_key(|&index| pack.bones[index].z);
-    for index in order {
-        let image_name = &pose.image[index];
-        let Some(sprite) = pack.sprite(image_name) else {
-            continue;
-        };
-        if sprite.blank {
-            continue;
-        }
-        let placed = &pose.placed[index];
-        let bone = &pack.bones[index];
-        let rad = placed.rot.to_radians();
-        let (sin, cos) = rad.sin_cos();
-        let local = Transform::from_row(
-            cos,
-            sin,
-            -sin,
-            cos,
-            cos * (sprite.x - bone.pivot_x) - sin * (sprite.y - bone.pivot_y) + placed.x,
-            sin * (sprite.x - bone.pivot_x) + cos * (sprite.y - bone.pivot_y) + placed.y,
-        );
-        pixmap.draw_pixmap(
-            0,
-            0,
-            sprite.image.as_ref().as_ref(),
-            &PixmapPaint::default(),
-            local.post_concat(view),
-            None,
-        );
-    }
     if scene.motion == Motion::Sit {
+        // The lid sits in front of her body. Both paws stay on top of the keyboard.
+        for &index in order
+            .iter()
+            .filter(|&&index| !pack.bones[index].name.ends_with("hand"))
+        {
+            paint_bone(pixmap, pack, &pose, view, index);
+        }
         draw_laptop(pixmap, origin_x, pet_top, pet_scale, scale, pack);
+        for &index in order
+            .iter()
+            .filter(|&&index| pack.bones[index].name.ends_with("hand"))
+        {
+            paint_bone(pixmap, pack, &pose, view, index);
+        }
+    } else {
+        for &index in &order {
+            paint_bone(pixmap, pack, &pose, view, index);
+        }
     }
+}
+
+fn paint_bone(pixmap: &mut Pixmap, pack: &Pack, pose: &Pose, view: Transform, index: usize) {
+    let image_name = &pose.image[index];
+    let Some(sprite) = pack.sprite(image_name) else {
+        return;
+    };
+    if sprite.blank {
+        return;
+    }
+    let placed = &pose.placed[index];
+    let bone = &pack.bones[index];
+    let rad = placed.rot.to_radians();
+    let (sin, cos) = rad.sin_cos();
+    let local = Transform::from_row(
+        cos,
+        sin,
+        -sin,
+        cos,
+        cos * (sprite.x - bone.pivot_x) - sin * (sprite.y - bone.pivot_y) + placed.x,
+        sin * (sprite.x - bone.pivot_x) + cos * (sprite.y - bone.pivot_y) + placed.y,
+    );
+    pixmap.draw_pixmap(
+        0,
+        0,
+        sprite.image.as_ref().as_ref(),
+        &PixmapPaint::default(),
+        local.post_concat(view),
+        None,
+    );
 }
 
 fn draw_laptop(
@@ -372,10 +390,10 @@ fn draw_laptop(
     if sw < 1.0 || sh < 1.0 {
         return;
     }
-    let dw = 108.0 * pet_scale;
+    let dw = 100.0 * pet_scale;
     let dh = dw * sh / sw;
-    let x = origin_x + FEET_X * pet_scale - dw * 0.62;
-    let y = pet_top + FEET_Y * pet_scale - dh * 0.88;
+    let x = origin_x + FEET_X * pet_scale - dw * 0.5;
+    let y = pet_top + FEET_Y * pet_scale - dh * 0.84;
     let px = scale as f32;
     let local = Transform::from_scale(dw / sw * px, dh / sh * px).post_translate(x * px, y * px);
     pixmap.draw_pixmap(

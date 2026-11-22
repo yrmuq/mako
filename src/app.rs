@@ -126,10 +126,16 @@ impl App {
                 let ay = ((self.pet.vy - vy) / dt.max(0.001)).clamp(-14000.0, 14000.0);
                 self.rag.step(dt, ax, ay, self.pet_scale());
             } else if self.pet.activity == Activity::Down {
-                self.rag.plant(self.pet.face);
-                // The floor is holding her, so gravity does not stand her back up.
-                self.rag
-                    .step(dt, 0.0, crate::sim::GRAVITY, self.pet_scale());
+                let ax = ((self.pet.vx - vx) / dt.max(0.001)).clamp(-9000.0, 9000.0);
+                // The landing frame still feels the floor. After that, gravity must not
+                // stand her up while she skids.
+                let ay = if vy > 80.0 {
+                    ((self.pet.vy - vy) / dt.max(0.001)).clamp(-14000.0, 14000.0)
+                } else {
+                    crate::sim::GRAVITY
+                };
+                self.rag.plant(self.pet.face, vx);
+                self.rag.step(dt, ax, ay, self.pet_scale());
             } else if self.rag.is_planted() {
                 self.rag.clear_plant();
                 self.rag.relax(dt);

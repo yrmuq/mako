@@ -147,8 +147,8 @@ impl Pet {
         if self.y >= room.floor {
             self.y = room.floor;
             if self.airborne && self.vy > 80.0 {
-                // A flight ends on the floor. She does not stand back up.
-                self.vx *= 0.35;
+                // A flight smacks into the floor and keeps sliding.
+                self.vx *= 0.8;
                 self.vy = 0.0;
                 self.airborne = false;
                 self.start(Activity::Down);
@@ -176,13 +176,24 @@ impl Pet {
     fn down(&mut self, room: &Room, dt: f32) {
         self.y = room.floor;
         self.vy = 0.0;
-        let friction = 1400.0 * dt;
-        if self.vx.abs() <= friction {
+        let drag = 620.0 * dt;
+        if self.vx.abs() <= drag {
             self.vx = 0.0;
         } else {
-            self.vx -= self.vx.signum() * friction;
+            self.vx -= self.vx.signum() * drag;
         }
-        self.x = self.x.clamp(room.left, room.right);
+        self.x += self.vx * dt;
+        if self.x < room.left {
+            self.x = room.left;
+            self.vx = 0.0;
+        } else if self.x > room.right {
+            self.x = room.right;
+            self.vx = 0.0;
+        }
+        // The lie only finishes after the skid. Standing up mid-slide looks like a pop.
+        if self.vx.abs() > 36.0 {
+            self.time = self.time.min(0.4);
+        }
         if self.time >= DOWN_FOR {
             self.start(Activity::Idle);
         }
@@ -291,6 +302,26 @@ mod tests {
             }
         }
         assert!(saw_down);
+    }
+
+    #[test]
+    fn a_faceplant_slides_along_the_floor() {
+        let room = room();
+        let mut pet = Pet::on_floor(&room);
+        let start = pet.x;
+        pet.y = room.floor - 180.0;
+        pet.release(&room, 1100.0, 40.0);
+        let mut moved: f32 = 0.0;
+        let mut saw = false;
+        for _ in 0..240 {
+            pet.step(&room, 1.0 / 60.0);
+            if pet.activity == Activity::Down {
+                saw = true;
+                moved = moved.max((pet.x - start).abs());
+            }
+        }
+        assert!(saw);
+        assert!(moved > 80.0, "{moved}");
     }
 
     #[test]
