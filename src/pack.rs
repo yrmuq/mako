@@ -134,6 +134,38 @@ impl Pack {
     }
 
     pub fn pose(&self, anim_name: &str, time: f32) -> Pose {
+        self.pose_with(anim_name, time, None)
+    }
+
+    /// Local bone degrees. `degrees` replaces the animation rotations and stops the bob.
+    pub fn pose_with(&self, anim_name: &str, time: f32, degrees: Option<&[f32]>) -> Pose {
+        let (mut angle, image, mut bob) = self.sample_locals(anim_name, time);
+        if let Some(degrees) = degrees {
+            for (slot, value) in angle.iter_mut().zip(degrees) {
+                *slot = *value;
+            }
+            bob = 0.0;
+        }
+        let mut placed = vec![
+            Placed {
+                x: 0.0,
+                y: 0.0,
+                rot: 0.0,
+            };
+            self.bones.len()
+        ];
+        let mut seen = vec![0_u8; self.bones.len()];
+        for index in 0..self.bones.len() {
+            place(self, index, &angle, &mut placed, &mut seen);
+        }
+        Pose { placed, image, bob }
+    }
+
+    pub fn local_degrees(&self, anim_name: &str, time: f32) -> Vec<f32> {
+        self.sample_locals(anim_name, time).0
+    }
+
+    fn sample_locals(&self, anim_name: &str, time: f32) -> (Vec<f32>, Vec<String>, f32) {
         let mut angle = vec![0.0; self.bones.len()];
         let mut image: Vec<String> = self.bones.iter().map(|bone| bone.image.clone()).collect();
         let mut bob = 0.0;
@@ -153,19 +185,7 @@ impl Pack {
                 apply(blink, phase, &self.names, &mut angle, &mut image, &mut bob);
             }
         }
-        let mut placed = vec![
-            Placed {
-                x: 0.0,
-                y: 0.0,
-                rot: 0.0
-            };
-            self.bones.len()
-        ];
-        let mut seen = vec![0_u8; self.bones.len()];
-        for index in 0..self.bones.len() {
-            place(self, index, &angle, &mut placed, &mut seen);
-        }
-        Pose { placed, image, bob }
+        (angle, image, bob)
     }
 
     fn anim_or_idle(&self, name: &str) -> Option<&Anim> {

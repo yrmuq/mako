@@ -33,11 +33,11 @@
 
 | Input | Action |
 | --- | --- |
-| Left button | Drag bear girl. Releasing her in the air makes her fall. |
+| Left button | Drag bear girl. Releasing her throws her: she flies that way, then falls. |
 | Right button | Open or close the menu. |
-| Menu rows | Choose the chibi, language, theme, or quit. |
+| Menu rows | Choose the chibi, size, language, theme, or quit. |
 
-The menu language follows `LANGUAGE`, `LC_ALL`, `LC_MESSAGES` and `LANG` until a manual choice is saved. The menu colors follow the KDE color scheme until a manual theme is saved. The onesie itself stays brown. The chosen chibi is saved as `chibi`.
+The menu language follows `LANGUAGE`, `LC_ALL`, `LC_MESSAGES` and `LANG` until a manual choice is saved. The menu colors follow the KDE color scheme until a manual theme is saved. The onesie itself stays brown. The chosen chibi is saved as `chibi`. The size is `1`, `0.8`, `0.6`, `0.4` or `0.2`, saved as `scale`.
 
 Zip archives in `~/.local/share/mako/chibis/` are listed, or under `XDG_DATA_HOME` when that is an absolute path. At most six archives are shown. An archive without a `heart` name is ignored. If `body` is missing, bear girl's skeleton is used. If `anima` is missing, bear girl's animations are used.
 

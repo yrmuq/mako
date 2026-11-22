@@ -26,6 +26,7 @@ pub struct Settings {
     pub language: LanguagePref,
     pub theme: ThemePref,
     pub chibi: String,
+    pub scale: String,
 }
 
 impl Default for Settings {
@@ -34,6 +35,7 @@ impl Default for Settings {
             language: LanguagePref::System,
             theme: ThemePref::System,
             chibi: "bear-girl".to_string(),
+            scale: "1".to_string(),
         }
     }
 }
@@ -66,6 +68,7 @@ impl Settings {
                     }
                 }
                 "chibi" if crate::pack::safe_id(value) => settings.chibi = value.to_string(),
+                "scale" => settings.scale = normalize_scale(value).to_string(),
                 _ => {}
             }
         }
@@ -87,7 +90,7 @@ impl Settings {
             )
         })?;
         let body = format!(
-            "language = \"{}\"\ntheme = \"{}\"\nchibi = \"{}\"\n",
+            "language = \"{}\"\ntheme = \"{}\"\nchibi = \"{}\"\nscale = \"{}\"\n",
             match self.language {
                 LanguagePref::System => "system",
                 LanguagePref::En => "en",
@@ -99,6 +102,7 @@ impl Settings {
                 ThemePref::Dark => "dark",
             },
             self.chibi,
+            self.scale_key(),
         );
         let temporary = path.with_extension("toml.part");
         fs::write(&temporary, body).map_err(|error| {
@@ -121,6 +125,30 @@ impl Settings {
             LanguagePref::En => "en".to_string(),
             LanguagePref::Ru => "ru".to_string(),
         }
+    }
+
+    pub fn pet_scale(&self) -> f32 {
+        match self.scale_key() {
+            "0.8" => 0.8,
+            "0.6" => 0.6,
+            "0.4" => 0.4,
+            "0.2" => 0.2,
+            _ => 1.0,
+        }
+    }
+
+    pub fn scale_key(&self) -> &str {
+        normalize_scale(&self.scale)
+    }
+}
+
+pub fn normalize_scale(value: &str) -> &'static str {
+    match value {
+        "0.8" => "0.8",
+        "0.6" => "0.6",
+        "0.4" => "0.4",
+        "0.2" => "0.2",
+        _ => "1",
     }
 }
 

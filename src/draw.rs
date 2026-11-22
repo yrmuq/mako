@@ -11,7 +11,7 @@ use tiny_skia::{
 
 use crate::i18n::{
     Catalog, ID_CHIBI, ID_DARK, ID_ENGLISH, ID_LANGUAGE, ID_LIGHT, ID_NAME, ID_QUIT, ID_RUSSIAN,
-    ID_SYSTEM, ID_THEME,
+    ID_SIZE, ID_SYSTEM, ID_THEME,
 };
 use crate::pack::{Choice, Pack, BUILTIN_ID};
 use crate::sim::{FEET_X, FEET_Y, SPRITE_H, SPRITE_W};
@@ -39,6 +39,8 @@ pub enum RowId {
     SystemTheme,
     Light,
     Dark,
+    Size,
+    Scale,
     Quit,
 }
 
@@ -70,6 +72,8 @@ pub struct Scene {
     pub menu: bool,
     pub menu_left: bool,
     pub dark: bool,
+    pub pet_scale: f32,
+    pub pose: Vec<f32>,
     pub rows: Vec<Row>,
 }
 
@@ -80,14 +84,18 @@ pub struct Frame {
     pub hits: Vec<Hit>,
 }
 
-pub fn scene_size(menu: bool) -> (u32, u32) {
-    let width = if menu { SPRITE_W + MENU_W } else { SPRITE_W };
-    (width.round() as u32, SPRITE_H.round() as u32)
+pub fn scene_size(menu: bool, pet_scale: f32) -> (u32, u32) {
+    let scale = pet_scale.clamp(0.2, 1.0);
+    let pet_w = SPRITE_W * scale;
+    let pet_h = SPRITE_H * scale;
+    let width = if menu { pet_w + MENU_W } else { pet_w };
+    let height = if menu { pet_h.max(SPRITE_H) } else { pet_h };
+    (width.round() as u32, height.round() as u32)
 }
 
 pub fn render(scene: &Scene, pack: &Pack, scale: u32) -> Frame {
     let scale = scale.max(1);
-    let (logical_w, logical_h) = scene_size(scene.menu);
+    let (logical_w, logical_h) = scene_size(scene.menu, scene.pet_scale);
     let width = logical_w * scale;
     let height = logical_h * scale;
     let mut pixmap = Pixmap::new(width, height).expect("pixmap");
@@ -98,7 +106,7 @@ pub fn render(scene: &Scene, pack: &Pack, scale: u32) -> Frame {
     };
     draw_pet(&mut pixmap, pet_x, scene, pack, scale);
     if scene.facing_left {
-        mirror_sprite(&mut pixmap, pet_x, scale);
+        mirror_sprite(&mut pixmap, pet_x, scale, scene.pet_scale);
     }
     let hits = if scene.menu {
         draw_menu(&mut pixmap, scene, scale, pet_x)
@@ -118,6 +126,7 @@ pub fn rows(
     title: &str,
     lang_sel: &str,
     theme_sel: &str,
+    size_sel: &str,
     chibis: &[Choice],
     selected: &str,
 ) -> Vec<Row> {
@@ -210,6 +219,42 @@ pub fn rows(
             "",
         ),
         row(
+            RowId::Size,
+            catalog.text(ID_SIZE).to_string(),
+            false,
+            true,
+            "",
+        ),
+        row(RowId::Scale, "1×".to_string(), size_sel == "1", false, "1"),
+        row(
+            RowId::Scale,
+            "0.8×".to_string(),
+            size_sel == "0.8",
+            false,
+            "0.8",
+        ),
+        row(
+            RowId::Scale,
+            "0.6×".to_string(),
+            size_sel == "0.6",
+            false,
+            "0.6",
+        ),
+        row(
+            RowId::Scale,
+            "0.4×".to_string(),
+            size_sel == "0.4",
+            false,
+            "0.4",
+        ),
+        row(
+            RowId::Scale,
+            "0.2×".to_string(),
+            size_sel == "0.2",
+            false,
+            "0.2",
+        ),
+        row(
             RowId::Quit,
             catalog.text(ID_QUIT).to_string(),
             false,
@@ -242,15 +287,30 @@ fn draw_pet(pixmap: &mut Pixmap, origin_x: f32, scene: &Scene, pack: &Pack, scal
         Motion::Drag => "drag",
         Motion::Idle => "idle",
     };
-    let pose = pack.pose(anim, scene.cycle);
-    let fit = (SPRITE_W / pack.canvas_w).min(SPRITE_H / pack.canvas_h);
+    let pose = if scene.pose.is_empty() {
+        pack.pose(anim, scene.cycle)
+    } else {
+        pack.pose_with("idle", scene.cycle, Some(&scene.pose))
+    };
+    let pet_scale = scene.pet_scale.clamp(0.2, 1.0);
+    let fit = (SPRITE_W / pack.canvas_w).min(SPRITE_H / pack.canvas_h) * pet_scale;
+    let pet_h = SPRITE_H * pet_scale;
+    let pet_top = if scene.menu {
+        (SPRITE_H - pet_h).max(0.0)
+    } else {
+        0.0
+    };
     let bob = pose.bob * fit;
     let view = Transform::from_scale(fit, fit)
         .post_translate(
-            origin_x + FEET_X - pack.feet_x * fit,
-            FEET_Y - pack.feet_y * fit + bob,
+            origin_x + FEET_X * pet_scale - pack.feet_x * fit,
+            pet_top + FEET_Y * pet_scale - pack.feet_y * fit + bob,
         )
-        .post_rotate_at(scene.tilt.to_degrees(), origin_x + FEET_X, FEET_Y + bob)
+        .post_rotate_at(
+            scene.tilt.to_degrees(),
+            origin_x + FEET_X * pet_scale,
+            pet_top + FEET_Y * pet_scale + bob,
+        )
         .post_scale(scale as f32, scale as f32);
     let mut order: Vec<usize> = (0..pack.bones.len()).collect();
     order.sort_by_key(|&index| pack.bones[index].z);
@@ -293,7 +353,7 @@ fn draw_menu(pixmap: &mut Pixmap, scene: &Scene, scale: u32, pet_x: f32) -> Vec<
     let x = if scene.menu_left {
         4.0
     } else {
-        pet_x + SPRITE_W + 4.0
+        pet_x + SPRITE_W * scene.pet_scale.clamp(0.2, 1.0) + 4.0
     };
     let w = MENU_W - 8.0;
     let h = row_h * n;
@@ -443,9 +503,9 @@ fn blend(pixmap: &mut Pixmap, x: u32, y: u32, color: ColorU8, coverage: f32) {
     .unwrap_or(PremultipliedColorU8::from_rgba(0, 0, 0, 0).unwrap());
 }
 
-fn mirror_sprite(pixmap: &mut Pixmap, origin_x: f32, scale: u32) {
+fn mirror_sprite(pixmap: &mut Pixmap, origin_x: f32, scale: u32, pet_scale: f32) {
     let x0 = (origin_x * scale as f32).round() as u32;
-    let span = (SPRITE_W * scale as f32).round() as u32;
+    let span = (SPRITE_W * pet_scale.clamp(0.2, 1.0) * scale as f32).round() as u32;
     let width = pixmap.width();
     let height = pixmap.height();
     let pixels = pixmap.pixels_mut();
@@ -500,6 +560,8 @@ mod tests {
             menu: false,
             menu_left: false,
             dark: false,
+            pet_scale: 1.0,
+            pose: Vec::new(),
             rows: Vec::new(),
         }
     }
@@ -516,6 +578,31 @@ mod tests {
         assert!(fraction < 0.75, "{fraction}");
         assert!(pixels.iter().any(|pixel| pixel[3] > 200));
         std::fs::write("/tmp/mako-idle.png", encode(&scene)).expect("preview");
+    }
+
+    #[test]
+    fn physics_angles_keep_a_body_in_the_frame() {
+        let pack = Pack::builtin();
+        let mut scene = still();
+        scene.motion = Motion::Drag;
+        scene.pose = pack
+            .bones
+            .iter()
+            .map(|bone| match bone.name.as_str() {
+                "left-hand" => 48.0,
+                "right-hand" => -42.0,
+                "left-leg" => 28.0,
+                "right-leg" => -22.0,
+                "head" => -18.0,
+                "torso" => 12.0,
+                _ => 0.0,
+            })
+            .collect();
+        let frame = render(&scene, &pack, 1);
+        let (pixels, _) = frame.bgra.as_chunks::<4>();
+        let opaque = pixels.iter().filter(|pixel| pixel[3] > 16).count();
+        assert!(opaque > 800, "{opaque}");
+        std::fs::write("/tmp/mako-rag.png", encode(&scene)).expect("preview");
     }
 
     #[test]

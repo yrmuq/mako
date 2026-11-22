@@ -10,7 +10,7 @@ pub const FEET_Y: f32 = 258.0;
 const IDLE_FOR: f32 = 1.6;
 const WALK_FOR: f32 = 2.8;
 const WALK_SPEED: f32 = 78.0;
-const GRAVITY: f32 = 2400.0;
+pub const GRAVITY: f32 = 2400.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Activity {
@@ -127,9 +127,24 @@ impl Pet {
         }
         if self.y >= room.floor {
             self.y = room.floor;
-            self.vx = 0.0;
-            self.vy = 0.0;
-            self.start(Activity::Idle);
+            if self.vy > 500.0 {
+                self.vy = -self.vy * 0.28;
+                self.vx *= 0.6;
+            } else if self.vx.abs() > 36.0 && self.vy < 160.0 {
+                // A sideways release along the floor slides instead of stopping dead.
+                self.vy = 0.0;
+                let friction = 900.0 * dt;
+                if self.vx.abs() <= friction {
+                    self.vx = 0.0;
+                    self.start(Activity::Idle);
+                } else {
+                    self.vx -= self.vx.signum() * friction;
+                }
+            } else {
+                self.vx = 0.0;
+                self.vy = 0.0;
+                self.start(Activity::Idle);
+            }
         }
     }
 
@@ -185,6 +200,42 @@ mod tests {
         pet.step(&room, 1.0 / 30.0);
         assert_eq!(pet.face, -1.0);
         assert!((pet.x - room.right).abs() < 0.1);
+    }
+
+    #[test]
+    fn a_sideways_throw_arcs_up_then_lands() {
+        let room = room();
+        let mut pet = Pet::on_floor(&room);
+        let start_x = pet.x;
+        pet.y = room.floor - 80.0;
+        pet.release(&room, 420.0, -900.0);
+        let mut peak = pet.y;
+        let mut far = pet.x;
+        let mut landed = false;
+        for _ in 0..300 {
+            pet.step(&room, 1.0 / 60.0);
+            peak = peak.min(pet.y);
+            far = far.max(pet.x);
+            if pet.activity != Activity::Fall && (pet.y - room.floor).abs() < 0.1 {
+                landed = true;
+            }
+        }
+        assert!(peak < room.floor - 140.0, "{peak}");
+        assert!(far > start_x + 80.0, "{far}");
+        assert!(landed);
+    }
+
+    #[test]
+    fn a_sideways_flick_on_the_floor_keeps_going() {
+        let room = room();
+        let mut pet = Pet::on_floor(&room);
+        let start = pet.x;
+        pet.release(&room, 700.0, 0.0);
+        for _ in 0..20 {
+            pet.step(&room, 1.0 / 60.0);
+        }
+        assert!(pet.x > start + 80.0, "{}", pet.x);
+        assert_eq!(pet.activity, Activity::Fall);
     }
 
     impl Pet {

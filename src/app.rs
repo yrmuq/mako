@@ -5,6 +5,7 @@ use crate::config::{system_dark, LanguagePref, Settings, ThemePref};
 use crate::draw::{self, Frame, Hit, Motion, RowId, Scene};
 use crate::i18n::{Catalog, ID_NAME};
 use crate::pack::{self, Choice, Pack, BUILTIN_ID};
+use crate::rag::Ragdoll;
 use crate::sim::{Activity, Pet, Room, FEET_X, FEET_Y, SPRITE_H, SPRITE_W};
 
 const MENU_W: f32 = draw::MENU_W;
@@ -15,6 +16,7 @@ pub struct App {
     settings: Settings,
     catalog: Catalog,
     pack: Pack,
+    rag: Ragdoll,
     choices: Vec<Choice>,
     menu: bool,
     dragging: bool,
@@ -23,7 +25,11 @@ pub struct App {
     committed_x: i32,
     committed_y: i32,
     committed_pet_x: f32,
-    last_screen: Option<(f32, f32, f32)>,
+    committed_feet_y: f32,
+    trail: Vec<(f32, f32, f32)>,
+    prev_vx: f32,
+    prev_vy: f32,
+    screen: (f32, f32),
     pub dark: bool,
     pub exit: bool,
     pub scale: u32,
@@ -47,12 +53,15 @@ impl App {
         };
         let pack = Pack::open(&settings.chibi);
         let choices = pack::choices();
+        let rag = Ragdoll::new(&pack);
+        let screen = screen_of(&room);
         let mut app = Self {
             pet,
             room,
             settings,
             catalog,
             pack,
+            rag,
             choices,
             menu: false,
             dragging: false,
@@ -61,7 +70,11 @@ impl App {
             committed_x: 0,
             committed_y: 0,
             committed_pet_x: 0.0,
-            last_screen: None,
+            committed_feet_y: 0.0,
+            trail: Vec::new(),
+            prev_vx: 0.0,
+            prev_vy: 0.0,
+            screen,
             dark,
             exit: false,
             scale: 1,
@@ -72,13 +85,17 @@ impl App {
             origin_y: 0,
             clock: 0.0,
         };
+        app.fit_room();
+        app.pet.y = app.room.floor;
+        app.pet.x = app.pet.x.clamp(app.room.left, app.room.right);
         app.sync_geometry();
         app.note_committed();
         app
     }
 
     pub fn set_room(&mut self, room: Room) {
-        self.room = room;
+        self.screen = screen_of(&room);
+        self.fit_room();
         if !self.dragging && self.pet.activity != Activity::Fall {
             self.pet.y = self.room.floor;
             self.pet.x = self.pet.x.clamp(self.room.left, self.room.right);
@@ -88,8 +105,26 @@ impl App {
 
     pub fn tick(&mut self, dt: f32) {
         self.clock += dt;
-        if !self.dragging {
+        let dt = dt.clamp(0.0, 0.05);
+        self.sync_rag();
+        if self.dragging {
+            self.pet.phase += dt;
+            let ax = ((self.pet.vx - self.prev_vx) / dt.max(0.001)).clamp(-14000.0, 14000.0);
+            let ay = ((self.pet.vy - self.prev_vy) / dt.max(0.001)).clamp(-14000.0, 14000.0);
+            self.prev_vx = self.pet.vx;
+            self.prev_vy = self.pet.vy;
+            self.rag.step(dt, ax, ay, self.pet_scale());
+        } else {
+            let vx = self.pet.vx;
+            let vy = self.pet.vy;
             self.pet.step(&self.room, dt);
+            if self.pet.activity == Activity::Fall {
+                let ax = ((self.pet.vx - vx) / dt.max(0.001)).clamp(-14000.0, 14000.0);
+                let ay = ((self.pet.vy - vy) / dt.max(0.001)).clamp(-14000.0, 14000.0);
+                self.rag.step(dt, ax, ay, self.pet_scale());
+            } else if self.rag.live {
+                self.rag.relax(dt);
+            }
         }
     }
 
@@ -115,28 +150,39 @@ impl App {
                     return;
                 }
                 self.dragging = true;
+                self.sync_rag();
+                if !self.rag.live {
+                    let degrees = self.pack.local_degrees(self.motion_name(), self.pet.phase);
+                    self.rag.seed(&degrees);
+                }
+                self.rag.live = true;
                 self.pet.grab();
                 self.grab_x = lx;
                 self.grab_y = ly;
-                self.last_screen = None;
+                self.trail.clear();
+                self.prev_vx = 0.0;
+                self.prev_vy = 0.0;
             }
             Pointer::Motion if self.dragging => {
                 // Pointer events are measured against the last committed surface, not this drag.
                 self.origin_x = (self.committed_x as f32 + lx - self.grab_x).round() as i32;
                 self.origin_y = (self.committed_y as f32 + ly - self.grab_y).round() as i32;
-                self.pet.x = self.origin_x as f32 + self.committed_pet_x + FEET_X;
-                self.pet.y = self.origin_y as f32 + FEET_Y;
-                if let Some((time, x, y)) = self.last_screen {
-                    let dt = (self.clock - time).max(0.001);
-                    self.pet.vx = (self.pet.x - x) / dt;
-                    self.pet.vy = (self.pet.y - y) / dt;
+                self.pet.x = self.origin_x as f32 + self.committed_pet_x + self.feet_x();
+                self.pet.y = self.origin_y as f32 + self.committed_feet_y;
+                self.trail.push((self.clock, self.pet.x, self.pet.y));
+                self.trail.retain(|(time, _, _)| self.clock - *time <= 0.12);
+                if let Some(&(time, x, y)) = self.trail.first() {
+                    let step = (self.clock - time).max(0.001);
+                    self.pet.vx = (self.pet.x - x) / step;
+                    self.pet.vy = (self.pet.y - y) / step;
                 }
-                self.last_screen = Some((self.clock, self.pet.x, self.pet.y));
             }
             Pointer::LeftUp if self.dragging => {
                 self.dragging = false;
                 self.menu = false;
-                self.pet.release(&self.room, self.pet.vx, self.pet.vy);
+                let (vx, vy) = self.flick();
+                self.trail.clear();
+                self.pet.release(&self.room, vx, vy);
                 self.sync_geometry();
             }
             Pointer::RightDown => {
@@ -168,11 +214,17 @@ impl App {
                 Activity::Drag => Motion::Drag,
                 Activity::Idle => Motion::Idle,
             },
-            tilt: self.pet.tilt(),
+            tilt: if self.rag.live { 0.0 } else { self.pet.tilt() },
             facing_left: self.pet.face < 0.0,
             menu: self.menu,
             menu_left: self.menu_left(),
             dark: self.dark,
+            pet_scale: self.pet_scale(),
+            pose: if self.rag.live {
+                self.rag.degrees()
+            } else {
+                Vec::new()
+            },
             rows: draw::rows(
                 &self.catalog,
                 &self.pet_title(),
@@ -186,6 +238,7 @@ impl App {
                     ThemePref::Light => "light",
                     ThemePref::Dark => "dark",
                 },
+                self.settings.scale_key(),
                 &self.choices,
                 &self.pack.id,
             ),
@@ -199,6 +252,7 @@ impl App {
         self.committed_x = self.origin_x;
         self.committed_y = self.origin_y;
         self.committed_pet_x = self.layout_pet_x();
+        self.committed_feet_y = self.pet_top() + self.feet_y();
     }
 
     fn activate(&mut self, id: RowId, key: &str) {
@@ -212,12 +266,23 @@ impl App {
             RowId::Chibi => {
                 self.settings.chibi = key.to_string();
                 self.pack = Pack::open(key);
+                self.rag = Ragdoll::new(&self.pack);
+            }
+            RowId::Scale => {
+                self.settings.scale = crate::config::normalize_scale(key).to_string();
+                self.fit_room();
+                if !self.dragging && self.pet.activity != Activity::Fall {
+                    self.pet.y = self.room.floor;
+                    self.pet.x = self.pet.x.clamp(self.room.left, self.room.right);
+                }
             }
             RowId::Quit => {
                 self.exit = true;
                 return;
             }
-            RowId::Name | RowId::ChibiLabel | RowId::Language | RowId::Theme => return,
+            RowId::Name | RowId::ChibiLabel | RowId::Language | RowId::Theme | RowId::Size => {
+                return
+            }
         }
         self.dark = match self.settings.theme {
             ThemePref::System => system_dark(),
@@ -247,18 +312,22 @@ impl App {
     }
 
     fn menu_left(&self) -> bool {
-        let room_right = self.room.right + FEET_X;
-        self.pet.x + FEET_X + MENU_W > room_right
+        self.pet.x + MENU_W > self.room.right
     }
 
     fn in_menu(&self, x: f32, y: f32) -> bool {
-        if !self.menu || y < 0.0 || y >= SPRITE_H {
+        let bottom = if self.menu {
+            self.pet_h().max(SPRITE_H)
+        } else {
+            self.pet_h()
+        };
+        if !self.menu || y < 0.0 || y >= bottom {
             return false;
         }
         let menu_x = if self.menu_left() {
             0.0
         } else {
-            self.layout_pet_x() + SPRITE_W
+            self.layout_pet_x() + self.pet_w()
         };
         x >= menu_x && x < menu_x + MENU_W
     }
@@ -271,13 +340,83 @@ impl App {
         }
     }
 
+    fn pet_scale(&self) -> f32 {
+        self.settings.pet_scale()
+    }
+
+    fn feet_x(&self) -> f32 {
+        FEET_X * self.pet_scale()
+    }
+
+    fn feet_y(&self) -> f32 {
+        FEET_Y * self.pet_scale()
+    }
+
+    fn pet_w(&self) -> f32 {
+        SPRITE_W * self.pet_scale()
+    }
+
+    fn pet_h(&self) -> f32 {
+        SPRITE_H * self.pet_scale()
+    }
+
+    fn pet_top(&self) -> f32 {
+        if self.menu {
+            (SPRITE_H - self.pet_h()).max(0.0)
+        } else {
+            0.0
+        }
+    }
+
+    fn motion_name(&self) -> &'static str {
+        match self.pet.activity {
+            Activity::Walk => "walk",
+            Activity::Fall => "fall",
+            Activity::Drag => "drag",
+            Activity::Idle => "idle",
+        }
+    }
+
+    fn flick(&self) -> (f32, f32) {
+        if self.trail.len() < 2 {
+            return (
+                self.pet.vx.clamp(-2400.0, 2400.0),
+                self.pet.vy.clamp(-2400.0, 2400.0),
+            );
+        }
+        let (t0, x0, y0) = self.trail[0];
+        let (t1, x1, y1) = *self.trail.last().expect("trail");
+        let dt = (t1 - t0).max(0.016);
+        (
+            ((x1 - x0) / dt).clamp(-2400.0, 2400.0),
+            ((y1 - y0) / dt).clamp(-2400.0, 2400.0),
+        )
+    }
+
+    fn sync_rag(&mut self) {
+        if self.rag.id != self.pack.id {
+            self.rag = Ragdoll::new(&self.pack);
+        }
+    }
+
+    fn fit_room(&mut self) {
+        let (width, height) = self.screen;
+        let inset = FEET_X * self.pet_scale();
+        let drop = (SPRITE_H - FEET_Y) * self.pet_scale();
+        self.room = Room {
+            left: 16.0 + inset,
+            right: (width - 16.0 - inset).max(16.0 + inset + 1.0),
+            floor: (height - drop).max(self.feet_y()),
+        };
+    }
+
     fn sync_geometry(&mut self) {
-        let (width, height) = draw::scene_size(self.menu);
+        let (width, height) = draw::scene_size(self.menu, self.pet_scale());
         self.logical_w = width;
         self.logical_h = height;
         let pet_x = self.layout_pet_x();
-        self.origin_x = (self.pet.x - pet_x - FEET_X).round() as i32;
-        self.origin_y = (self.pet.y - FEET_Y).round() as i32;
+        self.origin_x = (self.pet.x - pet_x - self.feet_x()).round() as i32;
+        self.origin_y = (self.pet.y - self.pet_top() - self.feet_y()).round() as i32;
     }
 }
 
@@ -295,6 +434,10 @@ pub fn startup_room(width: f32, height: f32) -> Room {
         right: (width - margin - FEET_X).max(margin + FEET_X + 1.0),
         floor: (height - 12.0).max(FEET_Y),
     }
+}
+
+fn screen_of(room: &Room) -> (f32, f32) {
+    (room.right + 16.0 + FEET_X, room.floor + 12.0)
 }
 
 #[cfg(test)]
@@ -372,5 +515,44 @@ mod tests {
             Pointer::LeftDown,
         );
         assert!(app.exit);
+    }
+
+    #[test]
+    fn a_small_size_shrinks_the_frame() {
+        let mut app = App::new(startup_room(800.0, 600.0));
+        app.settings.scale = "0.2".to_string();
+        app.fit_room();
+        app.pet.y = app.room.floor;
+        app.sync_geometry();
+        assert_eq!(app.logical_w, (SPRITE_W * 0.2).round() as u32);
+        assert_eq!(app.logical_h, (SPRITE_H * 0.2).round() as u32);
+    }
+
+    #[test]
+    fn a_flick_throws_along_the_drag() {
+        let mut app = App::new(startup_room(1200.0, 800.0));
+        let start_x = app.pet.x;
+        app.pointer(30.0, 80.0, Pointer::LeftDown);
+        for step in 1..=5 {
+            app.clock = step as f32 * 0.02;
+            app.pointer(
+                30.0 + step as f32 * 18.0,
+                80.0 - step as f32 * 14.0,
+                Pointer::Motion,
+            );
+        }
+        app.pointer(120.0, 10.0, Pointer::LeftUp);
+        assert_eq!(app.pet.activity, Activity::Fall);
+        assert!(app.pet.vx > 200.0, "{}", app.pet.vx);
+        let mut far = app.pet.x;
+        let mut high = app.pet.y;
+        for _ in 0..40 {
+            app.tick(1.0 / 60.0);
+            far = far.max(app.pet.x);
+            high = high.min(app.pet.y);
+        }
+        assert!(far > start_x + 40.0, "{far}");
+        assert!(high < app.room.floor - 5.0, "{high}");
+        assert!(app.rag.live);
     }
 }
