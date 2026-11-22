@@ -8,17 +8,18 @@
 ---
 
 > [!NOTE]
-> **Active Development:** `mako` changes frequently and may contain bugs. Saved language and theme settings may become outdated; delete the config file to restore the defaults.
+> **Active Development:** `mako` changes frequently and may contain bugs. Saved language, theme and chibi settings may become outdated; delete the config file to restore the defaults.
 
 ---
 
-`mako` is a desktop pet for KDE Plasma. bear girl walks along the bottom edge of the screen. It is a native Wayland client on a Wayland session and a native X11 client on an X11 session, without using XWayland as a fallback. The picture is drawn each frame from a pose, not from a sprite sheet.
+`mako` is a desktop pet for KDE Plasma. bear girl walks along the bottom edge of the screen in a three-quarter view. It is a native Wayland client on a Wayland session and a native X11 client on an X11 session, without using XWayland as a fallback. Each frame is drawn from separate parts on one skeleton, not from a sprite sheet.
 
 ---
 
 ## Features
 
-- One pet, bear girl, in a brown bear onesie.
+- One pet, bear girl, in a brown bear onesie. Parts such as the eyes can change without a new drawing of the whole body.
+- Another chibi can be chosen from a zip. No second chibi is included.
 - Walking, falling, and dragging on the screen edges.
 - English and Russian text, with system, light and dark menu colors.
 - Separate Wayland and X11 backends for KDE Plasma.
@@ -34,9 +35,19 @@
 | --- | --- |
 | Left button | Drag bear girl. Releasing her in the air makes her fall. |
 | Right button | Open or close the menu. |
-| Menu rows | Choose language, theme, or quit. |
+| Menu rows | Choose the chibi, language, theme, or quit. |
 
-The menu language follows `LANGUAGE`, `LC_ALL`, `LC_MESSAGES` and `LANG` until a manual choice is saved. The menu colors follow the KDE color scheme until a manual theme is saved. The onesie itself stays brown.
+The menu language follows `LANGUAGE`, `LC_ALL`, `LC_MESSAGES` and `LANG` until a manual choice is saved. The menu colors follow the KDE color scheme until a manual theme is saved. The onesie itself stays brown. The chosen chibi is saved as `chibi`.
+
+Zip archives in `~/.local/share/mako/chibis/` are listed, or under `XDG_DATA_HOME` when that is an absolute path. At most six archives are shown. An archive without a `heart` name is ignored. If `body` is missing, bear girl's skeleton is used. If `anima` is missing, bear girl's animations are used.
+
+| Path | Role |
+| --- | --- |
+| `heart` | `name`, and other lines are ignored for now |
+| `body` | Skeleton: `canvas`, `feet`, and one `bone` line per joint |
+| `anima` | Animations: `anim`, `rot`, `image`, `bob` |
+| `creature/*.png` | Parts, named `head`, `left-hand`, `eyes-open` |
+| `pocket/*.png` | Items, named `it-1`, `it-2` |
 
 </details>
 

@@ -7,6 +7,7 @@ mod draw;
 mod host_wayland;
 mod host_x11;
 mod i18n;
+mod pack;
 mod sim;
 
 use std::env;
@@ -41,7 +42,7 @@ pub fn run() -> Result<(), Fault> {
         println!(
             "mako — a desktop pet for KDE Plasma\n\n\
              bear girl walks along the bottom edge of the screen.\n\
-             Drag with the left button. Right-click opens language, theme and quit.\n\n\
+             Drag with the left button. Right-click opens the chibi, language, theme and quit.\n\n\
              --help    Show this help"
         );
         return Ok(());

@@ -18,6 +18,7 @@ pub const ID_RUSSIAN: u32 = 6;
 pub const ID_LIGHT: u32 = 7;
 pub const ID_DARK: u32 = 8;
 pub const ID_QUIT: u32 = 9;
+pub const ID_CHIBI: u32 = 10;
 
 const ENGLISH: &str = include_str!("../languages/English.ini");
 const RUSSIAN: &str = include_str!("../languages/Russian.ini");
@@ -85,6 +86,7 @@ fn english_of(id: u32) -> &'static str {
         ID_LIGHT => "Light",
         ID_DARK => "Dark",
         ID_QUIT => "Quit",
+        ID_CHIBI => "Chibi",
         _ => "",
     }
 }

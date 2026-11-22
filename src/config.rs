@@ -21,10 +21,11 @@ pub enum ThemePref {
     Dark,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
     pub language: LanguagePref,
     pub theme: ThemePref,
+    pub chibi: String,
 }
 
 impl Default for Settings {
@@ -32,6 +33,7 @@ impl Default for Settings {
         Self {
             language: LanguagePref::System,
             theme: ThemePref::System,
+            chibi: "bear-girl".to_string(),
         }
     }
 }
@@ -63,6 +65,7 @@ impl Settings {
                         _ => ThemePref::System,
                     }
                 }
+                "chibi" if crate::pack::safe_id(value) => settings.chibi = value.to_string(),
                 _ => {}
             }
         }
@@ -84,7 +87,7 @@ impl Settings {
             )
         })?;
         let body = format!(
-            "language = \"{}\"\ntheme = \"{}\"\n",
+            "language = \"{}\"\ntheme = \"{}\"\nchibi = \"{}\"\n",
             match self.language {
                 LanguagePref::System => "system",
                 LanguagePref::En => "en",
@@ -95,6 +98,7 @@ impl Settings {
                 ThemePref::Light => "light",
                 ThemePref::Dark => "dark",
             },
+            self.chibi,
         );
         let temporary = path.with_extension("toml.part");
         fs::write(&temporary, body).map_err(|error| {

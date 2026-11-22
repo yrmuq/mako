@@ -1,7 +1,8 @@
 # Map
 
 - `src/sim.rs` — pet activity, floor and screen edges. No display code.
-- `src/draw.rs` — skeletal pose of one bear-girl image, and the menu. Reads the bundled font.
+- `src/pack.rs` — chibi archive (`heart`, `body`, `anima`, `creature`, `pocket`). Bear girl is the builtin pack and the fallback skeleton and animations.
+- `src/draw.rs` — poses a pack on its skeleton, and draws the menu. Reads the bundled font.
 - `src/i18n.rs` — `languages/*.ini` catalogs and system-language detection.
 - `src/config.rs` — `language` and `theme` in the XDG config file.
 - `src/app.rs` — pointer gestures, menu actions and the frame the hosts present.

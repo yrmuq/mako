@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use crate::config::{system_dark, LanguagePref, Settings, ThemePref};
-use crate::draw::{self, Frame, Hit, RowId, Scene};
-use crate::i18n::Catalog;
+use crate::draw::{self, Frame, Hit, Motion, RowId, Scene};
+use crate::i18n::{Catalog, ID_NAME};
+use crate::pack::{self, Choice, Pack, BUILTIN_ID};
 use crate::sim::{Activity, Pet, Room, FEET_X, FEET_Y, SPRITE_H, SPRITE_W};
 
 const MENU_W: f32 = draw::MENU_W;
@@ -13,6 +14,8 @@ pub struct App {
     pub room: Room,
     settings: Settings,
     catalog: Catalog,
+    pack: Pack,
+    choices: Vec<Choice>,
     menu: bool,
     dragging: bool,
     grab_x: f32,
@@ -42,11 +45,15 @@ impl App {
             ThemePref::Light => false,
             ThemePref::Dark => true,
         };
+        let pack = Pack::open(&settings.chibi);
+        let choices = pack::choices();
         let mut app = Self {
             pet,
             room,
             settings,
             catalog,
+            pack,
+            choices,
             menu: false,
             dragging: false,
             grab_x: 0.0,
@@ -100,8 +107,8 @@ impl App {
     pub fn pointer(&mut self, lx: f32, ly: f32, kind: Pointer) {
         match kind {
             Pointer::LeftDown => {
-                if let Some(hit) = self.hit(lx, ly) {
-                    self.activate(hit);
+                if let Some((id, key)) = self.hit(lx, ly) {
+                    self.activate(id, &key);
                     return;
                 }
                 if self.in_menu(lx, ly) {
@@ -135,6 +142,9 @@ impl App {
             Pointer::RightDown => {
                 if !self.dragging {
                     self.menu = !self.menu;
+                    if self.menu {
+                        self.choices = pack::choices();
+                    }
                     self.sync_geometry();
                 }
             }
@@ -152,7 +162,12 @@ impl App {
     pub fn render(&mut self) -> Frame {
         let scene = Scene {
             cycle: self.pet.phase,
-            walking: self.pet.activity == Activity::Walk,
+            motion: match self.pet.activity {
+                Activity::Walk => Motion::Walk,
+                Activity::Fall => Motion::Fall,
+                Activity::Drag => Motion::Drag,
+                Activity::Idle => Motion::Idle,
+            },
             tilt: self.pet.tilt(),
             facing_left: self.pet.face < 0.0,
             menu: self.menu,
@@ -160,6 +175,7 @@ impl App {
             dark: self.dark,
             rows: draw::rows(
                 &self.catalog,
+                &self.pet_title(),
                 match self.settings.language {
                     LanguagePref::System => "system",
                     LanguagePref::En => "en",
@@ -170,9 +186,11 @@ impl App {
                     ThemePref::Light => "light",
                     ThemePref::Dark => "dark",
                 },
+                &self.choices,
+                &self.pack.id,
             ),
         };
-        let frame = draw::render(&scene, self.scale);
+        let frame = draw::render(&scene, &self.pack, self.scale);
         self.hits = frame.hits.clone();
         frame
     }
@@ -183,7 +201,7 @@ impl App {
         self.committed_pet_x = self.layout_pet_x();
     }
 
-    fn activate(&mut self, id: RowId) {
+    fn activate(&mut self, id: RowId, key: &str) {
         match id {
             RowId::SystemLang => self.settings.language = LanguagePref::System,
             RowId::English => self.settings.language = LanguagePref::En,
@@ -191,11 +209,15 @@ impl App {
             RowId::SystemTheme => self.settings.theme = ThemePref::System,
             RowId::Light => self.settings.theme = ThemePref::Light,
             RowId::Dark => self.settings.theme = ThemePref::Dark,
+            RowId::Chibi => {
+                self.settings.chibi = key.to_string();
+                self.pack = Pack::open(key);
+            }
             RowId::Quit => {
                 self.exit = true;
                 return;
             }
-            RowId::Name | RowId::Language | RowId::Theme => return,
+            RowId::Name | RowId::ChibiLabel | RowId::Language | RowId::Theme => return,
         }
         self.dark = match self.settings.theme {
             ThemePref::System => system_dark(),
@@ -209,11 +231,19 @@ impl App {
         self.sync_geometry();
     }
 
-    fn hit(&self, x: f32, y: f32) -> Option<RowId> {
+    fn hit(&self, x: f32, y: f32) -> Option<(RowId, String)> {
         self.hits
             .iter()
             .find(|hit| x >= hit.x && y >= hit.y && x < hit.x + hit.w && y < hit.y + hit.h)
-            .map(|hit| hit.id)
+            .map(|hit| (hit.id, hit.key.clone()))
+    }
+
+    fn pet_title(&self) -> String {
+        if self.pack.id == BUILTIN_ID {
+            self.catalog.text(ID_NAME).to_string()
+        } else {
+            self.pack.name.clone()
+        }
     }
 
     fn menu_left(&self) -> bool {

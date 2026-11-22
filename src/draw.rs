@@ -1,38 +1,36 @@
 // Copyright (C) 2026 yrmuq
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! Bear girl posed from one image. The hair clip is a round barrette, not a cross.
-//! Limbs are pieces of that image on a skeleton, so a walk does not need a new drawing per frame.
+//! Bear girl, and any other loaded chibi, posed from separate parts on one skeleton.
 
 use ab_glyph::{point, Font, FontVec, Glyph, PxScale, ScaleFont};
-use std::io::Cursor;
 use std::sync::OnceLock;
 use tiny_skia::{
     ColorU8, FillRule, Paint, PathBuilder, Pixmap, PixmapPaint, PremultipliedColorU8, Transform,
 };
 
 use crate::i18n::{
-    Catalog, ID_DARK, ID_ENGLISH, ID_LANGUAGE, ID_LIGHT, ID_NAME, ID_QUIT, ID_RUSSIAN, ID_SYSTEM,
-    ID_THEME,
+    Catalog, ID_CHIBI, ID_DARK, ID_ENGLISH, ID_LANGUAGE, ID_LIGHT, ID_NAME, ID_QUIT, ID_RUSSIAN,
+    ID_SYSTEM, ID_THEME,
 };
+use crate::pack::{Choice, Pack, BUILTIN_ID};
 use crate::sim::{FEET_X, FEET_Y, SPRITE_H, SPRITE_W};
 
 pub const MENU_W: f32 = 228.0;
 
-const TORSO: u8 = 0;
-const LEFT_ARM: u8 = 1;
-const RIGHT_ARM: u8 = 2;
-const LEFT_LEG: u8 = 3;
-const RIGHT_LEG: u8 = 4;
-
-const LEFT_SHOULDER: (f32, f32) = (136.0, 320.0);
-const RIGHT_SHOULDER: (f32, f32) = (264.0, 320.0);
-const LEFT_LEG_PIVOT: (f32, f32) = (167.0, 430.0);
-const RIGHT_LEG_PIVOT: (f32, f32) = (230.0, 430.0);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Motion {
+    Idle,
+    Walk,
+    Fall,
+    Drag,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RowId {
     Name,
+    ChibiLabel,
+    Chibi,
     Language,
     Theme,
     SystemLang,
@@ -50,11 +48,13 @@ pub struct Row {
     pub text: String,
     pub selected: bool,
     pub label: bool,
+    pub key: String,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Hit {
     pub id: RowId,
+    pub key: String,
     pub x: f32,
     pub y: f32,
     pub w: f32,
@@ -64,7 +64,7 @@ pub struct Hit {
 #[derive(Clone, Debug)]
 pub struct Scene {
     pub cycle: f32,
-    pub walking: bool,
+    pub motion: Motion,
     pub tilt: f32,
     pub facing_left: bool,
     pub menu: bool,
@@ -85,7 +85,7 @@ pub fn scene_size(menu: bool) -> (u32, u32) {
     (width.round() as u32, SPRITE_H.round() as u32)
 }
 
-pub fn render(scene: &Scene, scale: u32) -> Frame {
+pub fn render(scene: &Scene, pack: &Pack, scale: u32) -> Frame {
     let scale = scale.max(1);
     let (logical_w, logical_h) = scene_size(scene.menu);
     let width = logical_w * scale;
@@ -96,7 +96,7 @@ pub fn render(scene: &Scene, scale: u32) -> Frame {
     } else {
         0.0
     };
-    draw_pet(&mut pixmap, pet_x, scene, scale);
+    draw_pet(&mut pixmap, pet_x, scene, pack, scale);
     if scene.facing_left {
         mirror_sprite(&mut pixmap, pet_x, scale);
     }
@@ -113,304 +113,176 @@ pub fn render(scene: &Scene, scale: u32) -> Frame {
     }
 }
 
-pub fn rows(catalog: &Catalog, lang_sel: &str, theme_sel: &str) -> Vec<Row> {
-    let row = |id, text_id, selected, label| Row {
+pub fn rows(
+    catalog: &Catalog,
+    title: &str,
+    lang_sel: &str,
+    theme_sel: &str,
+    chibis: &[Choice],
+    selected: &str,
+) -> Vec<Row> {
+    let row = |id, text: String, selected, label, key: &str| Row {
         id,
-        text: catalog.text(text_id).to_string(),
+        text,
         selected,
         label,
+        key: key.to_string(),
     };
-    vec![
-        row(RowId::Name, ID_NAME, false, true),
-        row(RowId::Language, ID_LANGUAGE, false, true),
-        row(RowId::SystemLang, ID_SYSTEM, lang_sel == "system", false),
-        row(RowId::English, ID_ENGLISH, lang_sel == "en", false),
-        row(RowId::Russian, ID_RUSSIAN, lang_sel == "ru", false),
-        row(RowId::Theme, ID_THEME, false, true),
-        row(RowId::SystemTheme, ID_SYSTEM, theme_sel == "system", false),
-        row(RowId::Light, ID_LIGHT, theme_sel == "light", false),
-        row(RowId::Dark, ID_DARK, theme_sel == "dark", false),
-        row(RowId::Quit, ID_QUIT, false, false),
-    ]
-}
-
-struct Pose {
-    l_leg: f32,
-    r_leg: f32,
-    l_arm: f32,
-    r_arm: f32,
-    bob: f32,
-    left_front: bool,
-    l_wide: f32,
-    r_wide: f32,
-}
-
-fn pose(scene: &Scene) -> Pose {
-    if !scene.walking {
-        return Pose {
-            l_leg: 0.0,
-            r_leg: 0.0,
-            l_arm: 0.0,
-            r_arm: 0.0,
-            bob: (scene.cycle * 2.0).sin() * 1.2,
-            left_front: true,
-            l_wide: 1.0,
-            r_wide: 1.0,
+    let mut rows = vec![
+        row(RowId::Name, title.to_string(), false, true, ""),
+        row(
+            RowId::ChibiLabel,
+            catalog.text(ID_CHIBI).to_string(),
+            false,
+            true,
+            "",
+        ),
+    ];
+    for chibi in chibis {
+        let name = if chibi.id == BUILTIN_ID {
+            catalog.text(ID_NAME).to_string()
+        } else {
+            clip_name(&chibi.name)
         };
+        rows.push(row(
+            RowId::Chibi,
+            name,
+            chibi.id == selected,
+            false,
+            &chibi.id,
+        ));
     }
-    // Opposite limbs share one sine so the step stays one pose instead of a stack of drawings.
-    let wave = (scene.cycle * 8.0).sin();
-    Pose {
-        l_leg: wave * 16.0,
-        r_leg: -wave * 16.0,
-        l_arm: -wave * 14.0,
-        r_arm: wave * 14.0,
-        bob: wave.abs() * -2.0,
-        left_front: wave >= 0.0,
-        l_wide: 1.0,
-        r_wide: 1.0,
+    rows.extend([
+        row(
+            RowId::Language,
+            catalog.text(ID_LANGUAGE).to_string(),
+            false,
+            true,
+            "",
+        ),
+        row(
+            RowId::SystemLang,
+            catalog.text(ID_SYSTEM).to_string(),
+            lang_sel == "system",
+            false,
+            "",
+        ),
+        row(
+            RowId::English,
+            catalog.text(ID_ENGLISH).to_string(),
+            lang_sel == "en",
+            false,
+            "",
+        ),
+        row(
+            RowId::Russian,
+            catalog.text(ID_RUSSIAN).to_string(),
+            lang_sel == "ru",
+            false,
+            "",
+        ),
+        row(
+            RowId::Theme,
+            catalog.text(ID_THEME).to_string(),
+            false,
+            true,
+            "",
+        ),
+        row(
+            RowId::SystemTheme,
+            catalog.text(ID_SYSTEM).to_string(),
+            theme_sel == "system",
+            false,
+            "",
+        ),
+        row(
+            RowId::Light,
+            catalog.text(ID_LIGHT).to_string(),
+            theme_sel == "light",
+            false,
+            "",
+        ),
+        row(
+            RowId::Dark,
+            catalog.text(ID_DARK).to_string(),
+            theme_sel == "dark",
+            false,
+            "",
+        ),
+        row(
+            RowId::Quit,
+            catalog.text(ID_QUIT).to_string(),
+            false,
+            false,
+            "",
+        ),
+    ]);
+    rows
+}
+
+fn clip_name(text: &str) -> String {
+    let mut out = String::new();
+    for (index, ch) in text.chars().enumerate() {
+        if index == 18 {
+            out.push_str("...");
+            break;
+        }
+        out.push(ch);
     }
+    out
 }
 
-fn draw_pet(pixmap: &mut Pixmap, origin_x: f32, scene: &Scene, scale: u32) {
-    let doll = doll();
-    let pose = pose(scene);
-    let view = View {
-        origin_x,
-        bob: pose.bob,
-        tilt: scene.tilt.to_degrees(),
-        fit_x: SPRITE_W / doll.sprite_w as f32,
-        fit_y: SPRITE_H / doll.sprite_h as f32,
-        scale: scale as f32,
-    };
-    paint(pixmap, &doll.torso, &view, &Transform::identity());
-    if pose.left_front {
-        paint(
-            pixmap,
-            &doll.right_leg,
-            &view,
-            &pivot_bone(RIGHT_LEG_PIVOT, pose.r_leg, pose.r_wide),
-        );
-        paint(
-            pixmap,
-            &doll.left_arm,
-            &view,
-            &pivot_bone(LEFT_SHOULDER, pose.l_arm, 1.0),
-        );
-        paint(
-            pixmap,
-            &doll.right_arm,
-            &view,
-            &pivot_bone(RIGHT_SHOULDER, pose.r_arm, 1.0),
-        );
-        paint(
-            pixmap,
-            &doll.left_leg,
-            &view,
-            &pivot_bone(LEFT_LEG_PIVOT, pose.l_leg, pose.l_wide),
-        );
-    } else {
-        paint(
-            pixmap,
-            &doll.left_leg,
-            &view,
-            &pivot_bone(LEFT_LEG_PIVOT, pose.l_leg, pose.l_wide),
-        );
-        paint(
-            pixmap,
-            &doll.right_arm,
-            &view,
-            &pivot_bone(RIGHT_SHOULDER, pose.r_arm, 1.0),
-        );
-        paint(
-            pixmap,
-            &doll.left_arm,
-            &view,
-            &pivot_bone(LEFT_SHOULDER, pose.l_arm, 1.0),
-        );
-        paint(
-            pixmap,
-            &doll.right_leg,
-            &view,
-            &pivot_bone(RIGHT_LEG_PIVOT, pose.r_leg, pose.r_wide),
-        );
-    }
-}
-
-fn pivot_bone(pivot: (f32, f32), angle: f32, wide: f32) -> Transform {
-    Transform::from_translate(-pivot.0, -pivot.1)
-        .post_rotate(angle)
-        .post_scale(wide, 1.0)
-        .post_translate(pivot.0, pivot.1)
-}
-
-struct View {
-    origin_x: f32,
-    bob: f32,
-    tilt: f32,
-    fit_x: f32,
-    fit_y: f32,
-    scale: f32,
-}
-
-fn paint(pixmap: &mut Pixmap, piece: &Piece, view: &View, bone: &Transform) {
-    if piece.blank {
+fn draw_pet(pixmap: &mut Pixmap, origin_x: f32, scene: &Scene, pack: &Pack, scale: u32) {
+    if pack.canvas_w <= 0.0 || pack.canvas_h <= 0.0 {
         return;
     }
-    let placed = Transform::from_translate(piece.x, piece.y)
-        .post_concat(*bone)
-        .post_scale(view.fit_x, view.fit_y)
-        .post_translate(view.origin_x, view.bob)
-        .post_rotate_at(view.tilt, view.origin_x + FEET_X, FEET_Y + view.bob)
-        .post_scale(view.scale, view.scale);
-    pixmap.draw_pixmap(
-        0,
-        0,
-        piece.image.as_ref(),
-        &PixmapPaint::default(),
-        placed,
-        None,
-    );
-}
-
-struct Piece {
-    image: Pixmap,
-    x: f32,
-    y: f32,
-    blank: bool,
-}
-
-struct Doll {
-    sprite_w: u32,
-    sprite_h: u32,
-    torso: Piece,
-    left_arm: Piece,
-    right_arm: Piece,
-    left_leg: Piece,
-    right_leg: Piece,
-}
-
-fn doll() -> &'static Doll {
-    static DOLL: OnceLock<Doll> = OnceLock::new();
-    DOLL.get_or_init(|| {
-        let sprite = decode_sprite(include_bytes!("../assets/bear-girl.png"));
-        Doll {
-            sprite_w: sprite.width(),
-            sprite_h: sprite.height(),
-            torso: extract(&sprite, TORSO),
-            left_arm: extract(&sprite, LEFT_ARM),
-            right_arm: extract(&sprite, RIGHT_ARM),
-            left_leg: extract(&sprite, LEFT_LEG),
-            right_leg: extract(&sprite, RIGHT_LEG),
-        }
-    })
-}
-
-fn in_piece(x: u32, y: u32, kind: u8) -> bool {
-    // Sleeves and hands sit outside the torso. Legs split once the silhouette does.
-    let arm_l = sleeve(x, y, true);
-    let arm_r = sleeve(x, y, false);
-    let outer_l = arm_l && x < 124;
-    let outer_r = arm_r && x > 276;
-    let lower_leg = y >= 450 && (120..280).contains(&x);
-    match kind {
-        TORSO => !lower_leg && !outer_l && !outer_r,
-        LEFT_ARM => arm_l,
-        RIGHT_ARM => arm_r,
-        LEFT_LEG => y >= 426 && x < 200,
-        RIGHT_LEG => y >= 426 && x >= 198,
-        _ => false,
-    }
-}
-
-fn sleeve(x: u32, y: u32, left: bool) -> bool {
-    let y = y as f32;
-    let x = x as f32;
-    if !(312.0..402.0).contains(&y) {
-        return false;
-    }
-    if left {
-        x < 136.0
-    } else {
-        x > 264.0
-    }
-}
-
-fn extract(src: &Pixmap, kind: u8) -> Piece {
-    let width = src.width();
-    let height = src.height();
-    let pixels = src.pixels();
-    let mut min_x = width;
-    let mut min_y = height;
-    let mut max_x = 0;
-    let mut max_y = 0;
-    let mut any = false;
-    for y in 0..height {
-        for x in 0..width {
-            let pixel = pixels[(y * width + x) as usize];
-            if pixel.alpha() == 0 || !in_piece(x, y, kind) {
-                continue;
-            }
-            any = true;
-            min_x = min_x.min(x);
-            min_y = min_y.min(y);
-            max_x = max_x.max(x);
-            max_y = max_y.max(y);
-        }
-    }
-    if !any {
-        return Piece {
-            image: Pixmap::new(1, 1).expect("pixmap"),
-            x: 0.0,
-            y: 0.0,
-            blank: true,
+    let anim = match scene.motion {
+        Motion::Walk => "walk",
+        Motion::Fall => "fall",
+        Motion::Drag => "drag",
+        Motion::Idle => "idle",
+    };
+    let pose = pack.pose(anim, scene.cycle);
+    let fit = (SPRITE_W / pack.canvas_w).min(SPRITE_H / pack.canvas_h);
+    let bob = pose.bob * fit;
+    let view = Transform::from_scale(fit, fit)
+        .post_translate(
+            origin_x + FEET_X - pack.feet_x * fit,
+            FEET_Y - pack.feet_y * fit + bob,
+        )
+        .post_rotate_at(scene.tilt.to_degrees(), origin_x + FEET_X, FEET_Y + bob)
+        .post_scale(scale as f32, scale as f32);
+    let mut order: Vec<usize> = (0..pack.bones.len()).collect();
+    order.sort_by_key(|&index| pack.bones[index].z);
+    for index in order {
+        let image_name = &pose.image[index];
+        let Some(sprite) = pack.sprite(image_name) else {
+            continue;
         };
-    }
-    let piece_w = max_x - min_x + 1;
-    let piece_h = max_y - min_y + 1;
-    let mut image = Pixmap::new(piece_w, piece_h).expect("pixmap");
-    for y in 0..piece_h {
-        for x in 0..piece_w {
-            let src_x = min_x + x;
-            let src_y = min_y + y;
-            if !in_piece(src_x, src_y, kind) {
-                continue;
-            }
-            let pixel = pixels[(src_y * width + src_x) as usize];
-            if pixel.alpha() == 0 {
-                continue;
-            }
-            image.pixels_mut()[(y * piece_w + x) as usize] = pixel;
+        if sprite.blank {
+            continue;
         }
+        let placed = &pose.placed[index];
+        let bone = &pack.bones[index];
+        let rad = placed.rot.to_radians();
+        let (sin, cos) = rad.sin_cos();
+        let local = Transform::from_row(
+            cos,
+            sin,
+            -sin,
+            cos,
+            cos * (sprite.x - bone.pivot_x) - sin * (sprite.y - bone.pivot_y) + placed.x,
+            sin * (sprite.x - bone.pivot_x) + cos * (sprite.y - bone.pivot_y) + placed.y,
+        );
+        pixmap.draw_pixmap(
+            0,
+            0,
+            sprite.image.as_ref().as_ref(),
+            &PixmapPaint::default(),
+            local.post_concat(view),
+            None,
+        );
     }
-    Piece {
-        image,
-        x: min_x as f32,
-        y: min_y as f32,
-        blank: false,
-    }
-}
-
-fn decode_sprite(bytes: &[u8]) -> Pixmap {
-    let decoder = png::Decoder::new(Cursor::new(bytes));
-    let mut reader = decoder
-        .read_info()
-        .expect("MAKO-SPRITE-0001: The bundled pet image is invalid");
-    let mut buf = vec![0; reader.output_buffer_size()];
-    let info = reader
-        .next_frame(&mut buf)
-        .expect("MAKO-SPRITE-0001: The bundled pet image is invalid");
-    if info.bit_depth != png::BitDepth::Eight || info.color_type != png::ColorType::Rgba {
-        panic!("MAKO-SPRITE-0001: The bundled pet image is invalid");
-    }
-    let mut pixmap = Pixmap::new(info.width, info.height).expect("pixmap");
-    let data = &buf[..info.buffer_size()];
-    let (src_chunks, _) = data.as_chunks::<4>();
-    for (src, dst) in src_chunks.iter().zip(pixmap.pixels_mut()) {
-        *dst = PremultipliedColorU8::from_rgba(src[0], src[1], src[2], src[3])
-            .unwrap_or(PremultipliedColorU8::from_rgba(0, 0, 0, 0).unwrap());
-    }
-    pixmap
 }
 
 fn draw_menu(pixmap: &mut Pixmap, scene: &Scene, scale: u32, pet_x: f32) -> Vec<Hit> {
@@ -445,7 +317,7 @@ fn draw_menu(pixmap: &mut Pixmap, scene: &Scene, scale: u32, pet_x: f32) -> Vec<
 
     let mut hits = Vec::new();
     let font = font();
-    let font_px = (row_h * 0.58).clamp(12.0, 15.0);
+    let font_px = (row_h * 0.58).clamp(9.0, 15.0);
     for (index, row) in scene.rows.iter().enumerate() {
         let ry = top + index as f32 * row_h;
         let color = if row.selected {
@@ -470,6 +342,7 @@ fn draw_menu(pixmap: &mut Pixmap, scene: &Scene, scale: u32, pet_x: f32) -> Vec<
         if !row.label {
             hits.push(Hit {
                 id: row.id,
+                key: row.key.clone(),
                 x,
                 y: ry,
                 w,
@@ -621,7 +494,7 @@ mod tests {
     fn still() -> Scene {
         Scene {
             cycle: 0.0,
-            walking: false,
+            motion: Motion::Idle,
             tilt: 0.0,
             facing_left: false,
             menu: false,
@@ -633,26 +506,27 @@ mod tests {
 
     #[test]
     fn idle_pose_is_mostly_transparent_around_a_solid_body() {
+        let pack = Pack::builtin();
         let scene = still();
-        let frame = render(&scene, 1);
+        let frame = render(&scene, &pack, 1);
         let (pixels, _) = frame.bgra.as_chunks::<4>();
         let opaque = pixels.iter().filter(|pixel| pixel[3] > 16).count();
         let fraction = opaque as f32 / pixels.len() as f32;
-        assert!(fraction > 0.15);
-        assert!(fraction < 0.75);
-        let center = ((120 * frame.width + 100) * 4) as usize;
-        assert!(frame.bgra[center + 3] > 200);
+        assert!(fraction > 0.08, "{fraction}");
+        assert!(fraction < 0.75, "{fraction}");
+        assert!(pixels.iter().any(|pixel| pixel[3] > 200));
         std::fs::write("/tmp/mako-idle.png", encode(&scene)).expect("preview");
     }
 
     #[test]
     fn walk_cycle_moves_a_planted_pose() {
+        let pack = Pack::builtin();
         let scene = still();
-        let idle = render(&scene, 1);
+        let idle = render(&scene, &pack, 1);
         let mut stepping = scene.clone();
-        stepping.walking = true;
-        stepping.cycle = std::f32::consts::FRAC_PI_2 / 8.0;
-        let walked = render(&stepping, 1);
+        stepping.motion = Motion::Walk;
+        stepping.cycle = 0.35;
+        let walked = render(&stepping, &pack, 1);
         let (idle_px, _) = idle.bgra.as_chunks::<4>();
         let (walk_px, _) = walked.bgra.as_chunks::<4>();
         let changed = idle_px
@@ -660,10 +534,39 @@ mod tests {
             .zip(walk_px)
             .filter(|(left, right)| left != right)
             .count();
-        assert!(changed > 400);
+        assert!(changed > 400, "{changed}");
         std::fs::write("/tmp/mako-walk.png", encode(&stepping)).expect("preview");
-        stepping.cycle += std::f32::consts::PI / 8.0;
+        stepping.cycle = 0.0;
         std::fs::write("/tmp/mako-walk-b.png", encode(&stepping)).expect("preview");
+    }
+
+    #[test]
+    fn facing_left_mirrors_the_sprite() {
+        let pack = Pack::builtin();
+        let scene = still();
+        let right = render(&scene, &pack, 1);
+        let mut turned = scene.clone();
+        turned.facing_left = true;
+        let left = render(&turned, &pack, 1);
+        let width = right.width as i32;
+        let (right_px, _) = right.bgra.as_chunks::<4>();
+        let (left_px, _) = left.bgra.as_chunks::<4>();
+        let mut found = false;
+        for y in 0..right.height as i32 {
+            for x in width / 2..width {
+                let index = (y * width + x) as usize;
+                if right_px[index][3] > 200 {
+                    let mirrored = (y * width + (width - 1 - x)) as usize;
+                    assert_eq!(right_px[index], left_px[mirrored]);
+                    found = true;
+                    break;
+                }
+            }
+            if found {
+                break;
+            }
+        }
+        assert!(found);
     }
 
     #[test]
@@ -671,10 +574,10 @@ mod tests {
         let mut scene = still();
         scene.menu = true;
         scene.rows = menu_rows();
-        let right = render(&scene, 1);
+        let right = render(&scene, &Pack::builtin(), 1);
         assert_rows_fit(&right.hits, false);
         scene.menu_left = true;
-        let left = render(&scene, 1);
+        let left = render(&scene, &Pack::builtin(), 1);
         assert_rows_fit(&left.hits, true);
         std::fs::write("/tmp/mako-menu.png", encode(&scene)).expect("preview");
     }
@@ -708,6 +611,7 @@ mod tests {
             text: "item".to_string(),
             selected: false,
             label,
+            key: String::new(),
         };
         vec![
             row(RowId::Name, true),
@@ -724,7 +628,7 @@ mod tests {
     }
 
     fn encode(scene: &Scene) -> Vec<u8> {
-        let frame = render(scene, 2);
+        let frame = render(scene, &Pack::builtin(), 2);
         let mut pixmap = Pixmap::new(frame.width, frame.height).expect("pixmap");
         let (src_chunks, _) = frame.bgra.as_chunks::<4>();
         for (src, dst) in src_chunks.iter().zip(pixmap.pixels_mut()) {

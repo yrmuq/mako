@@ -1,0 +1,1041 @@
+// Copyright (C) 2026 yrmuq
+// SPDX-License-Identifier: GPL-3.0-only
+
+//! One chibi: pictures, a skeleton, and animations.
+//! A zip may omit `body` or `anima`; those files then come from bear girl.
+
+use std::collections::HashMap;
+use std::env;
+use std::fs::{self, File};
+use std::io::{Cursor, Read, Seek};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
+
+use tiny_skia::{Pixmap, PremultipliedColorU8};
+use zip::ZipArchive;
+
+use crate::Fault;
+
+pub const BUILTIN_ID: &str = "bear-girl";
+const BLINK_EVERY: f32 = 3.2;
+const MAX_FILE: u64 = 4_000_000;
+const MAX_TOTAL: u64 = 24_000_000;
+
+#[derive(Clone)]
+pub struct Sprite {
+    pub image: Arc<Pixmap>,
+    pub x: f32,
+    pub y: f32,
+    pub blank: bool,
+}
+
+#[derive(Clone)]
+pub struct Bone {
+    pub name: String,
+    pub image: String,
+    pub parent: Option<usize>,
+    pub x: f32,
+    pub y: f32,
+    pub pivot_x: f32,
+    pub pivot_y: f32,
+    pub z: i32,
+}
+
+#[derive(Clone)]
+struct Sample<T> {
+    t: f32,
+    value: T,
+}
+
+#[derive(Clone)]
+struct Track {
+    bone: String,
+    samples: Vec<Sample<f32>>,
+}
+
+#[derive(Clone)]
+struct ImageTrack {
+    bone: String,
+    samples: Vec<Sample<String>>,
+}
+
+#[derive(Clone)]
+struct Anim {
+    name: String,
+    length: f32,
+    rot: Vec<Track>,
+    image: Vec<ImageTrack>,
+    bob: Vec<Sample<f32>>,
+}
+
+#[derive(Clone)]
+pub struct Pack {
+    pub id: String,
+    pub name: String,
+    pub canvas_w: f32,
+    pub canvas_h: f32,
+    pub feet_x: f32,
+    pub feet_y: f32,
+    pub bones: Vec<Bone>,
+    images: HashMap<String, Sprite>,
+    anims: Vec<Anim>,
+    names: HashMap<String, usize>,
+}
+
+#[derive(Clone, Copy)]
+pub struct Placed {
+    pub x: f32,
+    pub y: f32,
+    pub rot: f32,
+}
+
+pub struct Pose {
+    pub placed: Vec<Placed>,
+    pub image: Vec<String>,
+    pub bob: f32,
+}
+
+#[derive(Clone, Debug)]
+pub struct Choice {
+    pub id: String,
+    pub name: String,
+}
+
+struct Raw {
+    heart: Option<String>,
+    body: Option<String>,
+    anima: Option<String>,
+    images: HashMap<String, Vec<u8>>,
+}
+
+impl Pack {
+    pub fn builtin() -> Self {
+        static PACK: OnceLock<Pack> = OnceLock::new();
+        PACK.get_or_init(|| load_builtin().unwrap_or_else(|error| panic!("{error}")))
+            .clone()
+    }
+
+    pub fn open(id: &str) -> Self {
+        if id.is_empty() || id == BUILTIN_ID || !safe_id(id) {
+            return Self::builtin();
+        }
+        let path = chibi_dir().join(format!("{id}.zip"));
+        match from_path(&path, id) {
+            Ok(pack) => pack,
+            Err(error) => {
+                eprintln!("{error}");
+                Self::builtin()
+            }
+        }
+    }
+
+    pub fn sprite(&self, name: &str) -> Option<&Sprite> {
+        self.images.get(name)
+    }
+
+    pub fn pose(&self, anim_name: &str, time: f32) -> Pose {
+        let mut angle = vec![0.0; self.bones.len()];
+        let mut image: Vec<String> = self.bones.iter().map(|bone| bone.image.clone()).collect();
+        let mut bob = 0.0;
+        if let Some(anim) = self.anim_or_idle(anim_name) {
+            apply(
+                anim,
+                local_time(time, anim.length),
+                &self.names,
+                &mut angle,
+                &mut image,
+                &mut bob,
+            );
+        }
+        if let Some(blink) = self.anims.iter().find(|anim| anim.name == "blink") {
+            let phase = local_time(time, BLINK_EVERY);
+            if phase < blink.length {
+                apply(blink, phase, &self.names, &mut angle, &mut image, &mut bob);
+            }
+        }
+        let mut placed = vec![
+            Placed {
+                x: 0.0,
+                y: 0.0,
+                rot: 0.0
+            };
+            self.bones.len()
+        ];
+        let mut seen = vec![0_u8; self.bones.len()];
+        for index in 0..self.bones.len() {
+            place(self, index, &angle, &mut placed, &mut seen);
+        }
+        Pose { placed, image, bob }
+    }
+
+    fn anim_or_idle(&self, name: &str) -> Option<&Anim> {
+        self.anims
+            .iter()
+            .find(|anim| anim.name == name)
+            .or_else(|| self.anims.iter().find(|anim| anim.name == "idle"))
+    }
+}
+
+fn apply(
+    anim: &Anim,
+    time: f32,
+    names: &HashMap<String, usize>,
+    angle: &mut [f32],
+    image: &mut [String],
+    bob: &mut f32,
+) {
+    for track in &anim.rot {
+        let Some(&index) = names.get(&track.bone) else {
+            continue;
+        };
+        angle[index] = sample_linear(&track.samples, time);
+    }
+    for track in &anim.image {
+        let Some(&index) = names.get(&track.bone) else {
+            continue;
+        };
+        if let Some(name) = sample_step(&track.samples, time) {
+            image[index] = name.clone();
+        }
+    }
+    if !anim.bob.is_empty() {
+        *bob = sample_linear(&anim.bob, time);
+    }
+}
+
+fn place(pack: &Pack, index: usize, angle: &[f32], out: &mut [Placed], seen: &mut [u8]) {
+    if seen[index] == 2 {
+        return;
+    }
+    if seen[index] == 1 {
+        return;
+    }
+    seen[index] = 1;
+    let bone = &pack.bones[index];
+    if let Some(parent) = bone.parent {
+        place(pack, parent, angle, out, seen);
+        let parent = &out[parent];
+        let rad = parent.rot.to_radians();
+        let (sin, cos) = rad.sin_cos();
+        out[index] = Placed {
+            x: parent.x + cos * bone.x - sin * bone.y,
+            y: parent.y + sin * bone.x + cos * bone.y,
+            rot: parent.rot + angle[index],
+        };
+    } else {
+        out[index] = Placed {
+            x: bone.x,
+            y: bone.y,
+            rot: angle[index],
+        };
+    }
+    seen[index] = 2;
+}
+
+fn local_time(time: f32, length: f32) -> f32 {
+    if length <= 0.0 {
+        return 0.0;
+    }
+    let wrapped = time % length;
+    if wrapped < 0.0 {
+        wrapped + length
+    } else {
+        wrapped
+    }
+}
+
+fn sample_linear(samples: &[Sample<f32>], time: f32) -> f32 {
+    let Some(first) = samples.first() else {
+        return 0.0;
+    };
+    if samples.len() == 1 || time <= first.t {
+        return first.value;
+    }
+    let Some(last) = samples.last() else {
+        return 0.0;
+    };
+    if time >= last.t {
+        return last.value;
+    }
+    for pair in samples.windows(2) {
+        if time <= pair[1].t {
+            let span = (pair[1].t - pair[0].t).max(0.000_1);
+            let mix = (time - pair[0].t) / span;
+            return pair[0].value + (pair[1].value - pair[0].value) * mix;
+        }
+    }
+    last.value
+}
+
+fn sample_step<T>(samples: &[Sample<T>], time: f32) -> Option<&T> {
+    let mut chosen = None;
+    for sample in samples {
+        if sample.t <= time {
+            chosen = Some(&sample.value);
+        }
+    }
+    chosen.or_else(|| samples.first().map(|sample| &sample.value))
+}
+
+pub fn choices() -> Vec<Choice> {
+    let mut found = vec![Choice {
+        id: BUILTIN_ID.to_string(),
+        name: "bear girl".to_string(),
+    }];
+    let Ok(entries) = fs::read_dir(chibi_dir()) else {
+        return found;
+    };
+    let mut zips = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("zip") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            continue;
+        };
+        if stem == BUILTIN_ID || !safe_id(stem) {
+            continue;
+        }
+        zips.push((stem.to_string(), path));
+    }
+    zips.sort_by(|left, right| left.0.cmp(&right.0));
+    // shortcut: six extra chibis, until the menu can scroll
+    for (id, path) in zips.into_iter().take(6) {
+        match heart_name(&path) {
+            Ok(name) => found.push(Choice { id, name }),
+            Err(error) => eprintln!("{error}"),
+        }
+    }
+    found
+}
+
+pub fn chibi_dir() -> PathBuf {
+    let root = if let Some(value) = env::var_os("XDG_DATA_HOME") {
+        let path = PathBuf::from(value);
+        if path.is_absolute() {
+            path
+        } else {
+            home_data()
+        }
+    } else {
+        home_data()
+    };
+    root.join("mako").join("chibis")
+}
+
+fn home_data() -> PathBuf {
+    env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".local")
+        .join("share")
+}
+
+pub fn safe_id(id: &str) -> bool {
+    !id.is_empty()
+        && id != "."
+        && id != ".."
+        && id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.')
+}
+
+fn load_builtin() -> Result<Pack, Fault> {
+    let mut images = HashMap::new();
+    for (name, bytes) in BUILTIN_IMAGES {
+        images.insert((*name).to_string(), crop(decode(bytes)?)?);
+    }
+    assemble(
+        BUILTIN_ID,
+        include_str!("../assets/bear-girl/heart"),
+        include_str!("../assets/bear-girl/body"),
+        include_str!("../assets/bear-girl/anima"),
+        images,
+    )
+}
+
+const BUILTIN_IMAGES: &[(&str, &[u8])] = &[
+    (
+        "head",
+        include_bytes!("../assets/bear-girl/creature/head.png"),
+    ),
+    (
+        "hair",
+        include_bytes!("../assets/bear-girl/creature/hair.png"),
+    ),
+    (
+        "eyes-open",
+        include_bytes!("../assets/bear-girl/creature/eyes-open.png"),
+    ),
+    (
+        "eyes-closed",
+        include_bytes!("../assets/bear-girl/creature/eyes-closed.png"),
+    ),
+    (
+        "torso",
+        include_bytes!("../assets/bear-girl/creature/torso.png"),
+    ),
+    (
+        "left-hand",
+        include_bytes!("../assets/bear-girl/creature/left-hand.png"),
+    ),
+    (
+        "right-hand",
+        include_bytes!("../assets/bear-girl/creature/right-hand.png"),
+    ),
+    (
+        "left-leg",
+        include_bytes!("../assets/bear-girl/creature/left-leg.png"),
+    ),
+    (
+        "right-leg",
+        include_bytes!("../assets/bear-girl/creature/right-leg.png"),
+    ),
+    (
+        "left-foot",
+        include_bytes!("../assets/bear-girl/creature/left-foot.png"),
+    ),
+    (
+        "right-foot",
+        include_bytes!("../assets/bear-girl/creature/right-foot.png"),
+    ),
+];
+
+fn from_path(path: &Path, id: &str) -> Result<Pack, Fault> {
+    let file = File::open(path).map_err(|error| {
+        Fault::new(
+            "MAKO-PACK-0001",
+            format!("The chibi archive could not be read: {error}"),
+        )
+    })?;
+    let meta = file.metadata().map_err(|error| {
+        Fault::new(
+            "MAKO-PACK-0001",
+            format!("The chibi archive could not be read: {error}"),
+        )
+    })?;
+    if meta.len() > MAX_TOTAL {
+        return Err(Fault::new(
+            "MAKO-PACK-0001",
+            "The chibi archive could not be read: it is too large",
+        ));
+    }
+    from_reader(id, file)
+}
+
+#[cfg(test)]
+impl Pack {
+    fn from_bytes(id: &str, bytes: &[u8]) -> Result<Self, Fault> {
+        from_reader(id, Cursor::new(bytes))
+    }
+}
+
+fn from_reader<R: Read + Seek>(id: &str, reader: R) -> Result<Pack, Fault> {
+    let raw = read_zip(reader)?;
+    let Some(heart) = raw.heart else {
+        return Err(Fault::new(
+            "MAKO-PACK-0002",
+            "The chibi archive has no name in heart",
+        ));
+    };
+    let body = raw
+        .body
+        .unwrap_or_else(|| include_str!("../assets/bear-girl/body").to_string());
+    let anima = raw
+        .anima
+        .unwrap_or_else(|| include_str!("../assets/bear-girl/anima").to_string());
+    let mut images = HashMap::new();
+    for (name, bytes) in raw.images {
+        images.insert(
+            name.clone(),
+            crop(decode(&bytes).map_err(|error| {
+                Fault::new(
+                    "MAKO-PACK-0003",
+                    format!("A chibi picture is not a PNG: {name}: {error}"),
+                )
+            })?)?,
+        );
+    }
+    assemble(id, &heart, &body, &anima, images)
+}
+
+fn heart_name(path: &Path) -> Result<String, Fault> {
+    let pack = from_path(path, "listed")?;
+    Ok(pack.name)
+}
+
+fn read_zip<R: Read + Seek>(reader: R) -> Result<Raw, Fault> {
+    let mut archive = ZipArchive::new(reader).map_err(|error| {
+        Fault::new(
+            "MAKO-PACK-0001",
+            format!("The chibi archive could not be read: {error}"),
+        )
+    })?;
+    let mut raw = Raw {
+        heart: None,
+        body: None,
+        anima: None,
+        images: HashMap::new(),
+    };
+    let mut total = 0_u64;
+    for index in 0..archive.len() {
+        let mut file = archive.by_index(index).map_err(|error| {
+            Fault::new(
+                "MAKO-PACK-0001",
+                format!("The chibi archive could not be read: {error}"),
+            )
+        })?;
+        let name = file.name().replace('\\', "/");
+        if name.ends_with('/') || name.split('/').any(|part| part == "..") {
+            continue;
+        }
+        let mut buf = Vec::new();
+        file.by_ref()
+            .take(MAX_FILE + 1)
+            .read_to_end(&mut buf)
+            .map_err(|error| {
+                Fault::new(
+                    "MAKO-PACK-0001",
+                    format!("The chibi archive could not be read: {error}"),
+                )
+            })?;
+        if buf.len() as u64 > MAX_FILE {
+            return Err(Fault::new(
+                "MAKO-PACK-0001",
+                "The chibi archive could not be read: a file is too large",
+            ));
+        }
+        total += buf.len() as u64;
+        if total > MAX_TOTAL {
+            return Err(Fault::new(
+                "MAKO-PACK-0001",
+                "The chibi archive could not be read: it is too large",
+            ));
+        }
+        match name.as_str() {
+            "heart" => raw.heart = Some(utf8_text(&buf)?),
+            "body" => raw.body = Some(utf8_text(&buf)?),
+            "anima" => raw.anima = Some(utf8_text(&buf)?),
+            other => {
+                if let Some((folder, stem)) = picture_name(other) {
+                    if folder == "creature" || !raw.images.contains_key(&stem) {
+                        raw.images.insert(stem, buf);
+                    }
+                }
+            }
+        }
+    }
+    Ok(raw)
+}
+
+fn utf8_text(bytes: &[u8]) -> Result<String, Fault> {
+    String::from_utf8(bytes.to_vec()).map_err(|_| {
+        Fault::new(
+            "MAKO-PACK-0001",
+            "The chibi archive could not be read: a text file is not UTF-8",
+        )
+    })
+}
+
+fn picture_name(path: &str) -> Option<(String, String)> {
+    let mut parts = path
+        .split('/')
+        .filter(|part| !part.is_empty() && *part != ".");
+    let folder = parts.next()?;
+    let file = parts.next()?;
+    if parts.next().is_some() || (folder != "creature" && folder != "pocket") {
+        return None;
+    }
+    let stem = file.strip_suffix(".png")?;
+    if stem.is_empty() || stem.contains(' ') {
+        return None;
+    }
+    Some((folder.to_string(), stem.to_string()))
+}
+
+fn assemble(
+    id: &str,
+    heart: &str,
+    body: &str,
+    anima: &str,
+    images: HashMap<String, Sprite>,
+) -> Result<Pack, Fault> {
+    let name = parse_heart(heart)?;
+    let parsed = parse_body(body)?;
+    let anims = parse_anima(anima)?;
+    let mut names = HashMap::new();
+    for (index, bone) in parsed.bones.iter().enumerate() {
+        names.insert(bone.name.clone(), index);
+    }
+    Ok(Pack {
+        id: id.to_string(),
+        name,
+        canvas_w: parsed.canvas_w,
+        canvas_h: parsed.canvas_h,
+        feet_x: parsed.feet_x,
+        feet_y: parsed.feet_y,
+        bones: parsed.bones,
+        images,
+        anims,
+        names,
+    })
+}
+
+fn parse_heart(text: &str) -> Result<String, Fault> {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim() == "name" {
+            let name = value.trim();
+            if !name.is_empty() {
+                return Ok(name.to_string());
+            }
+        }
+    }
+    Err(Fault::new(
+        "MAKO-PACK-0002",
+        "The chibi archive has no name in heart",
+    ))
+}
+
+struct ParsedBody {
+    canvas_w: f32,
+    canvas_h: f32,
+    feet_x: f32,
+    feet_y: f32,
+    bones: Vec<Bone>,
+}
+
+struct Draft {
+    name: String,
+    image: String,
+    parent: String,
+    x: f32,
+    y: f32,
+    pivot_x: f32,
+    pivot_y: f32,
+    z: i32,
+}
+
+fn parse_body(text: &str) -> Result<ParsedBody, Fault> {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let mut canvas = None;
+    let mut feet = None;
+    let mut drafts = Vec::new();
+    for (number, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let token: Vec<&str> = line.split_whitespace().collect();
+        match token.first().copied() {
+            Some("canvas") if token.len() == 3 => {
+                let width = number_at(&token, 1, number, "MAKO-PACK-0004")?;
+                let height = number_at(&token, 2, number, "MAKO-PACK-0004")?;
+                if width <= 0.0 || height <= 0.0 || canvas.is_some() {
+                    return Err(body_error(number, "canvas"));
+                }
+                canvas = Some((width, height));
+            }
+            Some("feet") if token.len() == 3 => {
+                if feet.is_some() {
+                    return Err(body_error(number, "feet"));
+                }
+                feet = Some((
+                    number_at(&token, 1, number, "MAKO-PACK-0004")?,
+                    number_at(&token, 2, number, "MAKO-PACK-0004")?,
+                ));
+            }
+            Some("bone") if token.len() == 9 => {
+                drafts.push(Draft {
+                    name: token[1].to_string(),
+                    image: token[2].to_string(),
+                    parent: token[3].to_string(),
+                    x: number_at(&token, 4, number, "MAKO-PACK-0004")?,
+                    y: number_at(&token, 5, number, "MAKO-PACK-0004")?,
+                    pivot_x: number_at(&token, 6, number, "MAKO-PACK-0004")?,
+                    pivot_y: number_at(&token, 7, number, "MAKO-PACK-0004")?,
+                    z: token[8]
+                        .parse::<i32>()
+                        .map_err(|_| body_error(number, "z"))?,
+                });
+            }
+            _ => return Err(body_error(number, line)),
+        }
+    }
+    let Some((canvas_w, canvas_h)) = canvas else {
+        return Err(Fault::new(
+            "MAKO-PACK-0004",
+            "The chibi skeleton could not be read: canvas is missing",
+        ));
+    };
+    if drafts.is_empty() {
+        return Err(Fault::new(
+            "MAKO-PACK-0004",
+            "The chibi skeleton could not be read: it has no bones",
+        ));
+    }
+    let (feet_x, feet_y) = feet.unwrap_or((canvas_w * 0.5, canvas_h - 1.0));
+    let bones = link_bones(drafts)?;
+    Ok(ParsedBody {
+        canvas_w,
+        canvas_h,
+        feet_x,
+        feet_y,
+        bones,
+    })
+}
+
+fn link_bones(drafts: Vec<Draft>) -> Result<Vec<Bone>, Fault> {
+    let mut index = HashMap::new();
+    for (i, draft) in drafts.iter().enumerate() {
+        if index.insert(draft.name.clone(), i).is_some() {
+            return Err(Fault::new(
+                "MAKO-PACK-0004",
+                format!(
+                    "The chibi skeleton could not be read: {} is repeated",
+                    draft.name
+                ),
+            ));
+        }
+    }
+    let mut bones = Vec::new();
+    for draft in &drafts {
+        let parent = if draft.parent == "-" {
+            None
+        } else {
+            let Some(&parent) = index.get(&draft.parent) else {
+                return Err(Fault::new(
+                    "MAKO-PACK-0004",
+                    format!(
+                        "The chibi skeleton could not be read: {} has no parent {}",
+                        draft.name, draft.parent
+                    ),
+                ));
+            };
+            Some(parent)
+        };
+        bones.push(Bone {
+            name: draft.name.clone(),
+            image: if draft.image == "-" {
+                String::new()
+            } else {
+                draft.image.clone()
+            },
+            parent,
+            x: draft.x,
+            y: draft.y,
+            pivot_x: draft.pivot_x,
+            pivot_y: draft.pivot_y,
+            z: draft.z,
+        });
+    }
+    for start in 0..bones.len() {
+        let mut seen = vec![false; bones.len()];
+        let mut cursor = Some(start);
+        while let Some(current) = cursor {
+            if seen[current] {
+                return Err(Fault::new(
+                    "MAKO-PACK-0004",
+                    "The chibi skeleton could not be read: the bones loop",
+                ));
+            }
+            seen[current] = true;
+            cursor = bones[current].parent;
+        }
+    }
+    Ok(bones)
+}
+
+fn parse_anima(text: &str) -> Result<Vec<Anim>, Fault> {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let mut anims = Vec::new();
+    let mut current: Option<Anim> = None;
+    for (number, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let token: Vec<&str> = line.split_whitespace().collect();
+        match token.first().copied() {
+            Some("anim") if token.len() == 3 => {
+                if let Some(anim) = current.take() {
+                    anims.push(anim);
+                }
+                current = Some(Anim {
+                    name: token[1].to_string(),
+                    length: number_at(&token, 2, number, "MAKO-PACK-0005")?,
+                    rot: Vec::new(),
+                    image: Vec::new(),
+                    bob: Vec::new(),
+                });
+            }
+            Some("rot") if token.len() >= 4 && token.len().is_multiple_of(2) => {
+                let anim = current.as_mut().ok_or_else(|| anima_error(number, "rot"))?;
+                anim.rot.push(Track {
+                    bone: token[1].to_string(),
+                    samples: pairs_f32(&token, number)?,
+                });
+            }
+            Some("image") if token.len() >= 4 && token.len().is_multiple_of(2) => {
+                let anim = current
+                    .as_mut()
+                    .ok_or_else(|| anima_error(number, "image"))?;
+                let mut samples = Vec::new();
+                let mut index = 2;
+                while index < token.len() {
+                    samples.push(Sample {
+                        t: number_token(token[index], number, "MAKO-PACK-0005")?,
+                        value: token[index + 1].to_string(),
+                    });
+                    index += 2;
+                }
+                anim.image.push(ImageTrack {
+                    bone: token[1].to_string(),
+                    samples,
+                });
+            }
+            Some("bob") if token.len() >= 3 && !token.len().is_multiple_of(2) => {
+                let anim = current.as_mut().ok_or_else(|| anima_error(number, "bob"))?;
+                anim.bob = pairs_f32_bob(&token, number)?;
+            }
+            _ => return Err(anima_error(number, line)),
+        }
+    }
+    if let Some(anim) = current {
+        anims.push(anim);
+    }
+    if anims.is_empty() {
+        return Err(Fault::new(
+            "MAKO-PACK-0005",
+            "The chibi animations could not be read: the file is empty",
+        ));
+    }
+    Ok(anims)
+}
+
+fn pairs_f32(token: &[&str], number: usize) -> Result<Vec<Sample<f32>>, Fault> {
+    let mut samples = Vec::new();
+    let mut index = 2;
+    while index < token.len() {
+        samples.push(Sample {
+            t: number_token(token[index], number, "MAKO-PACK-0005")?,
+            value: number_token(token[index + 1], number, "MAKO-PACK-0005")?,
+        });
+        index += 2;
+    }
+    Ok(samples)
+}
+
+fn pairs_f32_bob(token: &[&str], number: usize) -> Result<Vec<Sample<f32>>, Fault> {
+    let mut samples = Vec::new();
+    let mut index = 1;
+    while index < token.len() {
+        samples.push(Sample {
+            t: number_token(token[index], number, "MAKO-PACK-0005")?,
+            value: number_token(token[index + 1], number, "MAKO-PACK-0005")?,
+        });
+        index += 2;
+    }
+    Ok(samples)
+}
+
+fn number_at(token: &[&str], index: usize, line: usize, code: &'static str) -> Result<f32, Fault> {
+    number_token(token[index], line, code)
+}
+
+fn number_token(token: &str, line: usize, code: &'static str) -> Result<f32, Fault> {
+    let value = token
+        .parse::<f32>()
+        .map_err(|_| Fault::new(code, format!("line {}: {token}", line + 1)))?;
+    if !value.is_finite() {
+        return Err(Fault::new(code, format!("line {}: {token}", line + 1)));
+    }
+    Ok(value)
+}
+
+fn body_error(line: usize, text: &str) -> Fault {
+    Fault::new(
+        "MAKO-PACK-0004",
+        format!(
+            "The chibi skeleton could not be read: line {}: {text}",
+            line + 1
+        ),
+    )
+}
+
+fn anima_error(line: usize, text: &str) -> Fault {
+    Fault::new(
+        "MAKO-PACK-0005",
+        format!(
+            "The chibi animations could not be read: line {}: {text}",
+            line + 1
+        ),
+    )
+}
+
+fn decode(bytes: &[u8]) -> Result<Pixmap, Fault> {
+    let decoder = png::Decoder::new(Cursor::new(bytes));
+    let mut reader = decoder
+        .read_info()
+        .map_err(|_| Fault::new("MAKO-PACK-0003", "A chibi picture is not a PNG"))?;
+    let mut buf = vec![0; reader.output_buffer_size()];
+    let info = reader
+        .next_frame(&mut buf)
+        .map_err(|_| Fault::new("MAKO-PACK-0003", "A chibi picture is not a PNG"))?;
+    if info.bit_depth != png::BitDepth::Eight || info.color_type != png::ColorType::Rgba {
+        return Err(Fault::new("MAKO-PACK-0003", "A chibi picture is not a PNG"));
+    }
+    let mut pixmap = Pixmap::new(info.width, info.height)
+        .ok_or_else(|| Fault::new("MAKO-PACK-0003", "A chibi picture is not a PNG"))?;
+    let data = &buf[..info.buffer_size()];
+    let (src_chunks, _) = data.as_chunks::<4>();
+    for (src, dst) in src_chunks.iter().zip(pixmap.pixels_mut()) {
+        *dst = PremultipliedColorU8::from_rgba(src[0], src[1], src[2], src[3])
+            .unwrap_or(PremultipliedColorU8::from_rgba(0, 0, 0, 0).unwrap());
+    }
+    Ok(pixmap)
+}
+
+fn crop(pixmap: Pixmap) -> Result<Sprite, Fault> {
+    let width = pixmap.width();
+    let height = pixmap.height();
+    let pixels = pixmap.pixels();
+    let mut min_x = width;
+    let mut min_y = height;
+    let mut max_x = 0;
+    let mut max_y = 0;
+    let mut any = false;
+    for y in 0..height {
+        for x in 0..width {
+            if pixels[(y * width + x) as usize].alpha() == 0 {
+                continue;
+            }
+            any = true;
+            min_x = min_x.min(x);
+            min_y = min_y.min(y);
+            max_x = max_x.max(x);
+            max_y = max_y.max(y);
+        }
+    }
+    if !any {
+        let image = Pixmap::new(1, 1)
+            .ok_or_else(|| Fault::new("MAKO-PACK-0003", "A chibi picture is not a PNG"))?;
+        return Ok(Sprite {
+            image: Arc::new(image),
+            x: 0.0,
+            y: 0.0,
+            blank: true,
+        });
+    }
+    let piece_w = max_x - min_x + 1;
+    let piece_h = max_y - min_y + 1;
+    let mut image = Pixmap::new(piece_w, piece_h)
+        .ok_or_else(|| Fault::new("MAKO-PACK-0003", "A chibi picture is not a PNG"))?;
+    for y in 0..piece_h {
+        for x in 0..piece_w {
+            image.pixels_mut()[(y * piece_w + x) as usize] =
+                pixels[((min_y + y) * width + min_x + x) as usize];
+        }
+    }
+    Ok(Sprite {
+        image: Arc::new(image),
+        x: min_x as f32,
+        y: min_y as f32,
+        blank: false,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use zip::write::SimpleFileOptions;
+    use zip::ZipWriter;
+
+    fn png() -> Vec<u8> {
+        let mut out = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut out, 2, 2);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer
+                .write_image_data(&[
+                    255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+                ])
+                .unwrap();
+        }
+        out
+    }
+
+    fn zip(files: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut cursor = Cursor::new(Vec::new());
+        {
+            let mut writer = ZipWriter::new(&mut cursor);
+            let options = SimpleFileOptions::default();
+            for (name, bytes) in files {
+                writer.start_file((*name).to_string(), options).unwrap();
+                writer.write_all(bytes).unwrap();
+            }
+            writer.finish().unwrap();
+        }
+        cursor.into_inner()
+    }
+
+    #[test]
+    fn missing_skeleton_uses_bear_girl_and_keeps_the_name() {
+        let bytes = zip(&[("heart", b"name = kit\n"), ("creature/mark.png", &png())]);
+        let pack = Pack::from_bytes("kit", &bytes).unwrap();
+        assert_eq!(pack.name, "kit");
+        assert_eq!(pack.bones.len(), Pack::builtin().bones.len());
+        assert!(pack.bones.iter().any(|bone| bone.name == "left-hand"));
+        let early = pack.pose("walk", 0.0);
+        let late = pack.pose("walk", 0.35);
+        let leg = pack.names["left-leg"];
+        assert!((early.placed[leg].rot - late.placed[leg].rot).abs() > 10.0);
+    }
+
+    #[test]
+    fn missing_animations_use_bear_girl() {
+        let body = b"canvas 10 10\nfeet 5 9\nbone torso torso - 5 5 5 5 1\n";
+        let bytes = zip(&[("heart", b"name = kit\n"), ("body", body)]);
+        let pack = Pack::from_bytes("kit", &bytes).unwrap();
+        assert_eq!(pack.bones.len(), 1);
+        assert!(pack.anims.iter().any(|anim| anim.name == "walk"));
+    }
+
+    #[test]
+    fn missing_heart_is_rejected() {
+        let Err(error) = Pack::from_bytes("x", &zip(&[])) else {
+            panic!("expected a missing heart");
+        };
+        assert_eq!(error.code, "MAKO-PACK-0002");
+    }
+
+    #[test]
+    fn broken_skeleton_is_rejected() {
+        let bytes = zip(&[("heart", b"name = kit\n"), ("body", b"nope\n")]);
+        let Err(error) = Pack::from_bytes("kit", &bytes) else {
+            panic!("expected a broken skeleton");
+        };
+        assert_eq!(error.code, "MAKO-PACK-0004");
+    }
+
+    #[test]
+    fn blink_swaps_the_open_eyes() {
+        let pack = Pack::builtin();
+        let open = pack.pose("idle", 0.0);
+        let shut = pack.pose("idle", 0.08);
+        let eyes = pack.names["eyes"];
+        assert_eq!(open.image[eyes], "eyes-open");
+        assert_eq!(shut.image[eyes], "eyes-closed");
+    }
+}

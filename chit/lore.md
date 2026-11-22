@@ -4,6 +4,8 @@
 
 - On a Wayland session the process must not open an X11 display. Falling back to `XWayland` hides a broken native backend.
 - On an X11 session the process must not connect to a Wayland socket.
+- A chibi zip without `body` uses bear girl's skeleton, and one without `anima` uses bear girl's animations. A pack may replace only the drawings.
+- A chibi zip without a `heart` name is ignored. The menu cannot list a pack that has no name.
 
 ## External Compatibility Constraints
 
