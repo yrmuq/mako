@@ -1,0 +1,4 @@
+The AppImage bundles the mako binary, its language catalogs and DejaVu Sans
+for the menu. DejaVu's license is assets/DejaVu-LICENSE.txt.
+
+Wayland and X11 libraries are not bundled. The host provides them.

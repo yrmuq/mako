@@ -1,0 +1,36 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mako-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.event.head_commit.message == 'Merge branch ''dev'''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: AppImage tools
+        run: sudo apt-get update && sudo apt-get install -y file curl
+      - name: Build the stable AppImage
+        env:
+          MAKO_DEV_DRAFT: "false"
+        run: |
+          sh packaging/check.sh
+          sh packaging/appimage/build.sh
+          sh packaging/appimage/check.sh
+      - name: Publish the stable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: sh packaging/release.sh
