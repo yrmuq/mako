@@ -10,3 +10,5 @@
 - KWin Wayland placement uses `zwlr_layer_shell_v1`. A normal toplevel is stacked and focused like an application window, so the pet cannot use one.
 - The dev AppImage must not embed an update source. Update metadata belongs only on a stable release.
 - The dev draft stays unpublished, so GitHub's get-release-by-tag endpoint does not return it. Update that release by listing releases and using its id.
+- KWin drops the Wayland client if a layer-shell buffer does not match the size from the latest configure and the output scale. Size the buffer from that pair.
+- KWin drops the Wayland client if the layer surface moves while a pointer button is held. Keep one anchored surface, move the drawing inside it, and limit pointer input to the pet.

@@ -99,14 +99,6 @@ impl Pet {
         }
     }
 
-    pub fn swing(&self) -> f32 {
-        if self.activity == Activity::Walk {
-            self.phase.sin()
-        } else {
-            0.0
-        }
-    }
-
     pub fn tilt(&self) -> f32 {
         match self.activity {
             Activity::Fall => (self.vx / 800.0).clamp(-0.35, 0.35),

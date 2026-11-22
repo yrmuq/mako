@@ -87,6 +87,7 @@ pub fn run() -> Result<(), Fault> {
 }
 
 fn present(conn: &impl Connection, window: u32, gc: u32, app: &mut App) -> Result<(), Fault> {
+    app.prepare();
     let frame = app.render();
     conn.configure_window(
         window,

@@ -1,7 +1,7 @@
 // Copyright (C) 2026 yrmuq
 // SPDX-License-Identifier: GPL-3.0-only
 
-use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState};
+use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState, Region};
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
 use smithay_client_toolkit::seat::pointer::{PointerEvent, PointerEventKind, PointerHandler};
@@ -53,12 +53,19 @@ pub fn run() -> Result<(), Fault> {
         .map_err(|_| Fault::new("MAKO-WL-0001", "The compositor did not offer wl_shm"))?;
     let surface = compositor.create_surface(&qh);
     let layer = layer_shell.create_layer_surface(&qh, surface, Layer::Top, Some("mako"), None);
-    layer.set_anchor(Anchor::TOP | Anchor::LEFT);
+    // One anchored surface. Moving it under a held pointer makes KWin drop the connection.
+    layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
     layer.set_exclusive_zone(-1);
-    layer.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
-    layer.set_size(200, 270);
+    layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+    layer.set_size(0, 0);
+    let region = Region::new(&compositor)
+        .map_err(|_| Fault::new("MAKO-WL-0003", "Could not limit pointer input to the pet"))?;
+    layer
+        .wl_surface()
+        .set_input_region(Some(region.wl_region()));
     layer.commit();
-    let pool = SlotPool::new(200 * 270 * 4, &shm).map_err(|error| {
+    drop(region);
+    let pool = SlotPool::new(1920 * 1080 * 4, &shm).map_err(|error| {
         Fault::new(
             "MAKO-WL-0003",
             format!("Could not create a shared buffer: {error}"),
@@ -71,11 +78,13 @@ pub fn run() -> Result<(), Fault> {
         shm,
         pool,
         layer,
+        compositor,
         app: App::new(startup_room(1920.0, 1080.0)),
         pointer: None,
         configured: false,
         last_time: 0,
         output_ready: false,
+        screen: None,
     };
     while !state.app.exit {
         queue.blocking_dispatch(&mut state).map_err(|error| {
@@ -95,11 +104,13 @@ struct Host {
     shm: Shm,
     pool: SlotPool,
     layer: LayerSurface,
+    compositor: CompositorState,
     app: App,
     pointer: Option<wl_pointer::WlPointer>,
     configured: bool,
     last_time: u32,
     output_ready: bool,
+    screen: Option<(u32, u32)>,
 }
 
 impl Host {
@@ -114,37 +125,68 @@ impl Host {
             }
         }
         if let Some((width, height, scale)) = found {
-            self.app.set_room(startup_room(width, height));
             self.app.scale = scale;
             self.output_ready = true;
+            if self.screen.is_none() {
+                self.note_screen(width.round() as u32, height.round() as u32);
+            }
         }
     }
 
+    fn note_screen(&mut self, width: u32, height: u32) {
+        if width == 0 || height == 0 || self.screen == Some((width, height)) {
+            return;
+        }
+        self.screen = Some((width, height));
+        self.app.set_room(startup_room(width as f32, height as f32));
+    }
+
     fn present(&mut self, qh: &QueueHandle<Self>) {
-        self.layer.set_anchor(Anchor::TOP | Anchor::LEFT);
-        self.layer
-            .set_margin(self.app.origin_y, 0, 0, self.app.origin_x);
-        self.layer.set_size(self.app.logical_w, self.app.logical_h);
+        let Some((screen_w, screen_h)) = self.screen else {
+            let surface = self.layer.wl_surface();
+            surface.frame(qh, surface.clone());
+            self.layer.commit();
+            return;
+        };
+        // The surface stays put. A margin change while the button is held closes the socket.
+        self.app.prepare();
         let frame = self.app.render();
-        let stride = frame.width as i32 * 4;
+        let scale = self.app.scale.max(1);
+        let buf_w = screen_w * scale;
+        let buf_h = screen_h * scale;
+        let stride = buf_w as i32 * 4;
         let (buffer, canvas) = self
             .pool
-            .create_buffer(
-                frame.width as i32,
-                frame.height as i32,
-                stride,
-                wl_shm::Format::Argb8888,
-            )
+            .create_buffer(buf_w as i32, buf_h as i32, stride, wl_shm::Format::Argb8888)
             .expect("MAKO-WL-0003: Could not allocate a frame");
-        canvas.copy_from_slice(&frame.bgra);
+        canvas.fill(0);
+        blit(
+            canvas,
+            buf_w,
+            buf_h,
+            &frame.bgra,
+            frame.width,
+            frame.height,
+            self.app.origin_x * scale as i32,
+            self.app.origin_y * scale as i32,
+        );
         let surface = self.layer.wl_surface();
-        surface.set_buffer_scale(self.app.scale as i32);
-        surface.damage_buffer(0, 0, frame.width as i32, frame.height as i32);
+        let region = Region::new(&self.compositor)
+            .expect("MAKO-WL-0003: Could not limit pointer input to the pet");
+        let input_w = self.app.logical_w as i32;
+        let input_h = self.app.logical_h as i32;
+        if input_w > 0 && input_h > 0 {
+            region.add(self.app.origin_x, self.app.origin_y, input_w, input_h);
+        }
+        surface.set_input_region(Some(region.wl_region()));
+        surface.set_buffer_scale(scale as i32);
+        surface.damage_buffer(0, 0, buf_w as i32, buf_h as i32);
         surface.frame(qh, surface.clone());
         buffer
             .attach_to(surface)
             .expect("MAKO-WL-0003: Could not attach a frame");
         self.layer.commit();
+        drop(region);
         self.app.note_committed();
     }
 }
@@ -153,14 +195,11 @@ impl CompositorHandler for Host {
     fn scale_factor_changed(
         &mut self,
         _: &Connection,
-        qh: &QueueHandle<Self>,
+        _: &QueueHandle<Self>,
         _: &wl_surface::WlSurface,
         scale: i32,
     ) {
         self.app.scale = scale.max(1) as u32;
-        if self.configured {
-            self.present(qh);
-        }
     }
 
     fn transform_changed(
@@ -213,18 +252,12 @@ impl OutputHandler for Host {
         &mut self.output_state
     }
 
-    fn new_output(&mut self, _: &Connection, qh: &QueueHandle<Self>, _: wl_output::WlOutput) {
+    fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {
         self.refresh_output();
-        if self.configured {
-            self.present(qh);
-        }
     }
 
-    fn update_output(&mut self, _: &Connection, qh: &QueueHandle<Self>, _: wl_output::WlOutput) {
+    fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {
         self.refresh_output();
-        if self.configured {
-            self.present(qh);
-        }
     }
 
     fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
@@ -240,12 +273,14 @@ impl LayerShellHandler for Host {
         _: &Connection,
         qh: &QueueHandle<Self>,
         _: &LayerSurface,
-        _: LayerSurfaceConfigure,
+        configure: LayerSurfaceConfigure,
         _: u32,
     ) {
         if !self.output_ready {
             self.refresh_output();
         }
+        let (width, height) = configure.new_size;
+        self.note_screen(width, height);
         let first = !self.configured;
         self.configured = true;
         if first {
@@ -294,7 +329,7 @@ impl PointerHandler for Host {
     fn pointer_frame(
         &mut self,
         _: &Connection,
-        qh: &QueueHandle<Self>,
+        _: &QueueHandle<Self>,
         _: &wl_pointer::WlPointer,
         events: &[PointerEvent],
     ) {
@@ -302,7 +337,9 @@ impl PointerHandler for Host {
             if &event.surface != self.layer.wl_surface() {
                 continue;
             }
-            let (x, y) = (event.position.0 as f32, event.position.1 as f32);
+            let (x, y) = self
+                .app
+                .pointer_from_screen(event.position.0 as f32, event.position.1 as f32);
             let kind = match event.kind {
                 PointerEventKind::Motion { .. } => Some(Pointer::Motion),
                 PointerEventKind::Press { button, .. } if button == BTN_LEFT => {
@@ -318,7 +355,6 @@ impl PointerHandler for Host {
             };
             if let Some(kind) = kind {
                 self.app.pointer(x, y, kind);
-                self.present(qh);
             }
         }
     }
@@ -343,4 +379,61 @@ impl ProvidesRegistryState for Host {
         &mut self.registry_state
     }
     registry_handlers![OutputState, SeatState];
+}
+
+#[allow(clippy::too_many_arguments)]
+fn blit(
+    dst: &mut [u8],
+    dst_w: u32,
+    dst_h: u32,
+    src: &[u8],
+    src_w: u32,
+    src_h: u32,
+    x: i32,
+    y: i32,
+) {
+    if src_w == 0 || src_h == 0 || dst_w == 0 || dst_h == 0 {
+        return;
+    }
+    let dst_stride = dst_w as usize * 4;
+    let src_stride = src_w as usize * 4;
+    for row in 0..src_h as i32 {
+        let dy = y + row;
+        if dy < 0 || dy >= dst_h as i32 {
+            continue;
+        }
+        let mut src_x = 0i32;
+        let mut dst_x = x;
+        let mut len = src_w as i32;
+        if dst_x < 0 {
+            src_x -= dst_x;
+            len += dst_x;
+            dst_x = 0;
+        }
+        if dst_x + len > dst_w as i32 {
+            len = dst_w as i32 - dst_x;
+        }
+        if len <= 0 {
+            continue;
+        }
+        let dst_off = dy as usize * dst_stride + dst_x as usize * 4;
+        let src_off = row as usize * src_stride + src_x as usize * 4;
+        let bytes = len as usize * 4;
+        dst[dst_off..dst_off + bytes].copy_from_slice(&src[src_off..src_off + bytes]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::blit;
+
+    #[test]
+    fn blit_clips_a_frame_to_the_screen() {
+        let mut dst = vec![0u8; 8 * 4 * 4];
+        let src = vec![9u8; 4 * 3 * 4];
+        blit(&mut dst, 8, 4, &src, 4, 3, 6, -1);
+        assert_eq!(dst[6 * 4], 9);
+        assert_eq!(dst[5 * 4], 0);
+        assert_eq!(dst[(2 * 8 + 6) * 4], 0);
+    }
 }
