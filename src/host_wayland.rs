@@ -11,7 +11,7 @@ use smithay_client_toolkit::shell::wlr_layer::{
     LayerSurfaceConfigure,
 };
 use smithay_client_toolkit::shell::WaylandSurface;
-use smithay_client_toolkit::shm::slot::SlotPool;
+use smithay_client_toolkit::shm::slot::{Buffer, SlotPool};
 use smithay_client_toolkit::shm::{Shm, ShmHandler};
 use smithay_client_toolkit::{
     delegate_compositor, delegate_layer, delegate_output, delegate_pointer, delegate_registry,
@@ -77,6 +77,10 @@ pub fn run() -> Result<(), Fault> {
         output_state: OutputState::new(&globals, &qh),
         shm,
         pool,
+        frames: Vec::new(),
+        frame_px: None,
+        shown: None,
+        needs_full_damage: true,
         layer,
         compositor,
         app: App::new(startup_room(1920.0, 1080.0)),
@@ -103,6 +107,10 @@ struct Host {
     output_state: OutputState,
     shm: Shm,
     pool: SlotPool,
+    frames: Vec<Buffer>,
+    frame_px: Option<(i32, i32)>,
+    shown: Option<PxRect>,
+    needs_full_damage: bool,
     layer: LayerSurface,
     compositor: CompositorState,
     app: App,
@@ -148,28 +156,51 @@ impl Host {
             self.layer.commit();
             return;
         };
-        // The surface stays put. A margin change while the button is held closes the socket.
+        let scale = self.app.scale.max(1);
+        let buf_w = (screen_w as i32).saturating_mul(scale as i32);
+        let buf_h = (screen_h as i32).saturating_mul(scale as i32);
+        let Some(stride) = buf_w.checked_mul(4) else {
+            let surface = self.layer.wl_surface();
+            surface.frame(qh, surface.clone());
+            self.layer.commit();
+            return;
+        };
+        // A new full-screen wl_buffer every frame makes KWin keep a GPU texture.
+        self.ensure_frames(buf_w, buf_h, stride);
+        let Some(index) = self
+            .frames
+            .iter()
+            .position(|frame| !frame.slot().has_active_buffers())
+        else {
+            let surface = self.layer.wl_surface();
+            surface.frame(qh, surface.clone());
+            self.layer.commit();
+            return;
+        };
         self.app.prepare();
         let frame = self.app.render();
-        let scale = self.app.scale.max(1);
-        let buf_w = screen_w * scale;
-        let buf_h = screen_h * scale;
-        let stride = buf_w as i32 * 4;
-        let (buffer, canvas) = self
-            .pool
-            .create_buffer(buf_w as i32, buf_h as i32, stride, wl_shm::Format::Argb8888)
-            .expect("MAKO-WL-0003: Could not allocate a frame");
-        canvas.fill(0);
-        blit(
-            canvas,
-            buf_w,
-            buf_h,
-            &frame.bgra,
-            frame.width,
-            frame.height,
-            self.app.origin_x * scale as i32,
-            self.app.origin_y * scale as i32,
-        );
+        let next = PxRect {
+            x: self.app.origin_x.saturating_mul(scale as i32),
+            y: self.app.origin_y.saturating_mul(scale as i32),
+            w: frame.width as i32,
+            h: frame.height as i32,
+        };
+        {
+            let canvas = self.frames[index]
+                .canvas(&mut self.pool)
+                .expect("MAKO-WL-0003: Could not draw a frame");
+            canvas.fill(0);
+            blit(
+                canvas,
+                buf_w as u32,
+                buf_h as u32,
+                &frame.bgra,
+                frame.width,
+                frame.height,
+                next.x,
+                next.y,
+            );
+        }
         let surface = self.layer.wl_surface();
         let region = Region::new(&self.compositor)
             .expect("MAKO-WL-0003: Could not limit pointer input to the pet");
@@ -180,14 +211,41 @@ impl Host {
         }
         surface.set_input_region(Some(region.wl_region()));
         surface.set_buffer_scale(scale as i32);
-        surface.damage_buffer(0, 0, buf_w as i32, buf_h as i32);
+        for damage in present_damages(self.needs_full_damage, buf_w, buf_h, self.shown, next) {
+            surface.damage_buffer(damage.x, damage.y, damage.w, damage.h);
+        }
+        self.needs_full_damage = false;
         surface.frame(qh, surface.clone());
-        buffer
+        self.frames[index]
             .attach_to(surface)
             .expect("MAKO-WL-0003: Could not attach a frame");
         self.layer.commit();
         drop(region);
+        self.shown = Some(next);
         self.app.note_committed();
+    }
+
+    fn ensure_frames(&mut self, width: i32, height: i32, stride: i32) {
+        if self.frame_px == Some((width, height)) && self.frames.len() == 2 {
+            return;
+        }
+        self.frames.clear();
+        self.frame_px = Some((width, height));
+        self.shown = None;
+        self.needs_full_damage = true;
+        let bytes = (height as usize).saturating_mul(stride as usize);
+        for _ in 0..2 {
+            let slot = self
+                .pool
+                .new_slot(bytes)
+                .expect("MAKO-WL-0003: Could not allocate a frame");
+            self.pool.raw_data_mut(&slot).fill(0);
+            let buffer = self
+                .pool
+                .create_buffer_in(&slot, width, height, stride, wl_shm::Format::Argb8888)
+                .expect("MAKO-WL-0003: Could not allocate a frame");
+            self.frames.push(buffer);
+        }
     }
 }
 
@@ -381,6 +439,60 @@ impl ProvidesRegistryState for Host {
     registry_handlers![OutputState, SeatState];
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PxRect {
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+}
+
+fn clip_rect(rect: PxRect, buf_w: i32, buf_h: i32) -> Option<PxRect> {
+    if rect.w <= 0 || rect.h <= 0 || buf_w <= 0 || buf_h <= 0 {
+        return None;
+    }
+    let x0 = rect.x.max(0);
+    let y0 = rect.y.max(0);
+    let x1 = rect.x.saturating_add(rect.w).min(buf_w);
+    let y1 = rect.y.saturating_add(rect.h).min(buf_h);
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
+    Some(PxRect {
+        x: x0,
+        y: y0,
+        w: x1 - x0,
+        h: y1 - y0,
+    })
+}
+
+fn present_damages(
+    full: bool,
+    buf_w: i32,
+    buf_h: i32,
+    prev: Option<PxRect>,
+    next: PxRect,
+) -> Vec<PxRect> {
+    if full {
+        return vec![PxRect {
+            x: 0,
+            y: 0,
+            w: buf_w,
+            h: buf_h,
+        }];
+    }
+    let mut areas = Vec::new();
+    if let Some(prev) = prev.and_then(|rect| clip_rect(rect, buf_w, buf_h)) {
+        areas.push(prev);
+    }
+    if let Some(next) = clip_rect(next, buf_w, buf_h) {
+        if !areas.contains(&next) {
+            areas.push(next);
+        }
+    }
+    areas
+}
+
 #[allow(clippy::too_many_arguments)]
 fn blit(
     dst: &mut [u8],
@@ -425,7 +537,7 @@ fn blit(
 
 #[cfg(test)]
 mod tests {
-    use super::blit;
+    use super::{blit, present_damages, PxRect};
 
     #[test]
     fn blit_clips_a_frame_to_the_screen() {
@@ -435,5 +547,64 @@ mod tests {
         assert_eq!(dst[6 * 4], 9);
         assert_eq!(dst[5 * 4], 0);
         assert_eq!(dst[(2 * 8 + 6) * 4], 0);
+    }
+
+    #[test]
+    fn a_moved_pet_damages_only_the_old_and_new_rect() {
+        let prev = PxRect {
+            x: 10,
+            y: 20,
+            w: 30,
+            h: 40,
+        };
+        let next = PxRect {
+            x: 18,
+            y: 20,
+            w: 30,
+            h: 40,
+        };
+        let damages = present_damages(false, 1920, 1080, Some(prev), next);
+        assert_eq!(damages, vec![prev, next]);
+        assert!(damages.iter().all(|rect| rect.w * rect.h < 1920 * 1080));
+    }
+
+    #[test]
+    fn the_first_frame_damages_the_whole_buffer_once() {
+        let next = PxRect {
+            x: 4,
+            y: 6,
+            w: 20,
+            h: 20,
+        };
+        let damages = present_damages(true, 800, 600, None, next);
+        assert_eq!(
+            damages,
+            vec![PxRect {
+                x: 0,
+                y: 0,
+                w: 800,
+                h: 600
+            }]
+        );
+    }
+
+    #[test]
+    fn damage_clips_a_pet_that_hangs_off_the_screen() {
+        let next = PxRect {
+            x: -10,
+            y: 500,
+            w: 40,
+            h: 80,
+        };
+        let damages = present_damages(false, 100, 520, None, next);
+        assert_eq!(
+            damages,
+            vec![PxRect {
+                x: 0,
+                y: 500,
+                w: 30,
+                h: 20
+            }]
+        );
     }
 }
