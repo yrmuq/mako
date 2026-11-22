@@ -420,6 +420,10 @@ const BUILTIN_IMAGES: &[(&str, &[u8])] = &[
         "right-foot",
         include_bytes!("../assets/bear-girl/creature/right-foot.png"),
     ),
+    (
+        "it-1",
+        include_bytes!("../assets/bear-girl/pocket/it-1.png"),
+    ),
 ];
 
 fn from_path(path: &Path, id: &str) -> Result<Pack, Fault> {

@@ -24,6 +24,8 @@ pub enum Motion {
     Walk,
     Fall,
     Drag,
+    Down,
+    Sit,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,6 +75,7 @@ pub struct Scene {
     pub menu_left: bool,
     pub dark: bool,
     pub pet_scale: f32,
+    pub sink: f32,
     pub pose: Vec<f32>,
     pub rows: Vec<Row>,
 }
@@ -285,6 +288,8 @@ fn draw_pet(pixmap: &mut Pixmap, origin_x: f32, scene: &Scene, pack: &Pack, scal
         Motion::Walk => "walk",
         Motion::Fall => "fall",
         Motion::Drag => "drag",
+        Motion::Down => "idle",
+        Motion::Sit => "sit",
         Motion::Idle => "idle",
     };
     let pose = if scene.pose.is_empty() {
@@ -304,12 +309,12 @@ fn draw_pet(pixmap: &mut Pixmap, origin_x: f32, scene: &Scene, pack: &Pack, scal
     let view = Transform::from_scale(fit, fit)
         .post_translate(
             origin_x + FEET_X * pet_scale - pack.feet_x * fit,
-            pet_top + FEET_Y * pet_scale - pack.feet_y * fit + bob,
+            pet_top + FEET_Y * pet_scale - pack.feet_y * fit + bob + scene.sink,
         )
         .post_rotate_at(
             scene.tilt.to_degrees(),
             origin_x + FEET_X * pet_scale,
-            pet_top + FEET_Y * pet_scale + bob,
+            pet_top + FEET_Y * pet_scale + bob + scene.sink,
         )
         .post_scale(scale as f32, scale as f32);
     let mut order: Vec<usize> = (0..pack.bones.len()).collect();
@@ -343,6 +348,44 @@ fn draw_pet(pixmap: &mut Pixmap, origin_x: f32, scene: &Scene, pack: &Pack, scal
             None,
         );
     }
+    if scene.motion == Motion::Sit {
+        draw_laptop(pixmap, origin_x, pet_top, pet_scale, scale, pack);
+    }
+}
+
+fn draw_laptop(
+    pixmap: &mut Pixmap,
+    origin_x: f32,
+    pet_top: f32,
+    pet_scale: f32,
+    scale: u32,
+    pack: &Pack,
+) {
+    let Some(sprite) = pack.sprite("it-1") else {
+        return;
+    };
+    if sprite.blank {
+        return;
+    }
+    let sw = sprite.image.width() as f32;
+    let sh = sprite.image.height() as f32;
+    if sw < 1.0 || sh < 1.0 {
+        return;
+    }
+    let dw = 108.0 * pet_scale;
+    let dh = dw * sh / sw;
+    let x = origin_x + FEET_X * pet_scale - dw * 0.62;
+    let y = pet_top + FEET_Y * pet_scale - dh * 0.88;
+    let px = scale as f32;
+    let local = Transform::from_scale(dw / sw * px, dh / sh * px).post_translate(x * px, y * px);
+    pixmap.draw_pixmap(
+        0,
+        0,
+        sprite.image.as_ref().as_ref(),
+        &PixmapPaint::default(),
+        local,
+        None,
+    );
 }
 
 fn draw_menu(pixmap: &mut Pixmap, scene: &Scene, scale: u32, pet_x: f32) -> Vec<Hit> {
@@ -561,6 +604,7 @@ mod tests {
             menu_left: false,
             dark: false,
             pet_scale: 1.0,
+            sink: 0.0,
             pose: Vec::new(),
             rows: Vec::new(),
         }
@@ -603,6 +647,42 @@ mod tests {
         let opaque = pixels.iter().filter(|pixel| pixel[3] > 16).count();
         assert!(opaque > 800, "{opaque}");
         std::fs::write("/tmp/mako-rag.png", encode(&scene)).expect("preview");
+    }
+
+    #[test]
+    fn sitting_draws_the_separate_laptop() {
+        let pack = Pack::builtin();
+        let idle = render(&still(), &pack, 1);
+        let mut scene = still();
+        scene.motion = Motion::Sit;
+        let sitting = render(&scene, &pack, 1);
+        let count = |frame: &Frame| {
+            let (pixels, _) = frame.bgra.as_chunks::<4>();
+            pixels.iter().filter(|pixel| pixel[3] > 16).count()
+        };
+        assert!(
+            count(&sitting) > count(&idle) + 300,
+            "{} {}",
+            count(&sitting),
+            count(&idle)
+        );
+        std::fs::write("/tmp/mako-sit.png", encode(&scene)).expect("preview");
+        scene.motion = Motion::Down;
+        scene.sink = 70.0;
+        scene.pose = pack
+            .bones
+            .iter()
+            .map(|bone| match bone.name.as_str() {
+                "torso" => 81.0,
+                "head" => 26.0,
+                "left-hand" => -60.0,
+                "right-hand" => 63.0,
+                "left-leg" => 28.0,
+                "right-leg" => -20.0,
+                _ => 0.0,
+            })
+            .collect();
+        std::fs::write("/tmp/mako-down.png", encode(&scene)).expect("preview");
     }
 
     #[test]

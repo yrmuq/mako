@@ -96,7 +96,10 @@ impl App {
     pub fn set_room(&mut self, room: Room) {
         self.screen = screen_of(&room);
         self.fit_room();
-        if !self.dragging && self.pet.activity != Activity::Fall {
+        if !self.dragging
+            && self.pet.activity != Activity::Fall
+            && self.pet.activity != Activity::Down
+        {
             self.pet.y = self.room.floor;
             self.pet.x = self.pet.x.clamp(self.room.left, self.room.right);
         }
@@ -122,6 +125,14 @@ impl App {
                 let ax = ((self.pet.vx - vx) / dt.max(0.001)).clamp(-14000.0, 14000.0);
                 let ay = ((self.pet.vy - vy) / dt.max(0.001)).clamp(-14000.0, 14000.0);
                 self.rag.step(dt, ax, ay, self.pet_scale());
+            } else if self.pet.activity == Activity::Down {
+                self.rag.plant(self.pet.face);
+                // The floor is holding her, so gravity does not stand her back up.
+                self.rag
+                    .step(dt, 0.0, crate::sim::GRAVITY, self.pet_scale());
+            } else if self.rag.is_planted() {
+                self.rag.clear_plant();
+                self.rag.relax(dt);
             } else if self.rag.live {
                 self.rag.relax(dt);
             }
@@ -151,6 +162,7 @@ impl App {
                 }
                 self.dragging = true;
                 self.sync_rag();
+                self.rag.clear_plant();
                 if !self.rag.live {
                     let degrees = self.pack.local_degrees(self.motion_name(), self.pet.phase);
                     self.rag.seed(&degrees);
@@ -212,6 +224,8 @@ impl App {
                 Activity::Walk => Motion::Walk,
                 Activity::Fall => Motion::Fall,
                 Activity::Drag => Motion::Drag,
+                Activity::Down => Motion::Down,
+                Activity::Sit => Motion::Sit,
                 Activity::Idle => Motion::Idle,
             },
             tilt: if self.rag.live { 0.0 } else { self.pet.tilt() },
@@ -220,6 +234,11 @@ impl App {
             menu_left: self.menu_left(),
             dark: self.dark,
             pet_scale: self.pet_scale(),
+            sink: if self.pet.activity == Activity::Down {
+                (self.rag.torso_degrees().abs() / 81.0).min(1.0) * 70.0 * self.pet_scale()
+            } else {
+                0.0
+            },
             pose: if self.rag.live {
                 self.rag.degrees()
             } else {
@@ -271,7 +290,10 @@ impl App {
             RowId::Scale => {
                 self.settings.scale = crate::config::normalize_scale(key).to_string();
                 self.fit_room();
-                if !self.dragging && self.pet.activity != Activity::Fall {
+                if !self.dragging
+                    && self.pet.activity != Activity::Fall
+                    && self.pet.activity != Activity::Down
+                {
                     self.pet.y = self.room.floor;
                     self.pet.x = self.pet.x.clamp(self.room.left, self.room.right);
                 }
@@ -373,6 +395,8 @@ impl App {
             Activity::Walk => "walk",
             Activity::Fall => "fall",
             Activity::Drag => "drag",
+            Activity::Down => "idle",
+            Activity::Sit => "sit",
             Activity::Idle => "idle",
         }
     }
@@ -380,16 +404,16 @@ impl App {
     fn flick(&self) -> (f32, f32) {
         if self.trail.len() < 2 {
             return (
-                self.pet.vx.clamp(-2400.0, 2400.0),
-                self.pet.vy.clamp(-2400.0, 2400.0),
+                (self.pet.vx * 2.0).clamp(-4800.0, 4800.0),
+                (self.pet.vy * 2.0).clamp(-4800.0, 4800.0),
             );
         }
         let (t0, x0, y0) = self.trail[0];
         let (t1, x1, y1) = *self.trail.last().expect("trail");
         let dt = (t1 - t0).max(0.016);
         (
-            ((x1 - x0) / dt).clamp(-2400.0, 2400.0),
-            ((y1 - y0) / dt).clamp(-2400.0, 2400.0),
+            ((x1 - x0) / dt * 2.0).clamp(-4800.0, 4800.0),
+            ((y1 - y0) / dt * 2.0).clamp(-4800.0, 4800.0),
         )
     }
 

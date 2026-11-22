@@ -34,3 +34,14 @@ image eyes 0 eyes-open
 
 anim blink 0.18
 image eyes 0 eyes-open 0.05 eyes-closed 0.13 eyes-open
+
+anim sit 0.55
+rot torso 0 10
+rot head 0 8 0.28 14 0.55 8
+rot left-leg 0 42
+rot right-leg 0 36
+rot left-foot 0 16
+rot right-foot 0 12
+rot left-hand 0 -62 0.14 -44 0.28 -68 0.42 -40 0.55 -62
+rot right-hand 0 54 0.14 36 0.28 60 0.42 32 0.55 54
+image eyes 0 eyes-open

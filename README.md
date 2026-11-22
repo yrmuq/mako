@@ -33,9 +33,11 @@
 
 | Input | Action |
 | --- | --- |
-| Left button | Drag bear girl. Releasing her throws her: she flies that way, then falls. |
+| Left button | Drag bear girl. Releasing her throws her, twice as hard as the flick. A flight ends with her falling flat on her face. |
 | Right button | Open or close the menu. |
 | Menu rows | Choose the chibi, size, language, theme, or quit. |
+
+Sometimes, between walks, she sits on the floor and types. The laptop is a separate item, `pocket/it-1.png`, not part of the body.
 
 The menu language follows `LANGUAGE`, `LC_ALL`, `LC_MESSAGES` and `LANG` until a manual choice is saved. The menu colors follow the KDE color scheme until a manual theme is saved. The onesie itself stays brown. The chosen chibi is saved as `chibi`. The size is `1`, `0.8`, `0.6`, `0.4` or `0.2`, saved as `scale`.
 

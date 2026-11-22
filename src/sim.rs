@@ -9,6 +9,8 @@ pub const FEET_X: f32 = 100.0;
 pub const FEET_Y: f32 = 258.0;
 const IDLE_FOR: f32 = 1.6;
 const WALK_FOR: f32 = 2.8;
+const SIT_FOR: f32 = 7.0;
+const DOWN_FOR: f32 = 2.6;
 const WALK_SPEED: f32 = 78.0;
 pub const GRAVITY: f32 = 2400.0;
 
@@ -18,6 +20,8 @@ pub enum Activity {
     Walk,
     Fall,
     Drag,
+    Down,
+    Sit,
 }
 
 #[derive(Clone, Debug)]
@@ -37,6 +41,8 @@ pub struct Pet {
     pub activity: Activity,
     pub time: f32,
     pub phase: f32,
+    pub airborne: bool,
+    rests: u32,
 }
 
 impl Pet {
@@ -50,6 +56,8 @@ impl Pet {
             activity: Activity::Idle,
             time: 0.0,
             phase: 0.0,
+            airborne: false,
+            rests: 0,
         }
     }
 
@@ -62,6 +70,8 @@ impl Pet {
         match self.activity {
             Activity::Drag => {}
             Activity::Fall => self.fall(room, dt),
+            Activity::Down => self.down(room, dt),
+            Activity::Sit => self.sit(room),
             Activity::Walk => self.walk(room, dt),
             Activity::Idle => {
                 self.vx = 0.0;
@@ -69,7 +79,12 @@ impl Pet {
                 self.y = room.floor;
                 self.x = self.x.clamp(room.left, room.right);
                 if self.time >= IDLE_FOR {
-                    self.start(Activity::Walk);
+                    self.rests += 1;
+                    if self.rests.is_multiple_of(2) {
+                        self.start(Activity::Sit);
+                    } else {
+                        self.start(Activity::Walk);
+                    }
                 }
             }
         }
@@ -88,6 +103,7 @@ impl Pet {
         self.vy = vy;
         let moving = vx.abs() > 40.0 || vy.abs() > 40.0 || self.y < room.floor - 2.0;
         if moving {
+            self.airborne = self.y < room.floor - 14.0;
             self.start(Activity::Fall);
             if self.vx.abs() > 1.0 {
                 self.face = if self.vx >= 0.0 { 1.0 } else { -1.0 };
@@ -116,6 +132,9 @@ impl Pet {
         self.vy += GRAVITY * dt;
         self.x += self.vx * dt;
         self.y += self.vy * dt;
+        if self.y < room.floor - 14.0 {
+            self.airborne = true;
+        }
         if self.x < room.left {
             self.x = room.left;
             self.vx = self.vx.abs();
@@ -127,7 +146,13 @@ impl Pet {
         }
         if self.y >= room.floor {
             self.y = room.floor;
-            if self.vy > 500.0 {
+            if self.airborne && self.vy > 80.0 {
+                // A flight ends on the floor. She does not stand back up.
+                self.vx *= 0.35;
+                self.vy = 0.0;
+                self.airborne = false;
+                self.start(Activity::Down);
+            } else if self.vy > 500.0 {
                 self.vy = -self.vy * 0.28;
                 self.vx *= 0.6;
             } else if self.vx.abs() > 36.0 && self.vy < 160.0 {
@@ -145,6 +170,31 @@ impl Pet {
                 self.vy = 0.0;
                 self.start(Activity::Idle);
             }
+        }
+    }
+
+    fn down(&mut self, room: &Room, dt: f32) {
+        self.y = room.floor;
+        self.vy = 0.0;
+        let friction = 1400.0 * dt;
+        if self.vx.abs() <= friction {
+            self.vx = 0.0;
+        } else {
+            self.vx -= self.vx.signum() * friction;
+        }
+        self.x = self.x.clamp(room.left, room.right);
+        if self.time >= DOWN_FOR {
+            self.start(Activity::Idle);
+        }
+    }
+
+    fn sit(&mut self, room: &Room) {
+        self.vx = 0.0;
+        self.vy = 0.0;
+        self.y = room.floor;
+        self.x = self.x.clamp(room.left, room.right);
+        if self.time >= SIT_FOR {
+            self.start(Activity::Idle);
         }
     }
 
@@ -223,6 +273,38 @@ mod tests {
         assert!(peak < room.floor - 140.0, "{peak}");
         assert!(far > start_x + 80.0, "{far}");
         assert!(landed);
+    }
+
+    #[test]
+    fn a_flight_lands_face_down_instead_of_standing() {
+        let room = room();
+        let mut pet = Pet::on_floor(&room);
+        pet.y = room.floor - 220.0;
+        pet.release(&room, 80.0, 40.0);
+        let mut saw_down = false;
+        for _ in 0..180 {
+            pet.step(&room, 1.0 / 60.0);
+            if pet.activity == Activity::Down {
+                saw_down = true;
+                assert!((pet.y - room.floor).abs() < 0.1);
+                break;
+            }
+        }
+        assert!(saw_down);
+    }
+
+    #[test]
+    fn the_second_rest_is_spent_sitting() {
+        let room = room();
+        let mut pet = Pet::on_floor(&room);
+        pet.become_for_test(Activity::Idle);
+        pet.time = IDLE_FOR;
+        pet.step(&room, 1.0 / 60.0);
+        assert_eq!(pet.activity, Activity::Walk);
+        pet.become_for_test(Activity::Idle);
+        pet.time = IDLE_FOR;
+        pet.step(&room, 1.0 / 60.0);
+        assert_eq!(pet.activity, Activity::Sit);
     }
 
     #[test]

@@ -15,9 +15,11 @@ struct Spec {
 }
 
 struct Joint {
+    name: String,
     parent: Option<usize>,
     angle: f32,
     omega: f32,
+    target: f32,
     limit: f32,
     spring: f32,
     length: f32,
@@ -27,6 +29,7 @@ struct Joint {
 pub struct Ragdoll {
     pub id: String,
     pub live: bool,
+    planted: bool,
     joints: Vec<Joint>,
 }
 
@@ -38,9 +41,11 @@ impl Ragdoll {
             .map(|bone| {
                 let spec = spec(&bone.name);
                 Joint {
+                    name: bone.name.clone(),
                     parent: bone.parent,
                     angle: 0.0,
                     omega: 0.0,
+                    target: 0.0,
                     limit: spec.limit,
                     spring: spec.spring,
                     length: spec.length,
@@ -51,6 +56,7 @@ impl Ragdoll {
         Self {
             id: pack.id.clone(),
             live: false,
+            planted: false,
             joints,
         }
     }
@@ -88,8 +94,9 @@ impl Ragdoll {
             }
             let (sin, cos) = worlds[index].sin_cos();
             let length = (joint.length * scale).max(8.0);
-            let alpha =
-                (-gx * cos - gy * sin) / length - joint.spring * joint.angle - 1.6 * joint.omega;
+            let alpha = (-gx * cos - gy * sin) / length
+                - joint.spring * (joint.angle - joint.target)
+                - 1.6 * joint.omega;
             joint.omega = (joint.omega + alpha * dt).clamp(-7.0, 7.0);
             joint.angle += joint.omega * dt;
             if joint.angle > joint.limit {
@@ -104,6 +111,56 @@ impl Ragdoll {
                 }
             }
         }
+    }
+
+    pub fn plant(&mut self, face: f32) {
+        let sign = if face < 0.0 { -1.0 } else { 1.0 };
+        let first = !self.planted;
+        self.planted = true;
+        self.live = true;
+        for joint in &mut self.joints {
+            let target = match joint.name.as_str() {
+                "torso" => sign * 1.42,
+                "head" => sign * 0.45,
+                "left-hand" => -1.05,
+                "right-hand" => 1.1,
+                "left-leg" => 0.5,
+                "right-leg" => -0.35,
+                "left-foot" => 0.3,
+                "right-foot" => -0.25,
+                _ => 0.0,
+            };
+            joint.target = target;
+            if !first {
+                continue;
+            }
+            if joint.name == "torso" {
+                joint.omega += sign * 7.0;
+            } else if joint.name == "left-hand" {
+                joint.omega -= 3.2;
+            } else if joint.name == "right-hand" {
+                joint.omega += 3.2;
+            }
+        }
+    }
+
+    pub fn clear_plant(&mut self) {
+        self.planted = false;
+        for joint in &mut self.joints {
+            joint.target = 0.0;
+        }
+    }
+
+    pub fn is_planted(&self) -> bool {
+        self.planted
+    }
+
+    pub fn torso_degrees(&self) -> f32 {
+        self.joints
+            .iter()
+            .find(|joint| joint.name == "torso")
+            .map(|joint| joint.angle.to_degrees())
+            .unwrap_or(0.0)
     }
 
     pub fn relax(&mut self, dt: f32) {
@@ -153,8 +210,8 @@ fn spec(name: &str) -> Spec {
     match name {
         "torso" => Spec {
             dynamic: true,
-            limit: 0.55,
-            spring: 26.0,
+            limit: 1.55,
+            spring: 18.0,
             length: 96.0,
         },
         "head" => Spec {
@@ -251,5 +308,15 @@ mod tests {
             "{}",
             rag.joints[index].angle
         );
+    }
+
+    #[test]
+    fn a_landing_falls_flat_on_the_face() {
+        let mut rag = Ragdoll::new(&Pack::builtin());
+        rag.plant(1.0);
+        for _ in 0..50 {
+            rag.step(1.0 / 60.0, 0.0, GRAVITY, 1.0);
+        }
+        assert!(rag.torso_degrees() > 50.0, "{}", rag.torso_degrees());
     }
 }
