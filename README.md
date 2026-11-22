@@ -53,7 +53,7 @@ The menu language follows `LANGUAGE`, `LC_ALL`, `LC_MESSAGES` and `LANG` until a
 
 `Flatpak` is not built. `arm64` packages are not built.
 
-Stable releases use `X.Y.0`. Versions with a non-zero final component, such as `X.Y.1`, are automatic dependency-update prereleases. No stable release has been published yet. Download the development `AppImage` from the [dev draft](https://github.com/yrmuq/mako/releases/tag/dev), or browse [all releases](https://github.com/yrmuq/mako/releases) after the first stable tag exists. The [latest stable release](https://github.com/yrmuq/mako/releases/latest) is that future tag.
+Stable releases use `X.Y.0`. Versions with a non-zero final component, such as `X.Y.1`, are automatic dependency-update prereleases. No stable release has been published yet. The development `AppImage` is the unpublished draft named `dev` on [all releases](https://github.com/yrmuq/mako/releases). The [latest stable release](https://github.com/yrmuq/mako/releases/latest) is that future tag.
 
 ### AppImage
 

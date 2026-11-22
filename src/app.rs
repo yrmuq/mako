@@ -141,7 +141,6 @@ impl App {
     pub fn render(&mut self) -> Frame {
         let scene = Scene {
             swing: self.pet.swing(),
-            blink: blink_amount(self.pet.phase),
             tilt: self.pet.tilt(),
             facing_left: self.pet.face < 0.0,
             menu: self.menu,
@@ -238,15 +237,6 @@ pub enum Pointer {
     LeftDown,
     LeftUp,
     RightDown,
-}
-
-fn blink_amount(phase: f32) -> f32 {
-    let cycle = phase % 4.2;
-    if (3.55..3.75).contains(&cycle) {
-        1.0
-    } else {
-        0.0
-    }
 }
 
 pub fn startup_room(width: f32, height: f32) -> Room {

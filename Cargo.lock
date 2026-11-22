@@ -166,6 +166,7 @@ name = "mako"
 version = "0.1.0"
 dependencies = [
  "ab_glyph",
+ "png",
  "smithay-client-toolkit",
  "tiny-skia",
  "wayland-client",

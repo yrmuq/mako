@@ -59,7 +59,7 @@ chmod +x "$APPDIR/AppRun"
 cp "$ROOT/packaging/io.github.yrmuq.mako.desktop" "$APPDIR/mako.desktop"
 cp "$APPDIR/mako.desktop" "$APPDIR/usr/share/applications/io.github.yrmuq.mako.desktop"
 cp "$ROOT/assets/icon.svg" "$APPDIR/mako.svg"
-cp "$APPDIR/mako.svg" "$APPDIR/.DirIcon"
+cp "$ROOT/assets/icon.png" "$APPDIR/.DirIcon"
 cp "$APPDIR/mako.svg" "$APPDIR/usr/share/icons/hicolor/scalable/apps/mako.svg"
 
 OUT="$DIST/mako-$ARCH.AppImage"

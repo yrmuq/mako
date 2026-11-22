@@ -1,12 +1,13 @@
 // Copyright (C) 2026 yrmuq
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! Procedural chibi in a bear onesie. The hair clip is a round barrette, not a cross.
+//! Bear girl, drawn from one posed image. The hair clip is a round barrette, not a cross.
 
 use ab_glyph::{point, Font, FontVec, Glyph, PxScale, ScaleFont};
+use std::io::Cursor;
 use std::sync::OnceLock;
 use tiny_skia::{
-    ColorU8, FillRule, Paint, Path, PathBuilder, Pixmap, PremultipliedColorU8, Transform,
+    ColorU8, FillRule, Paint, PathBuilder, Pixmap, PixmapPaint, PremultipliedColorU8, Transform,
 };
 
 use crate::i18n::{
@@ -51,7 +52,6 @@ pub struct Hit {
 #[derive(Clone, Debug)]
 pub struct Scene {
     pub swing: f32,
-    pub blink: f32,
     pub tilt: f32,
     pub facing_left: bool,
     pub menu: bool,
@@ -123,92 +123,45 @@ pub fn rows(catalog: &Catalog, lang_sel: &str, theme_sel: &str) -> Vec<Row> {
 
 fn draw_pet(pixmap: &mut Pixmap, origin_x: f32, scene: &Scene, scale: u32) {
     let s = scale as f32;
-    let tilt = scene.tilt.to_degrees();
     let bob = (scene.swing * 2.0).sin().abs() * -2.0;
-    let breathe = 1.0 + (scene.swing * 1.7).sin() * 0.015;
-    let unit = unit_circle();
-    let feet = (origin_x + 100.0, 258.0 + bob);
-
-    let mut fill = |cx: f32, cy: f32, rx: f32, ry: f32, spin: f32, color: ColorU8| {
-        let paint = paint(color);
-        let transform = Transform::from_scale(rx, ry)
-            .post_rotate(spin)
-            .post_translate(origin_x + cx, cy + bob)
-            .post_rotate_at(tilt, feet.0, feet.1)
-            .post_scale(s, s);
-        pixmap.fill_path(&unit, &paint, FillRule::Winding, transform, None);
-    };
-
-    fill(100.0, 252.0, 46.0, 8.0, 0.0, rgba(0, 0, 0, 40));
-
-    let swing = scene.swing;
-    // Legs and bear slippers sit under the onesie.
-    fill(84.0 + swing * 8.0, 224.0, 16.0, 26.0, swing * 6.0, suit());
-    fill(116.0 - swing * 8.0, 224.0, 16.0, 26.0, swing * -6.0, suit());
-    slipper(&mut fill, 80.0 + swing * 10.0, 250.0);
-    slipper(&mut fill, 120.0 - swing * 10.0, 250.0);
-
-    // Hood first, then the onesie overlaps its lower edge.
-    fill(100.0, 96.0, 74.0, 68.0, 0.0, suit_dark());
-    fill(100.0, 98.0, 68.0, 62.0, 0.0, suit());
-    fill(48.0, 46.0, 20.0, 18.0, -12.0, suit_dark());
-    fill(152.0, 46.0, 20.0, 18.0, 12.0, suit_dark());
-    fill(48.0, 48.0, 16.0, 14.0, -12.0, suit());
-    fill(152.0, 48.0, 16.0, 14.0, 12.0, suit());
-    fill(48.0, 50.0, 8.0, 7.0, 0.0, cream());
-    fill(152.0, 50.0, 8.0, 7.0, 0.0, cream());
-
-    fill(100.0, 186.0, 44.0 * breathe, 50.0, 0.0, suit_dark());
-    fill(100.0, 184.0, 40.0 * breathe, 48.0, 0.0, suit());
-    fill(64.0, 176.0, 14.0, 28.0, -14.0 + swing * -14.0, suit());
-    fill(136.0, 176.0, 14.0, 28.0, 14.0 + swing * 14.0, suit());
-    fill(52.0, 198.0, 10.0, 11.0, 0.0, skin());
-    fill(148.0, 198.0, 10.0, 11.0, 0.0, skin());
-
-    // Cream lining, face, then bangs that stop above the eyes.
-    fill(100.0, 108.0, 50.0, 46.0, 0.0, cream());
-    fill(100.0, 112.0, 44.0, 42.0, 0.0, skin());
-    fill(100.0, 78.0, 46.0, 18.0, 0.0, hair());
-    fill(72.0, 88.0, 14.0, 16.0, 8.0, hair());
-    fill(128.0, 90.0, 14.0, 18.0, -8.0, hair());
-    fill(142.0, 118.0, 8.0, 24.0, 10.0, hair());
-
-    if scene.blink > 0.65 {
-        fill(82.0, 116.0, 13.0, 2.2, 0.0, rgba(90, 52, 40, 255));
-        fill(118.0, 116.0, 13.0, 2.2, 0.0, rgba(90, 52, 40, 255));
-    } else {
-        eye(&mut fill, 82.0, 116.0);
-        eye(&mut fill, 118.0, 116.0);
-    }
-    fill(74.0, 132.0, 9.0, 4.5, 0.0, rgba(232, 146, 138, 120));
-    fill(126.0, 132.0, 9.0, 4.5, 0.0, rgba(232, 146, 138, 120));
-    fill(100.0, 136.0, 2.4, 1.8, 0.0, rgba(186, 104, 98, 255));
-
-    // Round barrette on the side lock. Not a cross.
-    fill(150.0, 112.0, 10.0, 6.5, 16.0, rgba(255, 250, 244, 255));
-    fill(150.0, 112.0, 6.0, 2.4, 16.0, rgba(196, 140, 96, 255));
-
-    for index in 0..4 {
-        let y = 162.0 + index as f32 * 12.0;
-        fill(100.0, y, 4.6, 4.6, 0.0, rgba(255, 250, 244, 255));
-    }
+    let tilt = scene.tilt.to_degrees();
+    let sprite = sprite_pixmap();
+    let fit = Transform::from_scale(
+        SPRITE_W / sprite.width() as f32,
+        SPRITE_H / sprite.height() as f32,
+    )
+    .post_translate(origin_x, bob)
+    .post_rotate_at(tilt, origin_x + 100.0, 258.0 + bob)
+    .post_scale(s, s);
+    // shortcut: one posed image cannot blink or swing separate limbs; split those parts when they must move on their own.
+    pixmap.draw_pixmap(0, 0, sprite.as_ref(), &PixmapPaint::default(), fit, None);
 }
 
-fn slipper(fill: &mut impl FnMut(f32, f32, f32, f32, f32, ColorU8), x: f32, y: f32) {
-    fill(x, y, 18.0, 10.0, 0.0, suit_dark());
-    fill(x, y - 1.0, 16.0, 8.5, 0.0, suit());
-    fill(x, y - 1.0, 7.0, 5.0, 0.0, cream());
-    fill(x - 3.0, y - 2.4, 1.5, 1.5, 0.0, rgba(70, 48, 40, 255));
-    fill(x + 3.0, y - 2.4, 1.5, 1.5, 0.0, rgba(70, 48, 40, 255));
-    fill(x, y + 1.2, 1.8, 1.3, 0.0, rgba(176, 96, 96, 255));
+fn sprite_pixmap() -> &'static Pixmap {
+    static SPRITE: OnceLock<Pixmap> = OnceLock::new();
+    SPRITE.get_or_init(|| decode_sprite(include_bytes!("../assets/bear-girl.png")))
 }
 
-fn eye(fill: &mut impl FnMut(f32, f32, f32, f32, f32, ColorU8), x: f32, y: f32) {
-    fill(x, y, 16.0, 18.0, 0.0, rgba(255, 252, 250, 255));
-    fill(x, y + 1.0, 11.0, 13.0, 0.0, rgba(92, 52, 34, 255));
-    fill(x, y + 2.0, 6.0, 8.0, 0.0, rgba(42, 24, 18, 255));
-    fill(x - 3.5, y - 4.0, 3.2, 3.6, 0.0, rgba(255, 255, 255, 235));
-    fill(x + 3.0, y + 4.0, 1.6, 1.6, 0.0, rgba(255, 255, 255, 180));
+fn decode_sprite(bytes: &[u8]) -> Pixmap {
+    let decoder = png::Decoder::new(Cursor::new(bytes));
+    let mut reader = decoder
+        .read_info()
+        .expect("MAKO-SPRITE-0001: The bundled pet image is invalid");
+    let mut buf = vec![0; reader.output_buffer_size()];
+    let info = reader
+        .next_frame(&mut buf)
+        .expect("MAKO-SPRITE-0001: The bundled pet image is invalid");
+    if info.bit_depth != png::BitDepth::Eight || info.color_type != png::ColorType::Rgba {
+        panic!("MAKO-SPRITE-0001: The bundled pet image is invalid");
+    }
+    let mut pixmap = Pixmap::new(info.width, info.height).expect("pixmap");
+    let data = &buf[..info.buffer_size()];
+    let (src_chunks, _) = data.as_chunks::<4>();
+    for (src, dst) in src_chunks.iter().zip(pixmap.pixels_mut()) {
+        *dst = PremultipliedColorU8::from_rgba(src[0], src[1], src[2], src[3])
+            .unwrap_or(PremultipliedColorU8::from_rgba(0, 0, 0, 0).unwrap());
+    }
+    pixmap
 }
 
 fn draw_menu(pixmap: &mut Pixmap, scene: &Scene, scale: u32, pet_x: f32) -> Vec<Hit> {
@@ -390,16 +343,6 @@ fn font() -> &'static FontVec {
     })
 }
 
-fn unit_circle() -> Path {
-    static PATH: OnceLock<Path> = OnceLock::new();
-    PATH.get_or_init(|| {
-        let mut builder = PathBuilder::new();
-        builder.push_circle(0.0, 0.0, 1.0);
-        builder.finish().expect("circle")
-    })
-    .clone()
-}
-
 fn paint(color: ColorU8) -> Paint<'static> {
     let mut paint = Paint::default();
     paint.set_color_rgba8(color.red(), color.green(), color.blue(), color.alpha());
@@ -411,22 +354,6 @@ fn rgba(r: u8, g: u8, b: u8, a: u8) -> ColorU8 {
     ColorU8::from_rgba(r, g, b, a)
 }
 
-fn suit() -> ColorU8 {
-    rgba(138, 86, 58, 255)
-}
-fn suit_dark() -> ColorU8 {
-    rgba(104, 62, 42, 255)
-}
-fn cream() -> ColorU8 {
-    rgba(246, 234, 216, 255)
-}
-fn skin() -> ColorU8 {
-    rgba(244, 206, 176, 255)
-}
-fn hair() -> ColorU8 {
-    rgba(92, 50, 36, 255)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -435,7 +362,6 @@ mod tests {
     fn idle_pose_is_mostly_transparent_around_a_solid_body() {
         let scene = Scene {
             swing: 0.0,
-            blink: 0.0,
             tilt: 0.0,
             facing_left: false,
             menu: false,
