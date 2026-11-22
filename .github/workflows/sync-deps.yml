@@ -1,0 +1,42 @@
+name: Sync deps
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mako-sync-deps
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Merge main into deps
+        run: |
+          set -eu
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main deps
+          git checkout -B deps origin/deps
+          if git merge origin/main -m "Merge branch 'main' into deps"; then
+            git push origin deps
+            exit 0
+          fi
+          conflict=$(git diff --name-only --diff-filter=U)
+          if [ "$conflict" = "VERSION" ]; then
+            git checkout --theirs VERSION
+            git add VERSION
+            git commit -m "Merge branch 'main' into deps"
+            git push origin deps
+            exit 0
+          fi
+          echo "deps diverged outside VERSION: $conflict" >&2
+          exit 1
