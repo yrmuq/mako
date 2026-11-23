@@ -5,6 +5,7 @@ bone torso torso - 300 470 300 470 30
 bone head head torso 0 -102 300 368 50
 bone hair hair head 0 0 300 368 54
 bone eyes eyes-open head 0 0 300 368 58
+bone mouth mouth head 0 0 300 368 59
 bone left-hand left-hand torso -72 -70 228 400 16
 bone right-hand right-hand torso 68 -65 368 405 40
 bone left-leg left-leg torso -50 120 250 590 10

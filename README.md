@@ -18,7 +18,7 @@
 
 ## Features
 
-- One pet, bear girl, in a brown bear onesie. Parts such as the eyes can change without a new drawing of the whole body.
+- One pet, bear girl, in a dark brown bear onesie. Her head, body, limbs, eyes and mouth are separate pieces on the same skeleton.
 - Another chibi can be chosen from a zip. No second chibi is included.
 - Walking, falling, and dragging on the screen edges.
 - English and Russian text, with system, light and dark menu colors.
@@ -37,7 +37,7 @@
 | Right button | Open or close the menu. |
 | Menu rows | Choose the chibi, size, language, theme, or quit. |
 
-Sometimes, between walks, she sits on the floor with her legs in front and types. Each paw stays on its own side of the keyboard. The laptop is a separate item, `pocket/it-1.png`, not part of the body. The screen faces her. She walks on the top edge of the bottom panel.
+She walks on the upper edge of the bottom panel and sits there to type with her legs bent. The laptop rests on the same edge with its screen facing her. It is a separate item, `pocket/it-1.png`.
 
 The menu language follows `LANGUAGE`, `LC_ALL`, `LC_MESSAGES` and `LANG` until a manual choice is saved. The menu colors follow the KDE color scheme until a manual theme is saved. The onesie itself stays brown. The chosen chibi is saved as `chibi`. The size is `1`, `0.8`, `0.6`, `0.4` or `0.2`, saved as `scale`.
 
@@ -47,7 +47,7 @@ Zip archives in `~/.local/share/mako/chibis/` are listed, or under `XDG_DATA_HOM
 | --- | --- |
 | `heart` | `name`, and other lines are ignored for now |
 | `body` | Skeleton: `canvas`, `feet`, and one `bone` line per joint |
-| `anima` | Animations: `anim`, `rot`, `image`, `bob` |
+| `anima` | Animations: `anim`, `rot`, `image`, `bob`. Add `?` to a frame name to use the bone's default image if that frame is missing. |
 | `creature/*.png` | Parts, named `head`, `left-hand`, `eyes-open` |
 | `pocket/*.png` | Items, named `it-1`, `it-2` |
 

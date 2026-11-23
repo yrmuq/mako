@@ -13,7 +13,7 @@ use crate::i18n::{
     Catalog, ID_CHIBI, ID_DARK, ID_ENGLISH, ID_LANGUAGE, ID_LIGHT, ID_NAME, ID_QUIT, ID_RUSSIAN,
     ID_SIZE, ID_SYSTEM, ID_THEME,
 };
-use crate::pack::{Choice, Pack, Pose, BUILTIN_ID};
+use crate::pack::{Choice, Pack, Pose, Sprite, BUILTIN_ID};
 use crate::sim::{FEET_X, FEET_Y, SPRITE_H, SPRITE_W};
 
 pub const MENU_W: f32 = 228.0;
@@ -75,7 +75,6 @@ pub struct Scene {
     pub menu_left: bool,
     pub dark: bool,
     pub pet_scale: f32,
-    pub sink: f32,
     pub pose: Vec<f32>,
     pub rows: Vec<Row>,
 }
@@ -305,60 +304,76 @@ fn draw_pet(pixmap: &mut Pixmap, origin_x: f32, scene: &Scene, pack: &Pack, scal
     } else {
         0.0
     };
+    let ground = pet_top + FEET_Y * pet_scale;
     let bob = pose.bob * fit;
-    let view = Transform::from_scale(fit, fit)
+    let mut view = Transform::from_scale(fit, fit)
         .post_translate(
             origin_x + FEET_X * pet_scale - pack.feet_x * fit,
-            pet_top + FEET_Y * pet_scale - pack.feet_y * fit + bob + scene.sink,
+            ground - pack.feet_y * fit + bob,
         )
         .post_rotate_at(
             scene.tilt.to_degrees(),
             origin_x + FEET_X * pet_scale,
-            pet_top + FEET_Y * pet_scale + bob + scene.sink,
-        )
-        .post_scale(scale as f32, scale as f32);
+            ground + bob,
+        );
+    if let Some(contact) = pose_contact(pack, &pose, scene.motion, view) {
+        view = view.post_translate(0.0, ground - contact);
+    }
+    let view = view.post_scale(scale as f32, scale as f32);
     let mut order: Vec<usize> = (0..pack.bones.len()).collect();
     order.sort_by_key(|&index| pack.bones[index].z);
     if scene.motion == Motion::Sit {
-        // Legs stay in front of the body. The lid covers the lap, and both paws
-        // stay on top of the keyboard.
-        let front = |index: usize| {
-            let name = pack.bones[index].name.as_str();
-            name.ends_with("leg") || name.ends_with("foot")
-        };
-        for &index in order
-            .iter()
-            .filter(|&&index| !front(index) && !pack.bones[index].name.ends_with("hand"))
-        {
-            paint_bone(pixmap, pack, &pose, view, index);
-        }
-        for &index in order.iter().filter(|&&index| front(index)) {
-            paint_bone(pixmap, pack, &pose, view, index);
-        }
-        draw_laptop(pixmap, origin_x, pet_top, pet_scale, scale, pack);
-        for &index in order
-            .iter()
-            .filter(|&&index| pack.bones[index].name.ends_with("hand"))
-        {
-            paint_bone(pixmap, pack, &pose, view, index);
-        }
-    } else {
-        for &index in &order {
-            paint_bone(pixmap, pack, &pose, view, index);
-        }
+        // Put the bent legs in front of the hips and the hands in front of their knees.
+        order.sort_by_key(|&index| {
+            let name = &pack.bones[index].name;
+            if name.ends_with("hand") {
+                2
+            } else {
+                u8::from(leg(name))
+            }
+        });
+    }
+    for index in order {
+        paint_bone(pixmap, pack, &pose, view, index);
+    }
+    if scene.motion == Motion::Sit {
+        draw_laptop(pixmap, origin_x, ground, pet_scale, scale, pack);
     }
 }
 
-fn paint_bone(pixmap: &mut Pixmap, pack: &Pack, pose: &Pose, view: Transform, index: usize) {
-    let image_name = &pose.image[index];
-    let Some(sprite) = pack.sprite(image_name) else {
-        return;
+fn leg(name: &str) -> bool {
+    name.ends_with("leg") || name.ends_with("foot")
+}
+
+fn pose_contact(pack: &Pack, pose: &Pose, motion: Motion, view: Transform) -> Option<f32> {
+    let supports = |bone: &str| match motion {
+        Motion::Idle | Motion::Walk => leg(bone),
+        Motion::Sit => bone == "torso" || leg(bone),
+        Motion::Down => true,
+        Motion::Fall | Motion::Drag => false,
     };
-    if sprite.blank {
-        return;
+    pack.bones
+        .iter()
+        .enumerate()
+        .filter(|(_, bone)| supports(&bone.name))
+        .filter_map(|(index, _)| {
+            let (sprite, local) = posed_sprite(pack, pose, index)?;
+            sprite.lower_edge(local.post_concat(view))
+        })
+        .max_by(f32::total_cmp)
+}
+
+fn posed_sprite<'a>(pack: &'a Pack, pose: &Pose, index: usize) -> Option<(&'a Sprite, Transform)> {
+    let bone = &pack.bones[index];
+    let image = &pose.image[index];
+    let sprite = match image.strip_suffix('?') {
+        Some(preferred) => pack.sprite(preferred).or_else(|| pack.sprite(&bone.image)),
+        None => pack.sprite(image),
+    }?;
+    if sprite.is_blank() {
+        return None;
     }
     let placed = &pose.placed[index];
-    let bone = &pack.bones[index];
     let rad = placed.rot.to_radians();
     let (sin, cos) = rad.sin_cos();
     let local = Transform::from_row(
@@ -369,6 +384,13 @@ fn paint_bone(pixmap: &mut Pixmap, pack: &Pack, pose: &Pose, view: Transform, in
         cos * (sprite.x - bone.pivot_x) - sin * (sprite.y - bone.pivot_y) + placed.x,
         sin * (sprite.x - bone.pivot_x) + cos * (sprite.y - bone.pivot_y) + placed.y,
     );
+    Some((sprite, local))
+}
+
+fn paint_bone(pixmap: &mut Pixmap, pack: &Pack, pose: &Pose, view: Transform, index: usize) {
+    let Some((sprite, local)) = posed_sprite(pack, pose, index) else {
+        return;
+    };
     pixmap.draw_pixmap(
         0,
         0,
@@ -382,7 +404,7 @@ fn paint_bone(pixmap: &mut Pixmap, pack: &Pack, pose: &Pose, view: Transform, in
 fn draw_laptop(
     pixmap: &mut Pixmap,
     origin_x: f32,
-    pet_top: f32,
+    ground: f32,
     pet_scale: f32,
     scale: u32,
     pack: &Pack,
@@ -390,7 +412,7 @@ fn draw_laptop(
     let Some(sprite) = pack.sprite("it-1") else {
         return;
     };
-    if sprite.blank {
+    if sprite.is_blank() {
         return;
     }
     let sw = sprite.image.width() as f32;
@@ -398,10 +420,10 @@ fn draw_laptop(
     if sw < 1.0 || sh < 1.0 {
         return;
     }
-    let dw = 118.0 * pet_scale;
+    let dw = 86.0 * pet_scale;
     let dh = dw * sh / sw;
-    let x = origin_x + FEET_X * pet_scale - dw * 0.5;
-    let y = pet_top + FEET_Y * pet_scale - dh * 0.72;
+    let x = origin_x + (FEET_X + 50.0) * pet_scale - dw * 0.5;
+    let y = ground - dh;
     let px = scale as f32;
     let local = Transform::from_scale(dw / sw * px, dh / sh * px).post_translate(x * px, y * px);
     pixmap.draw_pixmap(
@@ -573,17 +595,12 @@ fn blend(pixmap: &mut Pixmap, x: u32, y: u32, color: ColorU8, coverage: f32) {
 }
 
 fn mirror_sprite(pixmap: &mut Pixmap, origin_x: f32, scale: u32, pet_scale: f32) {
-    let x0 = (origin_x * scale as f32).round() as u32;
-    let span = (SPRITE_W * pet_scale.clamp(0.2, 1.0) * scale as f32).round() as u32;
-    let width = pixmap.width();
-    let height = pixmap.height();
-    let pixels = pixmap.pixels_mut();
-    for y in 0..height {
-        for x in 0..span / 2 {
-            let left = (y * width + x0 + x) as usize;
-            let right = (y * width + x0 + span - 1 - x) as usize;
-            pixels.swap(left, right);
-        }
+    let start = (origin_x * scale as f32).round() as usize;
+    let (pet_width, _) = scene_size(false, pet_scale);
+    let width = pixmap.width() as usize;
+    let end = start + (pet_width * scale) as usize;
+    for row in pixmap.pixels_mut().chunks_exact_mut(width) {
+        row[start..end].reverse();
     }
 }
 
@@ -630,7 +647,6 @@ mod tests {
             menu_left: false,
             dark: false,
             pet_scale: 1.0,
-            sink: 0.0,
             pose: Vec::new(),
             rows: Vec::new(),
         }
@@ -678,23 +694,16 @@ mod tests {
     #[test]
     fn sitting_draws_the_separate_laptop() {
         let pack = Pack::builtin();
-        let idle = render(&still(), &pack, 1);
         let mut scene = still();
         scene.motion = Motion::Sit;
         let sitting = render(&scene, &pack, 1);
-        let count = |frame: &Frame| {
-            let (pixels, _) = frame.bgra.as_chunks::<4>();
-            pixels.iter().filter(|pixel| pixel[3] > 16).count()
-        };
-        assert!(
-            count(&sitting) > count(&idle) + 300,
-            "{} {}",
-            count(&sitting),
-            count(&idle)
-        );
+        let rightmost_pixels = sitting
+            .bgra
+            .chunks_exact(sitting.width as usize * 4)
+            .flat_map(|row| row[(FEET_X as usize + 80) * 4..].as_chunks::<4>().0);
+        assert!(rightmost_pixels.filter(|pixel| pixel[3] > 16).count() > 100);
         std::fs::write("/tmp/mako-sit.png", encode(&scene)).expect("preview");
         scene.motion = Motion::Down;
-        scene.sink = 70.0;
         scene.pose = pack
             .bones
             .iter()
@@ -731,6 +740,38 @@ mod tests {
         std::fs::write("/tmp/mako-walk.png", encode(&stepping)).expect("preview");
         stepping.cycle = 0.0;
         std::fs::write("/tmp/mako-walk-b.png", encode(&stepping)).expect("preview");
+    }
+
+    #[test]
+    fn walking_and_sitting_touch_the_same_ground_at_each_size() {
+        let pack = Pack::builtin();
+        let mut scene = still();
+        for pet_scale in [0.2, 0.4, 0.6, 0.8, 1.0] {
+            scene.pet_scale = pet_scale;
+            for facing_left in [false, true] {
+                scene.facing_left = facing_left;
+                for motion in [Motion::Walk, Motion::Sit] {
+                    scene.motion = motion;
+                    for phase in [0.0, 0.14, 0.28, 0.42, 0.56, 0.69] {
+                        scene.cycle = phase;
+                        let scale = 2;
+                        let frame = render(&scene, &pack, scale);
+                        let last_ink_row = frame
+                            .bgra
+                            .chunks_exact(frame.width as usize * 4)
+                            .rposition(|row| {
+                                row.as_chunks::<4>().0.iter().any(|pixel| pixel[3] > 16)
+                            })
+                            .unwrap();
+                        let ground = (FEET_Y * pet_scale * scale as f32).round() as usize;
+                        assert!(
+                            (last_ink_row + 1).abs_diff(ground) <= 2,
+                            "{motion:?} at size {pet_scale}, phase {phase}: {last_ink_row} vs {ground}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

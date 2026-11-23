@@ -246,11 +246,6 @@ impl App {
             menu_left: self.menu_left(),
             dark: self.dark,
             pet_scale: self.pet_scale(),
-            sink: if self.pet.activity == Activity::Down {
-                (self.rag.torso_degrees().abs() / 81.0).min(1.0) * 70.0 * self.pet_scale()
-            } else {
-                0.0
-            },
             pose: if self.rag.live {
                 self.rag.degrees()
             } else {
@@ -449,11 +444,10 @@ impl App {
     fn fit_room(&mut self) {
         let (width, height) = self.screen;
         let inset = FEET_X * self.pet_scale();
-        let drop = (SPRITE_H - FEET_Y) * self.pet_scale();
         self.room = Room {
             left: 16.0 + inset,
             right: (width - 16.0 - inset).max(16.0 + inset + 1.0),
-            floor: (height - self.bottom - drop).max(self.feet_y()),
+            floor: (height - self.bottom).max(self.feet_y()),
         };
     }
 
@@ -479,12 +473,12 @@ pub fn startup_room(width: f32, height: f32) -> Room {
     Room {
         left: margin + FEET_X,
         right: (width - margin - FEET_X).max(margin + FEET_X + 1.0),
-        floor: (height - 12.0).max(FEET_Y),
+        floor: height.max(FEET_Y),
     }
 }
 
 fn screen_of(room: &Room) -> (f32, f32) {
-    (room.right + 16.0 + FEET_X, room.floor + 12.0)
+    (room.right + 16.0 + FEET_X, room.floor)
 }
 
 #[cfg(test)]
@@ -618,16 +612,12 @@ mod tests {
     }
 
     #[test]
-    fn the_floor_clears_a_bottom_panel() {
+    fn the_floor_is_the_top_edge_of_the_bottom_panel() {
         let mut app = App::new(startup_room(800.0, 600.0));
-        let on_the_glass = app.room.floor;
+        assert_eq!(app.room.floor, 600.0);
         app.set_bottom(48.0);
         app.set_room(startup_room(800.0, 600.0));
-        assert!(
-            (on_the_glass - app.room.floor - 48.0).abs() < 0.1,
-            "{} {}",
-            on_the_glass,
-            app.room.floor
-        );
+        assert_eq!(app.room.floor, 552.0);
+        assert_eq!(app.origin_y as f32 + FEET_Y, 552.0);
     }
 }

@@ -161,7 +161,8 @@ fn work_area(conn: &impl Connection, screen: &Screen) -> Option<crate::sim::Room
     if values.len() < 4 {
         return None;
     }
-    Some(startup_room(values[2] as f32, values[3] as f32))
+    let bottom_edge = values[1].saturating_add(values[3]);
+    Some(startup_room(values[2] as f32, bottom_edge as f32))
 }
 
 fn set_title(conn: &impl Connection, window: u32) -> Result<(), Fault> {

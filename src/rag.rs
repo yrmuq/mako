@@ -158,7 +158,8 @@ impl Ragdoll {
         self.planted
     }
 
-    pub fn torso_degrees(&self) -> f32 {
+    #[cfg(test)]
+    fn torso_degrees(&self) -> f32 {
         self.joints
             .iter()
             .find(|joint| joint.name == "torso")

@@ -11,7 +11,7 @@ use std::io::{Cursor, Read, Seek};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
-use tiny_skia::{Pixmap, PremultipliedColorU8};
+use tiny_skia::{Pixmap, PremultipliedColorU8, Transform};
 use zip::ZipArchive;
 
 use crate::Fault;
@@ -26,7 +26,35 @@ pub struct Sprite {
     pub image: Arc<Pixmap>,
     pub x: f32,
     pub y: f32,
-    pub blank: bool,
+    ink: Arc<[InkRow]>,
+}
+
+#[derive(Clone, Copy)]
+struct InkRow {
+    left: u32,
+    right: u32,
+    y: u32,
+}
+
+impl Sprite {
+    pub fn is_blank(&self) -> bool {
+        self.ink.is_empty()
+    }
+
+    pub fn lower_edge(&self, transform: Transform) -> Option<f32> {
+        self.ink
+            .iter()
+            .map(|row| {
+                let x = if transform.ky < 0.0 {
+                    row.left
+                } else {
+                    row.right
+                };
+                let y = row.y + u32::from(transform.sy >= 0.0);
+                transform.ky * x as f32 + transform.sy * y as f32 + transform.ty
+            })
+            .max_by(f32::total_cmp)
+    }
 }
 
 #[derive(Clone)]
@@ -381,16 +409,16 @@ const BUILTIN_IMAGES: &[(&str, &[u8])] = &[
         include_bytes!("../assets/bear-girl/creature/head.png"),
     ),
     (
-        "hair",
-        include_bytes!("../assets/bear-girl/creature/hair.png"),
-    ),
-    (
         "eyes-open",
         include_bytes!("../assets/bear-girl/creature/eyes-open.png"),
     ),
     (
         "eyes-closed",
         include_bytes!("../assets/bear-girl/creature/eyes-closed.png"),
+    ),
+    (
+        "mouth",
+        include_bytes!("../assets/bear-girl/creature/mouth.png"),
     ),
     (
         "torso",
@@ -413,12 +441,12 @@ const BUILTIN_IMAGES: &[(&str, &[u8])] = &[
         include_bytes!("../assets/bear-girl/creature/right-leg.png"),
     ),
     (
-        "left-foot",
-        include_bytes!("../assets/bear-girl/creature/left-foot.png"),
+        "left-leg-sit",
+        include_bytes!("../assets/bear-girl/creature/left-leg-sit.png"),
     ),
     (
-        "right-foot",
-        include_bytes!("../assets/bear-girl/creature/right-foot.png"),
+        "right-leg-sit",
+        include_bytes!("../assets/bear-girl/creature/right-leg-sit.png"),
     ),
     (
         "it-1",
@@ -932,31 +960,35 @@ fn crop(pixmap: Pixmap) -> Result<Sprite, Fault> {
     let width = pixmap.width();
     let height = pixmap.height();
     let pixels = pixmap.pixels();
+    let mut ink = Vec::new();
     let mut min_x = width;
     let mut min_y = height;
     let mut max_x = 0;
     let mut max_y = 0;
-    let mut any = false;
-    for y in 0..height {
-        for x in 0..width {
-            if pixels[(y * width + x) as usize].alpha() == 0 {
-                continue;
-            }
-            any = true;
-            min_x = min_x.min(x);
-            min_y = min_y.min(y);
-            max_x = max_x.max(x);
-            max_y = max_y.max(y);
-        }
+    for (y, row) in pixels.chunks_exact(width as usize).enumerate() {
+        let Some(left) = row.iter().position(|pixel| pixel.alpha() != 0) else {
+            continue;
+        };
+        let right = row.iter().rposition(|pixel| pixel.alpha() != 0).unwrap();
+        let (left, right, y) = (left as u32, right as u32, y as u32);
+        min_x = min_x.min(left);
+        min_y = min_y.min(y);
+        max_x = max_x.max(right);
+        max_y = max_y.max(y);
+        ink.push(InkRow {
+            left,
+            right: right + 1,
+            y,
+        });
     }
-    if !any {
+    if ink.is_empty() {
         let image = Pixmap::new(1, 1)
             .ok_or_else(|| Fault::new("MAKO-PACK-0003", "A chibi picture is not a PNG"))?;
         return Ok(Sprite {
             image: Arc::new(image),
             x: 0.0,
             y: 0.0,
-            blank: true,
+            ink: Arc::from([]),
         });
     }
     let piece_w = max_x - min_x + 1;
@@ -969,11 +1001,16 @@ fn crop(pixmap: Pixmap) -> Result<Sprite, Fault> {
                 pixels[((min_y + y) * width + min_x + x) as usize];
         }
     }
+    for row in &mut ink {
+        row.left -= min_x;
+        row.right -= min_x;
+        row.y -= min_y;
+    }
     Ok(Sprite {
         image: Arc::new(image),
         x: min_x as f32,
         y: min_y as f32,
-        blank: false,
+        ink: ink.into(),
     })
 }
 
