@@ -6,9 +6,9 @@ bone head head torso 0 -102 300 368 50
 bone hair hair head 0 0 300 368 54
 bone eyes eyes-open head 0 0 300 368 58
 bone mouth mouth head 0 0 300 368 59
-bone left-hand left-hand torso -70 -24 224 425 40
-bone right-hand right-hand torso 89 -20 386 422 16
-bone left-leg left-leg torso -51 137 250 608 18
-bone right-leg right-leg torso 45 142 340 610 10
-bone left-foot left-foot left-leg 6 93 255 700 20
-bone right-foot right-foot right-leg -5 80 340 692 12
+bone left-hand left-hand torso -70 -22 224 425 40
+bone right-hand right-hand torso 89 -22 386 422 16
+bone left-leg left-leg torso -51 140 250 608 18
+bone right-leg right-leg torso 45 140 340 610 10
+bone left-foot left-foot left-leg 6 90 255 700 20
+bone right-foot right-foot right-leg -5 82 340 692 12

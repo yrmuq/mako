@@ -394,13 +394,58 @@ fn load_builtin() -> Result<Pack, Fault> {
     for (name, bytes) in BUILTIN_IMAGES {
         images.insert((*name).to_string(), crop(decode(bytes)?)?);
     }
-    assemble(
+    let mut pack = assemble(
         BUILTIN_ID,
         include_str!("../assets/bear-girl/heart"),
         include_str!("../assets/bear-girl/body"),
         include_str!("../assets/bear-girl/anima"),
         images,
-    )
+    )?;
+    add_shared_limb(
+        &mut pack,
+        "hand",
+        "",
+        (40.0, 26.0),
+        include_bytes!("../assets/bear-girl/creature/arm.png"),
+    )?;
+    add_shared_limb(
+        &mut pack,
+        "leg",
+        "",
+        (49.0, 47.0),
+        include_bytes!("../assets/bear-girl/creature/leg.png"),
+    )?;
+    add_shared_limb(
+        &mut pack,
+        "leg",
+        "-sit",
+        (340.0, 610.0),
+        include_bytes!("../assets/bear-girl/creature/leg-sit.png"),
+    )?;
+    Ok(pack)
+}
+
+fn add_shared_limb(
+    pack: &mut Pack,
+    limb: &str,
+    suffix: &str,
+    pivot: (f32, f32),
+    bytes: &[u8],
+) -> Result<(), Fault> {
+    let sprite = crop(decode(bytes)?)?;
+    for side in ["left", "right"] {
+        let name = format!("{side}-{limb}");
+        let bone = &pack.bones[pack.names[&name]];
+        pack.images.insert(
+            format!("{name}{suffix}"),
+            Sprite {
+                x: bone.pivot_x + sprite.x - pivot.0,
+                y: bone.pivot_y + sprite.y - pivot.1,
+                ..sprite.clone()
+            },
+        );
+    }
+    Ok(())
 }
 
 const BUILTIN_IMAGES: &[(&str, &[u8])] = &[
@@ -423,30 +468,6 @@ const BUILTIN_IMAGES: &[(&str, &[u8])] = &[
     (
         "torso",
         include_bytes!("../assets/bear-girl/creature/torso.png"),
-    ),
-    (
-        "left-hand",
-        include_bytes!("../assets/bear-girl/creature/left-hand.png"),
-    ),
-    (
-        "right-hand",
-        include_bytes!("../assets/bear-girl/creature/right-hand.png"),
-    ),
-    (
-        "left-leg",
-        include_bytes!("../assets/bear-girl/creature/left-leg.png"),
-    ),
-    (
-        "right-leg",
-        include_bytes!("../assets/bear-girl/creature/right-leg.png"),
-    ),
-    (
-        "left-leg-sit",
-        include_bytes!("../assets/bear-girl/creature/left-leg-sit.png"),
-    ),
-    (
-        "right-leg-sit",
-        include_bytes!("../assets/bear-girl/creature/right-leg-sit.png"),
     ),
     (
         "it-1",
@@ -1125,6 +1146,21 @@ mod tests {
             if name.ends_with("leg") {
                 assert!(limb.z < torso.z, "{name}");
             }
+        }
+    }
+
+    #[test]
+    fn bear_girl_reuses_the_same_limb_art_on_both_sides() {
+        let pack = Pack::builtin();
+        for (limb, suffix) in [("hand", ""), ("leg", ""), ("leg", "-sit")] {
+            let left_bone = &pack.bones[pack.names[&format!("left-{limb}")]];
+            let right_bone = &pack.bones[pack.names[&format!("right-{limb}")]];
+            let left = pack.sprite(&format!("left-{limb}{suffix}")).unwrap();
+            let right = pack.sprite(&format!("right-{limb}{suffix}")).unwrap();
+            assert!(Arc::ptr_eq(&left.image, &right.image));
+            assert_eq!(left.x - left_bone.pivot_x, right.x - right_bone.pivot_x);
+            assert_eq!(left.y - left_bone.pivot_y, right.y - right_bone.pivot_y);
+            assert_eq!(left_bone.y, right_bone.y);
         }
     }
 }
