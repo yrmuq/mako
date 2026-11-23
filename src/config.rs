@@ -181,31 +181,55 @@ fn proportion(value: &str) -> u32 {
     value.parse::<u32>().unwrap_or(100).clamp(25, 200)
 }
 
-pub fn system_dark() -> bool {
-    if env::var("GTK_THEME")
-        .ok()
-        .is_some_and(|theme| theme.to_ascii_lowercase().ends_with(":dark"))
-    {
-        return true;
-    }
-    let path = config_home().join("kdeglobals");
-    let Ok(text) = fs::read_to_string(path) else {
-        return false;
-    };
-    for line in text.lines() {
-        let line = line.trim();
-        if let Some(value) = line.strip_prefix("ColorScheme=") {
-            return value.to_ascii_lowercase().contains("dark");
+fn kde_dark(text: &str) -> Option<bool> {
+    if let Some(background) = ini_value(text, "Colors:Window", "BackgroundNormal") {
+        let channels: Vec<_> = background
+            .split(',')
+            .map(|value| value.trim().parse::<u8>())
+            .collect();
+        if let [Ok(red), Ok(green), Ok(blue)] = channels.as_slice() {
+            let brightness =
+                2126 * u32::from(*red) + 7152 * u32::from(*green) + 722 * u32::from(*blue);
+            return Some(brightness < 1_280_000);
         }
     }
-    false
+    ini_value(text, "General", "ColorScheme")
+        .map(|scheme| scheme.to_ascii_lowercase().contains("dark"))
+}
+
+fn system_dark() -> bool {
+    let kde = fs::read_to_string(config_home().join("kdeglobals")).unwrap_or_default();
+    kde_dark(&kde).unwrap_or_else(|| {
+        env::var("GTK_THEME")
+            .ok()
+            .is_some_and(|theme| theme.to_ascii_lowercase().ends_with(":dark"))
+    })
+}
+
+pub(crate) fn ini_value<'a>(text: &'a str, section: &str, key: &str) -> Option<&'a str> {
+    let mut inside = false;
+    for line in text.lines().map(str::trim) {
+        if let Some(name) = line
+            .strip_prefix('[')
+            .and_then(|line| line.strip_suffix(']'))
+        {
+            inside = name == section;
+        } else if inside {
+            if let Some((name, value)) = line.split_once('=') {
+                if name.trim() == key {
+                    return Some(value.trim());
+                }
+            }
+        }
+    }
+    None
 }
 
 fn path() -> PathBuf {
     config_home().join("mako").join("config.toml")
 }
 
-fn config_home() -> PathBuf {
+pub(crate) fn config_home() -> PathBuf {
     if let Some(value) = env::var_os("XDG_CONFIG_HOME") {
         let path = PathBuf::from(value);
         if path.is_absolute() {

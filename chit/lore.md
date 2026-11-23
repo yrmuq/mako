@@ -19,3 +19,8 @@
 - The dev draft stays unpublished, so GitHub's get-release-by-tag endpoint does not return it. Update that release by listing releases and using its id.
 - KWin drops the Wayland client if a layer-shell buffer does not match the size from the latest configure and the output scale. Size the buffer from that pair.
 - KWin drops the Wayland client if the layer surface moves while a pointer button is held. Keep one anchored surface, move the drawing inside it, and limit pointer input to the pet.
+
+## Compatibility Workarounds
+
+- The tray panel uses the FemtoVG renderer because the software renderer's window buffer does not preserve alpha at rounded corners.
+- KWin can announce a tray popup before its Wayland class or title arrives. Subscribe to class and caption changes as well as the initial window event.

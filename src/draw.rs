@@ -56,12 +56,13 @@ pub fn pick(parts: &[Part], x: f32, y: f32) -> Option<BonePoint> {
         };
         let mut pixel = Point::from_xy(x, y);
         inverse.map_point(&mut pixel);
-        if pixel.x < 0.0 || pixel.y < 0.0 {
+        let image = &part.sprite.image;
+        if !(0.0..image.width() as f32).contains(&pixel.x)
+            || !(0.0..image.height() as f32).contains(&pixel.y)
+        {
             continue;
         }
-        if part
-            .sprite
-            .image
+        if image
             .pixel(pixel.x as u32, pixel.y as u32)
             .is_some_and(|color| color.alpha() >= 32)
         {
@@ -385,6 +386,33 @@ mod tests {
             pose: Vec::new(),
             anchor: None,
         }
+    }
+
+    #[test]
+    fn pick_does_not_wrap_pixels_past_the_right_edge() {
+        let pack = Pack::builtin();
+        let sprite = pack.sprite("torso").unwrap().clone();
+        let width = sprite.image.width();
+        let height = sprite.image.height();
+        let mut opaque = None;
+        for y in 1..height {
+            if let Some(x) = (0..width).find(|x| sprite.image.pixel(*x, y).unwrap().alpha() >= 32) {
+                opaque = Some((x, y));
+                break;
+            }
+        }
+        let (x, y) = opaque.expect("torso has opaque pixels after its first row");
+        let part = Part {
+            sprite,
+            transform: Transform::identity(),
+            joint: Some(BonePoint {
+                bone: 0,
+                local: Point::from_xy(0.0, 0.0),
+            }),
+        };
+        let parts = [part];
+        assert!(pick(&parts, x as f32, y as f32).is_some());
+        assert!(pick(&parts, (width + x) as f32, (y - 1) as f32).is_none());
     }
 
     #[test]

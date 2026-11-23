@@ -7,6 +7,7 @@
 - `src/i18n.rs` — `languages/*.ini` catalogs and system-language detection.
 - `src/config.rs` — XDG preferences for appearance and tray order.
 - `src/desktop.rs` and `ui/app.slint` — tray, quick panel, preferences and ZIP import.
+- `src/icons.rs` — desktop icon-theme lookup and symbolic icon tint detection.
 - `src/place.rs` and `ui/place.js` — tray popup positioning.
 - `src/game.rs` — live chibi instances and pointer routing.
 - `src/app.rs` — pointer gestures and geometry for one chibi.

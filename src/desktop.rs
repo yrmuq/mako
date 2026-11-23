@@ -163,6 +163,23 @@ impl Desktop {
                 self.pinned = !self.pinned;
                 if let Some(popup) = &self.popup {
                     popup.set_pinned(self.pinned);
+                    let theme = crate::icons::Theme::load();
+                    if let Some(icon) = theme.icon("configure") {
+                        popup.set_configure_icon(icon.image);
+                        popup.set_tint_configure(icon.tint);
+                    }
+                    if let Some(icon) = theme.icon("window-pin") {
+                        popup.set_pin_icon(icon.image);
+                        popup.set_tint_pin(icon.tint);
+                    }
+                    if let Some(icon) = theme.icon("list-add") {
+                        popup.set_add_icon(icon.image);
+                        popup.set_tint_add(icon.tint);
+                    }
+                    if let Some(icon) = theme.icon("list-remove") {
+                        popup.set_remove_icon(icon.image);
+                        popup.set_tint_remove(icon.tint);
+                    }
                 }
             }
             Action::Quit => {
@@ -682,7 +699,7 @@ pub(crate) fn run(session: Session, open_settings: bool) -> Result<(), Fault> {
     }
     slint::BackendSelector::new()
         .backend_name("winit".into())
-        .renderer_name("software".into())
+        .renderer_name("femtovg".into())
         .with_winit_event_loop_builder(event_loop)
         .with_winit_window_attributes_hook(window_attributes)
         .select()

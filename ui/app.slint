@@ -227,6 +227,14 @@ export component Popup inherits Window {
     background: transparent;
     width: 300px;
     height: 52px + Math.min(420px, Math.max(88px, root.rows.length * 46px));
+    in property <image> configure-icon: @image-url("icons/configure.svg");
+    in property <bool> tint-configure: true;
+    in property <image> pin-icon: @image-url("icons/window-pin.svg");
+    in property <bool> tint-pin: true;
+    in property <image> add-icon;
+    in property <bool> tint-add: true;
+    in property <image> remove-icon;
+    in property <bool> tint-remove: true;
     in property <[ChibiRow]> rows;
     in-out property <bool> pinned;
     callback configure(bool);
@@ -248,12 +256,12 @@ export component Popup inherits Window {
                 ToolButton {
                     x: parent.width - 68px; label: Translations.tr(16);
                     clicked => { root.configure(false); }
-                    BreezeIcon { source: @image-url("icons/configure.svg"); ink: Breeze.fg; }
+                    BreezeIcon { source: root.configure-icon; tint: root.tint-configure; ink: Breeze.fg; }
                 }
                 pin := ToolButton {
                     x: parent.width - 32px; label: Translations.tr(17); active: root.pinned;
                     clicked => { root.pin-toggled(); }
-                    BreezeIcon { source: @image-url("icons/window-pin.svg"); ink: pin.active ? Breeze.selection-fg : Breeze.fg; }
+                    BreezeIcon { source: root.pin-icon; tint: root.tint-pin; ink: pin.active ? Breeze.selection-fg : Breeze.fg; }
                 }
             }
             if root.rows.length == 0: VerticalLayout {
@@ -273,7 +281,8 @@ export component Popup inherits Window {
                             if row.count > 0: ToolButton {
                                 label: Translations.tr(20);
                                 clicked => { root.remove-instance(row.id); }
-                                Text { text: "−"; font-size: 20px; color: Breeze.fg; }
+                                if root.remove-icon.width > 0: BreezeIcon { source: root.remove-icon; tint: root.tint-remove; ink: Breeze.fg; }
+                                if root.remove-icon.width == 0: Text { text: "−"; font-size: 20px; color: Breeze.fg; }
                             }
                             if row.count == 0: Rectangle {
                                 width: 32px;
@@ -282,7 +291,8 @@ export component Popup inherits Window {
                             ToolButton {
                                 label: Translations.tr(19);
                                 clicked => { root.add-instance(row.id); }
-                                Text { text: "+"; font-size: 20px; color: Breeze.fg; }
+                                if root.add-icon.width > 0: BreezeIcon { source: root.add-icon; tint: root.tint-add; ink: Breeze.fg; }
+                                if root.add-icon.width == 0: Text { text: "+"; font-size: 20px; color: Breeze.fg; }
                             }
                         }
                     }

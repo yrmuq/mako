@@ -9,7 +9,7 @@ description = "A desktop pet for KDE Plasma"
 [dependencies]
 ksni = { version = "0.3", features = ["blocking"] }
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"] }
-slint = { version = "1.18", default-features = false, features = ["std", "compat-1-18", "backend-winit", "renderer-software", "unstable-winit-030", "accessibility"] }
+slint = { version = "1.18", default-features = false, features = ["std", "compat-1-18", "backend-winit", "renderer-femtovg", "unstable-winit-030", "accessibility"] }
 rustix = { version = "1", features = ["event"] }
 zbus = "5"
 tempfile = "3"

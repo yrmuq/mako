@@ -10,6 +10,7 @@ mod game;
 mod host_wayland;
 mod host_x11;
 mod i18n;
+mod icons;
 mod pack;
 mod place;
 mod rag;

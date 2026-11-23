@@ -2,42 +2,72 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use std::io::Write;
+use std::sync::mpsc::{self, SyncSender};
+use std::time::Duration;
 
 use slint::winit_030::winit::{dpi::PhysicalPosition, window::Window};
 use x11rb::{connection::Connection, protocol::xproto::ConnectionExt};
 use zbus::blocking::{Connection as Bus, Proxy};
 
 const SERVICE: &str = "org.kde.KWin";
-const SCRIPT: &str = "mako-tray-placement";
+const LEGACY_SCRIPT: &str = "mako-tray-placement";
+const PLACER: &str = "/mako/Placer";
+
+struct Ready(SyncSender<()>);
+
+#[zbus::interface(name = "io.github.yrmuq.mako.Placer")]
+impl Ready {
+    fn ready(&self) {
+        let _ = self.0.try_send(());
+    }
+}
 
 pub struct Kwin {
     bus: Bus,
+    plugin: String,
     _script: tempfile::NamedTempFile,
 }
 
 impl Kwin {
     pub fn install() -> Result<Self, Box<dyn std::error::Error>> {
-        let mut script = tempfile::Builder::new().suffix(".js").tempfile()?;
-        script.write_all(include_bytes!("../ui/place.js"))?;
-        script.as_file().sync_all()?;
         let bus = Bus::session()?;
+        let (ready, registered) = mpsc::sync_channel(1);
+        bus.object_server().at(PLACER, Ready(ready))?;
+        let destination = bus.unique_name().ok_or("missing D-Bus unique name")?;
+        let destination = serde_json::to_string(destination.as_str())?;
+        let mut script = tempfile::Builder::new()
+            .prefix("mako-tray-")
+            .suffix(".js")
+            .tempfile()?;
+        writeln!(script, "const makoReadyBus = {destination};")?;
+        script.write_all(include_bytes!("../ui/place.js"))?;
         let scripting = Proxy::new(&bus, SERVICE, "/Scripting", "org.kde.kwin.Scripting")?;
         let name = script.path().to_str().ok_or("invalid KWin script path")?;
-        let id: i32 = scripting.call("loadScript", &(name, SCRIPT))?;
+        let plugin = script
+            .path()
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .ok_or("invalid KWin script name")?
+            .to_owned();
+        let _ = scripting.call::<_, _, bool>("unloadScript", &(LEGACY_SCRIPT,));
+        let id: i32 = scripting.call("loadScript", &(name, plugin.as_str()))?;
         if id < 0 {
             return Err("KWin rejected the positioning script".into());
         }
         let installed = Self {
             bus: bus.clone(),
+            plugin,
             _script: script,
         };
         let path = format!("/Scripting/Script{id}");
-        let object = Proxy::new(&bus, SERVICE, path.as_str(), "org.kde.kwin.Script")
-            .or_else(|_| Proxy::new(&bus, SERVICE, format!("/{id}"), "org.kde.kwin.Script"))?;
+        let object = Proxy::new(&bus, SERVICE, path.as_str(), "org.kde.kwin.Script")?;
         if object.call::<_, _, ()>("run", &()).is_err() {
             Proxy::new(&bus, SERVICE, format!("/{id}"), "org.kde.kwin.Script")?
                 .call::<_, _, ()>("run", &())?;
         }
+        registered
+            .recv_timeout(Duration::from_secs(3))
+            .map_err(|_| "KWin did not initialize the tray positioning script")?;
         Ok(installed)
     }
 }
@@ -47,7 +77,7 @@ impl Drop for Kwin {
         if let Ok(scripting) =
             Proxy::new(&self.bus, SERVICE, "/Scripting", "org.kde.kwin.Scripting")
         {
-            let _ = scripting.call::<_, _, bool>("unloadScript", &(SCRIPT,));
+            let _ = scripting.call::<_, _, bool>("unloadScript", &(self.plugin.as_str(),));
         }
     }
 }

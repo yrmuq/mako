@@ -147,6 +147,60 @@ mod tests {
     use super::*;
 
     #[test]
+    fn grab_follows_the_drawn_order_and_stays_with_one_chibi() {
+        let (_tx, rx) = std::sync::mpsc::channel();
+        let mut game = Game::new(
+            crate::startup_room(1400.0, 800.0),
+            Settings::default(),
+            Pack::builtin(),
+            rx,
+        );
+        game.add(Pack::builtin());
+
+        let paint = |game: &mut Game, older_x, newer_x| {
+            let mut point = (0.0, 0.0);
+            for (pet, x) in game.pets.iter_mut().zip([older_x, newer_x]) {
+                let app = &mut pet.app;
+                app.pet.x = x;
+                app.prepare();
+                let frame = app.render();
+                if pet.id == 0 {
+                    let (index, _) = frame
+                        .bgra
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .enumerate()
+                        .find(|(_, pixel)| pixel[3] == 255)
+                        .expect("visible chibi");
+                    let width = frame.width as usize;
+                    point = (
+                        app.origin_x as f32 + (index % width) as f32 + 0.5,
+                        app.origin_y as f32 + (index / width) as f32 + 0.5,
+                    );
+                }
+                app.note_committed();
+            }
+            point
+        };
+
+        let (x, y) = paint(&mut game, 600.0, 600.0);
+        assert!(game.pets.iter().all(|pet| pet.app.hit_body(x, y)));
+        game.pointer(x, y, Pointer::LeftDown);
+        assert_eq!(game.held, Some(1));
+        game.pointer(x, y, Pointer::LeftUp);
+
+        let (x, y) = paint(&mut game, 900.0, 250.0);
+        assert!(game.pets[0].app.hit_body(x, y));
+        assert!(!game.pets[1].app.hit_body(x, y));
+        game.pointer(x, y, Pointer::LeftDown);
+        game.pointer(x - 650.0, y, Pointer::Motion);
+        assert_eq!(game.held, Some(0));
+        game.pointer(x - 650.0, y, Pointer::LeftUp);
+        assert_eq!(game.held, None);
+    }
+
+    #[test]
     fn removing_a_chibi_only_removes_one_instance() {
         let (tx, rx) = std::sync::mpsc::channel();
         let first = Pack::builtin();
