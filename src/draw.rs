@@ -142,8 +142,16 @@ pub fn render(scene: &Scene, pack: &Pack, scale: u32) -> Frame {
         0.0
     };
     let (mut parts, mut anchor) = pet_parts(pet_x, scene, pack);
-    let (left, top, right, bottom) = if matches!(scene.motion, Motion::Drag | Motion::Fall) {
-        part_bounds(&parts, logical_w as i32, logical_h as i32)
+    let dynamic_pose = matches!(scene.motion, Motion::Drag | Motion::Fall | Motion::Down)
+        || !scene.pose.is_empty();
+    let (left, top, right, bottom) = if dynamic_pose {
+        let bounds = part_bounds(&parts, logical_w as i32, logical_h as i32);
+        if scene.motion == Motion::Drag {
+            bounds
+        } else {
+            // The transformed ink is already aligned to the floor contact line.
+            (bounds.0, bounds.1, bounds.2, logical_h as i32)
+        }
     } else {
         (0, 0, logical_w as i32, logical_h as i32)
     };
@@ -414,7 +422,9 @@ fn pet_parts(origin_x: f32, scene: &Scene, pack: &Pack) -> (Vec<Part>, Option<Po
             ground + bob,
         );
     let support_motion = match scene.motion {
-        Motion::Idle | Motion::Walk if scene.tilt.abs() > 0.001 => Motion::Down,
+        Motion::Idle | Motion::Walk if !scene.pose.is_empty() || scene.tilt.abs() > 0.001 => {
+            Motion::Down
+        }
         motion => motion,
     };
     if let Some(contact) = pose_contact(pack, &pose, support_motion, view) {
@@ -791,6 +801,34 @@ mod tests {
         let opaque = pixels.iter().filter(|pixel| pixel[3] > 16).count();
         assert!(opaque > 800, "{opaque}");
         std::fs::write("/tmp/mako-rag.png", encode(&scene)).expect("preview");
+    }
+
+    #[test]
+    fn a_turned_impact_extends_the_frame_without_putting_ink_below_the_floor() {
+        let pack = Pack::builtin();
+        let mut scene = still();
+        scene.tilt = 1.3;
+        scene.pose = vec![0.0; pack.bones.len()];
+        for motion in [Motion::Fall, Motion::Down, Motion::Idle] {
+            scene.motion = motion;
+            for facing_left in [false, true] {
+                scene.facing_left = facing_left;
+                let frame = render(&scene, &pack, 2);
+                assert!(frame.width > 2 * SPRITE_W as u32);
+                let width = (frame.width / 2) as i32;
+                let height = (frame.height / 2) as i32;
+                let (left, top, right, _) = part_bounds(&frame.parts, width, height);
+                assert_eq!((left, top, right), (0, 0, width));
+                assert_eq!(frame.shift.1 + height, FEET_Y as i32);
+                let lowest_ink = frame
+                    .parts
+                    .iter()
+                    .filter_map(|part| part.sprite.lower_edge(part.transform))
+                    .max_by(f32::total_cmp)
+                    .unwrap();
+                assert!((lowest_ink - height as f32).abs() < 0.01);
+            }
+        }
     }
 
     #[test]

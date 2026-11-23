@@ -310,12 +310,15 @@ impl App {
         let feet_x = self.layout_pet_x() + self.feet_x() - frame.shift.0 as f32;
         let feet_y = self.pet_top() + self.feet_y() - frame.shift.1 as f32;
         if let (Some(grip), Some(anchor)) = (&self.grip, frame.anchor) {
+            let support = frame.support.unwrap_or(feet_y);
+            let floor_origin = (self.room.floor - support).floor() as i32;
             self.origin_x = (grip.cursor.x - anchor.x).round() as i32;
-            self.origin_y = (grip.cursor.y - anchor.y).round() as i32;
+            self.origin_y = ((grip.cursor.y - anchor.y).round() as i32).min(floor_origin);
             self.pet.x = self.origin_x as f32 + feet_x;
-            self.pet.y = self.origin_y as f32 + frame.support.unwrap_or(feet_y);
+            self.pet.y = self.origin_y as f32 + support;
         } else {
-            self.origin_x = (self.pet.x - feet_x).round() as i32;
+            let rightmost_origin = (self.screen.0 as i32 - self.logical_w as i32).max(0);
+            self.origin_x = ((self.pet.x - feet_x).round() as i32).clamp(0, rightmost_origin);
             self.origin_y = (self.pet.y - feet_y).round() as i32;
         }
         frame
@@ -555,11 +558,11 @@ mod tests {
         let origin_x = app.origin_x;
         let origin_y = app.origin_y;
         app.pointer(x, y, Pointer::LeftDown);
-        app.pointer(x + 10.0, y + 10.0, Pointer::Motion);
-        app.pointer(x + 30.0, y + 20.0, Pointer::Motion);
+        app.pointer(x + 10.0, y - 10.0, Pointer::Motion);
+        app.pointer(x + 30.0, y - 20.0, Pointer::Motion);
         let anchor = app.render().anchor.expect("drag anchor");
         assert!((app.origin_x as f32 + anchor.x - (origin_x as f32 + x + 30.0)).abs() <= 0.51);
-        assert!((app.origin_y as f32 + anchor.y - (origin_y as f32 + y + 20.0)).abs() <= 0.51);
+        assert!((app.origin_y as f32 + anchor.y - (origin_y as f32 + y - 20.0)).abs() <= 0.51);
         assert_eq!(app.committed_x, origin_x);
     }
 
@@ -677,6 +680,46 @@ mod tests {
         assert_eq!(app.pet.activity, Activity::Fall);
         assert!(app.pet.vx.abs() < 1.0, "{}", app.pet.vx);
         assert!(app.pet.vy.abs() < 1.0, "{}", app.pet.vy);
+    }
+
+    #[test]
+    fn a_downward_mouse_flick_bounces_with_the_frame_inside_the_screen_edge() {
+        let mut app = App::new(startup_room(1200.0, 800.0));
+        app.set_bottom(48.0);
+        app.set_room(startup_room(1200.0, 800.0));
+        app.pet.x = app.room.right;
+        let (x, y) = visible_part(&mut app, "torso", false);
+        let (cursor_x, cursor_y) = (app.origin_x as f32 + x, app.origin_y as f32 + y);
+        app.pointer(x, y, Pointer::LeftDown);
+        app.clock = 0.10;
+        app.pointer(x, y - 130.0, Pointer::Motion);
+        app.clock = 0.125;
+        app.pointer(x, y - 82.0, Pointer::Motion);
+        app.clock = 0.15;
+        app.pointer(x, y + 26.0, Pointer::Motion);
+        let held = app.render();
+        let lowest = app.origin_y as f32 + held.support.expect("held pose contact");
+        assert!((0.0..1.01).contains(&(app.room.floor - lowest)));
+        app.note_committed();
+        let (x, y) = app.pointer_from_screen(cursor_x, cursor_y + 26.0);
+        app.pointer(x, y, Pointer::LeftUp);
+        assert_eq!(app.pet.activity, Activity::Fall);
+        assert!(app.pet.vy > 0.0);
+
+        let mut bounced = false;
+        for _ in 0..160 {
+            app.tick(1.0 / 60.0);
+            let frame = app.render();
+            assert!(app.origin_x >= 0 && app.origin_x + frame.width as i32 <= 1200);
+            assert!(app.origin_y + frame.height as i32 <= app.room.floor as i32);
+            assert_ne!(app.pet.activity, Activity::Down);
+            bounced |= app.pet.vy < 0.0 && app.pet.y < app.room.floor - 10.0;
+            if app.pet.activity == Activity::Idle {
+                break;
+            }
+        }
+        assert!(bounced);
+        assert_eq!(app.pet.activity, Activity::Idle);
     }
 
     #[test]

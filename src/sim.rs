@@ -1,7 +1,7 @@
 // Copyright (C) 2026 yrmuq
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! Screen-edge movement. Coordinates grow right and down. `y` is the feet.
+//! Screen-edge movement. Coordinates grow right and down. `y` is the floor contact point.
 
 pub const SPRITE_W: f32 = 288.0;
 pub const SPRITE_H: f32 = 270.0;
@@ -12,6 +12,8 @@ const WALK_FOR: f32 = 2.8;
 const SIT_FOR: f32 = 7.0;
 const DOWN_FOR: f32 = 2.6;
 const WALK_SPEED: f32 = 78.0;
+const BOUNCE_RESTITUTION: f32 = 0.62;
+const MIN_REBOUND_SPEED: f32 = 120.0;
 pub const GRAVITY: f32 = 2400.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,6 +24,13 @@ pub enum Activity {
     Drag,
     Down,
     Sit,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Landing {
+    Drop,
+    Throw,
+    Bounce,
 }
 
 #[derive(Clone, Debug)]
@@ -41,8 +50,8 @@ pub struct Pet {
     pub activity: Activity,
     pub time: f32,
     pub phase: f32,
-    pub airborne: bool,
-    pub tossed: bool,
+    airborne: bool,
+    landing: Landing,
     rests: u32,
 }
 
@@ -58,7 +67,7 @@ impl Pet {
             time: 0.0,
             phase: 0.0,
             airborne: false,
-            tossed: false,
+            landing: Landing::Drop,
             rests: 0,
         }
     }
@@ -96,7 +105,7 @@ impl Pet {
         self.activity = Activity::Drag;
         self.vx = 0.0;
         self.vy = 0.0;
-        self.tossed = false;
+        self.landing = Landing::Drop;
         self.time = 0.0;
     }
 
@@ -104,9 +113,15 @@ impl Pet {
     pub fn release(&mut self, room: &Room, vx: f32, vy: f32) {
         self.vx = vx;
         self.vy = vy;
-        self.tossed = vx.abs() >= 80.0 || vy <= -80.0;
-        let moving = self.tossed || self.y < room.floor - 2.0;
-        if moving {
+        self.landing = if vy >= 80.0 && vy >= vx.abs() {
+            Landing::Bounce
+        } else if vx.abs() >= 80.0 || vy <= -80.0 {
+            Landing::Throw
+        } else {
+            Landing::Drop
+        };
+        self.y = self.y.min(room.floor);
+        if self.landing != Landing::Drop || self.y < room.floor - 2.0 {
             self.airborne = self.y < room.floor - 14.0;
             self.start(Activity::Fall);
             if self.vx.abs() > 1.0 {
@@ -133,9 +148,11 @@ impl Pet {
     }
 
     fn fall(&mut self, room: &Room, dt: f32) {
+        let start_y = self.y;
+        let start_vy = self.vy;
         self.vy += GRAVITY * dt;
         self.x += self.vx * dt;
-        self.y += self.vy * dt;
+        self.y += (start_vy + self.vy) * 0.5 * dt;
         if self.y < room.floor - 14.0 {
             self.airborne = true;
         }
@@ -150,12 +167,30 @@ impl Pet {
         }
         if self.y >= room.floor {
             self.y = room.floor;
-            if self.airborne && self.tossed && self.vy > 80.0 {
+            if self.landing == Landing::Bounce {
+                let distance = (room.floor - start_y).max(0.0);
+                let impact_speed = (start_vy * start_vy + 2.0 * GRAVITY * distance).sqrt();
+                let height_limit = room.floor * 0.45;
+                let rebound =
+                    (impact_speed * BOUNCE_RESTITUTION).min((2.0 * GRAVITY * height_limit).sqrt());
+                if rebound >= MIN_REBOUND_SPEED {
+                    // Use the remainder of this tick for upward motion after the impact.
+                    let impact_time = (impact_speed - start_vy) / GRAVITY;
+                    let remaining = (dt - impact_time).clamp(0.0, dt);
+                    self.vy = -rebound + GRAVITY * remaining;
+                    self.y -= remaining * (rebound - 0.5 * GRAVITY * remaining);
+                    self.vx *= 0.8;
+                    return;
+                }
+                self.landing = Landing::Drop;
+                self.vy = 0.0;
+            }
+            if self.airborne && self.landing == Landing::Throw && self.vy > 80.0 {
                 // A real throw skids a short way. A plain drop does not.
                 self.vx *= 0.55;
                 self.vy = 0.0;
                 self.airborne = false;
-                self.tossed = false;
+                self.landing = Landing::Drop;
                 self.start(Activity::Down);
             } else if self.vy > 500.0 {
                 self.vy = -self.vy * 0.28;
@@ -349,6 +384,34 @@ mod tests {
         assert!(!saw_down);
         assert!((pet.y - room.floor).abs() < 0.1);
         assert_ne!(pet.activity, Activity::Fall);
+    }
+
+    #[test]
+    fn a_downward_throw_rebounds_with_smaller_hops_then_settles() {
+        let room = room();
+        for fps in [30.0, 60.0, 144.0] {
+            let mut pet = Pet::on_floor(&room);
+            pet.y += 10.0;
+            pet.release(&room, 0.0, 1100.0);
+            assert_eq!(pet.activity, Activity::Fall);
+            let mut heights = Vec::new();
+            for _ in 0..(fps * 4.0) as usize {
+                let was_rising = pet.vy < 0.0;
+                pet.step(&room, 1.0 / fps);
+                assert!(pet.y <= room.floor);
+                assert_ne!(pet.activity, Activity::Down);
+                if was_rising && pet.vy >= 0.0 {
+                    heights.push(room.floor - pet.y);
+                }
+                if pet.activity == Activity::Idle {
+                    break;
+                }
+            }
+            assert!(heights.len() >= 3, "{fps}: {heights:?}");
+            assert!(heights[0] > 90.0, "{fps}: {heights:?}");
+            assert!(heights.windows(2).all(|pair| pair[0] > pair[1]));
+            assert_eq!(pet.activity, Activity::Idle);
+        }
     }
 
     #[test]
