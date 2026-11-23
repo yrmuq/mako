@@ -33,12 +33,13 @@ export global Breeze {
 
 component ToolButton inherits Rectangle {
     in property <bool> active: false;
+    in property <bool> enabled: true;
     in property <bool> flat: false;
     callback clicked;
     width: 32px;
     height: 32px;
     border-radius: Breeze.radius;
-    background: flat ? transparent : (active ? Breeze.selection : (hover.has-hover || keys.has-focus ? Breeze.button-hover : transparent));
+    background: flat || !root.enabled ? transparent : (active ? Breeze.selection : (hover.has-hover || keys.has-focus ? Breeze.button-hover : transparent));
     border-width: active || keys.has-focus ? 1px : 0;
     border-color: Breeze.outline;
     VerticalLayout {
@@ -50,10 +51,11 @@ component ToolButton inherits Rectangle {
     }
     accessible-role: button;
     accessible-label: root.label;
-    accessible-action-default => { root.clicked(); }
+    accessible-action-default => { if (root.enabled) { root.clicked(); } }
     in property <string> label;
     forward-focus: keys;
     keys := FocusScope {
+        enabled: root.enabled;
         key-pressed(event) => {
             if (event.text == "\n" || event.text == " ") {
                 root.clicked();
@@ -63,6 +65,7 @@ component ToolButton inherits Rectangle {
         }
     }
     hover := TouchArea {
+        enabled: root.enabled;
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
     }
@@ -212,10 +215,66 @@ export struct ChibiRow {
 component ChibiName inherits HorizontalLayout {
     in property <ChibiRow> entry;
     spacing: 8px;
-    Image { source: root.entry.face; width: 36px; height: 36px; image-fit: contain; }
+    VerticalLayout {
+        alignment: center;
+        width: 36px;
+        Image { source: root.entry.face; width: 36px; height: 36px; image-fit: contain; }
+    }
     Text {
         text: root.entry.name; color: Breeze.fg; vertical-alignment: center;
         overflow: elide; horizontal-stretch: 1; min-width: 0px;
+    }
+}
+
+component InstanceControls inherits HorizontalLayout {
+    in property <int> count;
+    in property <bool> compact: false;
+    in property <image> add-icon;
+    in property <bool> tint-add;
+    in property <image> remove-icon;
+    in property <bool> tint-remove;
+    callback add();
+    callback remove();
+    property <length> button-width: root.compact ? 24px : 32px;
+    spacing: 2px;
+    alignment: center;
+    if !root.compact: Text {
+        text: "\{root.count}"; color: Breeze.fg; vertical-alignment: center;
+    }
+    VerticalLayout {
+        alignment: center;
+        width: root.button-width;
+        minus := ToolButton {
+            width: root.button-width;
+            height: root.button-width;
+            enabled: root.count > 0;
+            label: Translations.tr(20);
+            clicked => { root.remove(); }
+            if root.remove-icon.width > 0: BreezeIcon {
+                source: root.remove-icon; tint: root.tint-remove;
+                ink: minus.enabled ? Breeze.fg : Breeze.inactive;
+                opacity: !minus.enabled && !root.tint-remove ? 0.45 : 1;
+            }
+            if root.remove-icon.width == 0: Text {
+                text: "−"; font-size: 20px; color: minus.enabled ? Breeze.fg : Breeze.inactive;
+            }
+        }
+    }
+    if root.compact: Text {
+        text: "\{root.count}"; color: Breeze.fg; vertical-alignment: center;
+        horizontal-alignment: center; min-width: 0px; overflow: elide;
+    }
+    VerticalLayout {
+        alignment: center;
+        width: root.button-width;
+        ToolButton {
+            width: root.button-width;
+            height: root.button-width;
+            label: Translations.tr(19);
+            clicked => { root.add(); }
+            if root.add-icon.width > 0: BreezeIcon { source: root.add-icon; tint: root.tint-add; ink: Breeze.fg; }
+            if root.add-icon.width == 0: Text { text: "+"; font-size: 20px; color: Breeze.fg; }
+        }
     }
 }
 
@@ -226,7 +285,12 @@ export component Popup inherits Window {
     always-on-top: true;
     background: transparent;
     width: 300px;
-    height: 52px + Math.min(420px, Math.max(88px, root.rows.length * 46px));
+    in property <bool> tiles: false;
+    in property <float> reveal: 1;
+    private property <int> tile-columns: 3;
+    private property <length> tile-height: 106px;
+    private property <length> tile-grid-height: Math.max(0px, Math.ceil(root.rows.length * 1.0 / root.tile-columns) * (root.tile-height + 6px) - 6px);
+    height: 52px + Math.min(420px, Math.max(88px, root.tiles ? root.tile-grid-height : root.rows.length * 46px));
     in property <image> configure-icon: @image-url("icons/configure.svg");
     in property <bool> tint-configure: true;
     in property <image> pin-icon: @image-url("icons/window-pin.svg");
@@ -245,6 +309,10 @@ export component Popup inherits Window {
     callback remove-instance(string);
     default-font-size: 13.333px;
     Rectangle {
+        y: (1 - root.reveal) * root.height;
+        width: parent.width;
+        height: parent.height;
+        opacity: root.reveal;
         background: Breeze.window;
         border-radius: Breeze.radius;
         border-width: 1px; border-color: Breeze.frame;
@@ -268,7 +336,8 @@ export component Popup inherits Window {
                 alignment: center;
                 HorizontalLayout { alignment: center; Button { text: Translations.tr(18); clicked => { root.configure(true); } } }
             }
-            if root.rows.length > 0: ScrollView {
+            if root.rows.length > 0 && !root.tiles: ScrollView {
+                content-width: self.visible-width;
                 VerticalLayout {
                     spacing: 4px;
                     for row in root.rows: Rectangle {
@@ -277,22 +346,50 @@ export component Popup inherits Window {
                         HorizontalLayout {
                             padding-left: 6px; padding-right: 4px; spacing: 2px;
                             ChibiName { entry: row; horizontal-stretch: 1; }
-                            Text { text: "\{row.count}"; color: Breeze.fg; vertical-alignment: center; }
-                            if row.count > 0: ToolButton {
-                                label: Translations.tr(20);
-                                clicked => { root.remove-instance(row.id); }
-                                if root.remove-icon.width > 0: BreezeIcon { source: root.remove-icon; tint: root.tint-remove; ink: Breeze.fg; }
-                                if root.remove-icon.width == 0: Text { text: "−"; font-size: 20px; color: Breeze.fg; }
+                            InstanceControls {
+                                horizontal-stretch: 0;
+                                count: row.count;
+                                add-icon: root.add-icon; tint-add: root.tint-add;
+                                remove-icon: root.remove-icon; tint-remove: root.tint-remove;
+                                add => { root.add-instance(row.id); }
+                                remove => { root.remove-instance(row.id); }
                             }
-                            if row.count == 0: Rectangle {
-                                width: 32px;
-                                Text { text: "−"; font-size: 20px; color: Breeze.inactive; horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                    }
+                }
+            }
+            if root.rows.length > 0 && root.tiles: tile-scroll := ScrollView {
+                content-width: self.visible-width;
+                content-height: root.tile-grid-height;
+                Rectangle {
+                    width: tile-scroll.visible-width;
+                    height: root.tile-grid-height;
+                    for row[index] in root.rows: Rectangle {
+                        width: (parent.width - (root.tile-columns - 1) * 6px) / root.tile-columns;
+                        height: root.tile-height;
+                        x: Math.mod(index, root.tile-columns) * (self.width + 6px);
+                        y: Math.floor(index * 1.0 / root.tile-columns) * (self.height + 6px);
+                        accessible-role: list-item;
+                        accessible-label: row.name;
+                        border-radius: Breeze.radius;
+                        border-width: 1px; border-color: Breeze.frame; background: Breeze.button;
+                        VerticalLayout {
+                            padding: 5px; spacing: 4px; alignment: center;
+                            HorizontalLayout {
+                                alignment: center;
+                                Image { source: row.face; width: 38px; height: 38px; image-fit: contain; }
                             }
-                            ToolButton {
-                                label: Translations.tr(19);
-                                clicked => { root.add-instance(row.id); }
-                                if root.add-icon.width > 0: BreezeIcon { source: root.add-icon; tint: root.tint-add; ink: Breeze.fg; }
-                                if root.add-icon.width == 0: Text { text: "+"; font-size: 20px; color: Breeze.fg; }
+                            Text {
+                                text: row.name; color: Breeze.fg; horizontal-alignment: center;
+                                overflow: elide; min-width: 0px;
+                            }
+                            InstanceControls {
+                                height: 24px;
+                                count: row.count; compact: true;
+                                add-icon: root.add-icon; tint-add: root.tint-add;
+                                remove-icon: root.remove-icon; tint-remove: root.tint-remove;
+                                add => { root.add-instance(row.id); }
+                                remove => { root.remove-instance(row.id); }
                             }
                         }
                     }
@@ -312,6 +409,7 @@ export component SettingsWindow inherits Window {
     in-out property <bool> dev-open;
     in-out property <int> language-index;
     in-out property <int> theme-index;
+    in-out property <bool> tiles;
     in-out property <float> size-value: 100;
     in-out property <int> width-value: 100;
     in-out property <int> height-value: 100;
@@ -329,6 +427,7 @@ export component SettingsWindow inherits Window {
     private property <int> drag-to: -1;
     callback language-selected(int);
     callback theme-selected(int);
+    callback tiles-selected(bool);
     callback size-selected(float);
     callback proportions-selected(int, int);
     callback add-favorite(string);
@@ -368,6 +467,14 @@ export component SettingsWindow inherits Window {
                 }
             }
             SettingRow {
+                label: Translations.tr(43);
+                ComboBox {
+                    model: [Translations.tr(44), Translations.tr(45)];
+                    current-index: root.tiles ? 1 : 0;
+                    selected => { root.tiles-selected(self.current-index == 1); }
+                }
+            }
+            SettingRow {
                 label: Translations.tr(11);
                 Slider {
                     minimum: 20; maximum: 200; step: 1;
@@ -391,7 +498,7 @@ export component SettingsWindow inherits Window {
                             padding-left: 8px; padding-right: 7px;
                             Rectangle {
                                 horizontal-stretch: 1;
-                                ChibiName { entry: row; }
+                                ChibiName { entry: row; width: parent.width; height: parent.height; }
                                 forward-focus: reorder-keys;
                                 reorder-keys := FocusScope {
                                     key-pressed(event) => {
@@ -425,10 +532,13 @@ export component SettingsWindow inherits Window {
                                     }
                                 }
                             }
-                            ToolButton {
-                                label: Translations.tr(21) + " " + row.name; flat: true;
-                                clicked => { root.remove-favorite(row.id); }
-                                Text { text: "×"; font-size: 24px; color: #da4453; }
+                            VerticalLayout {
+                                width: 32px; alignment: center;
+                                ToolButton {
+                                    label: Translations.tr(21) + " " + row.name; flat: true;
+                                    clicked => { root.remove-favorite(row.id); }
+                                    Text { text: "×"; font-size: 24px; color: #da4453; }
+                                }
                             }
                         }
                     }
@@ -528,10 +638,13 @@ export component SettingsWindow inherits Window {
                                 padding: 7px; spacing: 8px;
                                 ChibiName { entry: row; horizontal-stretch: 1; }
                                 if row.added: Text { text: "✓"; color: Breeze.inactive; vertical-alignment: center; width: 32px; horizontal-alignment: center; }
-                                if !row.added: ToolButton {
-                                    label: Translations.tr(18) + " " + row.name;
-                                    clicked => { root.add-favorite(row.id); }
-                                    Text { text: "+"; color: Breeze.fg; font-size: 22px; }
+                                if !row.added: VerticalLayout {
+                                    width: 32px; alignment: center;
+                                    ToolButton {
+                                        label: Translations.tr(18) + " " + row.name;
+                                        clicked => { root.add-favorite(row.id); }
+                                        Text { text: "+"; color: Breeze.fg; font-size: 22px; }
+                                    }
                                 }
                             }
                         }

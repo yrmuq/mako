@@ -28,6 +28,7 @@ thread_local! {
 }
 
 const POPUP: &str = "mako-popup";
+const POPUP_DURATION: Duration = Duration::from_millis(180);
 const ICON: &[u8] = include_bytes!("../assets/icon.png");
 
 enum Action {
@@ -45,6 +46,7 @@ enum Action {
     Imported(Option<Result<Pack, Fault>>),
     Language(i32),
     Theme(i32),
+    Tiles(bool),
     Scale(f32),
     Proportions(i32, i32),
     Logo,
@@ -116,6 +118,22 @@ impl Entry {
     }
 }
 
+struct PopupTransition {
+    started: Instant,
+    from: f32,
+    closing: bool,
+}
+
+impl PopupTransition {
+    fn reveal(&self, t: f32) -> f32 {
+        if self.closing {
+            self.from * (1.0 - t.powi(3))
+        } else {
+            1.0 - (1.0 - self.from) * (1.0 - t).powi(3)
+        }
+    }
+}
+
 struct Desktop {
     action_tx: Sender<Action>,
     commands: Sender<Command>,
@@ -126,6 +144,7 @@ struct Desktop {
     counts: HashMap<String, i32>,
     tray: Option<ksni::blocking::Handle<Tray>>,
     popup: Option<Popup>,
+    popup_transition: Option<PopupTransition>,
     window: Option<SettingsWindow>,
     focus_lost: Rc<Cell<bool>>,
     shown: Instant,
@@ -143,8 +162,21 @@ impl Desktop {
     fn handle(&mut self, action: Action) {
         match action {
             Action::Toggle(x, y) => {
-                if self.popup.is_some() {
-                    self.hide_popup();
+                if let Some(popup) = &self.popup {
+                    if self
+                        .popup_transition
+                        .as_ref()
+                        .is_some_and(|transition| transition.closing)
+                    {
+                        self.focus_lost.set(false);
+                        self.shown = Instant::now();
+                        popup
+                            .window()
+                            .with_winit_window(|window| window.focus_window());
+                        self.animate_popup(false);
+                    } else {
+                        self.hide_popup();
+                    }
                 } else {
                     self.tray_point = (x, y);
                     if let Err(error) = self.show_popup() {
@@ -154,7 +186,9 @@ impl Desktop {
             }
             Action::Dismiss => self.hide_popup(),
             Action::Configure(chibis) => {
-                self.hide_popup();
+                if !self.pinned {
+                    self.hide_popup();
+                }
                 if let Err(error) = self.show_settings(chibis) {
                     eprintln!("MAKO-UI-0002: Could not open settings: {error}");
                 }
@@ -163,23 +197,6 @@ impl Desktop {
                 self.pinned = !self.pinned;
                 if let Some(popup) = &self.popup {
                     popup.set_pinned(self.pinned);
-                    let theme = crate::icons::Theme::load();
-                    if let Some(icon) = theme.icon("configure") {
-                        popup.set_configure_icon(icon.image);
-                        popup.set_tint_configure(icon.tint);
-                    }
-                    if let Some(icon) = theme.icon("window-pin") {
-                        popup.set_pin_icon(icon.image);
-                        popup.set_tint_pin(icon.tint);
-                    }
-                    if let Some(icon) = theme.icon("list-add") {
-                        popup.set_add_icon(icon.image);
-                        popup.set_tint_add(icon.tint);
-                    }
-                    if let Some(icon) = theme.icon("list-remove") {
-                        popup.set_remove_icon(icon.image);
-                        popup.set_tint_remove(icon.tint);
-                    }
                 }
             }
             Action::Quit => {
@@ -294,6 +311,16 @@ impl Desktop {
                 self.schedule_save();
                 self.refresh_style();
             }
+            Action::Tiles(tiles) => {
+                self.config.tiles = tiles;
+                if let Some(window) = &self.window {
+                    window.set_tiles(tiles);
+                }
+                if let Some(popup) = &self.popup {
+                    popup.set_tiles(tiles);
+                }
+                self.schedule_save();
+            }
             Action::Scale(percent) => {
                 self.config.scale = (percent.clamp(20.0, 200.0) / 100.0).to_string();
                 self.apply_dimensions();
@@ -348,9 +375,21 @@ impl Desktop {
         if self.popup.is_some()
             && !self.pinned
             && self.focus_lost.get()
-            && self.shown.elapsed() > Duration::from_millis(180)
+            && self.shown.elapsed() > POPUP_DURATION
         {
             self.hide_popup();
+        }
+        if let (Some(popup), Some(transition)) = (&self.popup, &self.popup_transition) {
+            let t = (transition.started.elapsed().as_secs_f32() / POPUP_DURATION.as_secs_f32())
+                .min(1.0);
+            popup.set_reveal(transition.reveal(t));
+            if t >= 1.0 {
+                if transition.closing {
+                    let _ = popup.hide();
+                    self.popup = None;
+                }
+                self.popup_transition = None;
+            }
         }
     }
 
@@ -377,9 +416,23 @@ impl Desktop {
         ]
     }
 
+    fn animate_popup(&mut self, closing: bool) {
+        if let Some(popup) = &self.popup {
+            self.popup_transition = Some(PopupTransition {
+                started: Instant::now(),
+                from: popup.get_reveal(),
+                closing,
+            });
+        }
+    }
+
     fn hide_popup(&mut self) {
-        if let Some(popup) = self.popup.take() {
-            let _ = popup.hide();
+        if !self
+            .popup_transition
+            .as_ref()
+            .is_some_and(|transition| transition.closing)
+        {
+            self.animate_popup(true);
         }
     }
 
@@ -393,6 +446,25 @@ impl Desktop {
     fn create_popup(&mut self) -> Result<(), slint::PlatformError> {
         let popup = Popup::new()?;
         popup.set_pinned(self.pinned);
+        popup.set_reveal(0.0);
+        popup.set_tiles(self.config.tiles);
+        let theme = crate::icons::Theme::load();
+        if let Some(icon) = theme.icon("configure") {
+            popup.set_configure_icon(icon.image);
+            popup.set_tint_configure(icon.tint);
+        }
+        if let Some(icon) = theme.icon("window-pin") {
+            popup.set_pin_icon(icon.image);
+            popup.set_tint_pin(icon.tint);
+        }
+        if let Some(icon) = theme.icon("list-add") {
+            popup.set_add_icon(icon.image);
+            popup.set_tint_add(icon.tint);
+        }
+        if let Some(icon) = theme.icon("list-remove") {
+            popup.set_remove_icon(icon.image);
+            popup.set_tint_remove(icon.tint);
+        }
         let tx = self.action_tx.clone();
         popup.on_configure(move |chibis| {
             let _ = tx.send(Action::Configure(chibis));
@@ -413,7 +485,12 @@ impl Desktop {
         focused.set(false);
         let seen_focus = Cell::new(false);
         let tx = self.action_tx.clone();
-        popup.window().on_winit_window_event(move |_, event| {
+        let point = self.tray_point;
+        let x11 = matches!(self.session, Session::X11);
+        popup.window().on_winit_window_event(move |window, event| {
+            if x11 && matches!(event, winit::event::WindowEvent::Resized(_)) {
+                window.with_winit_window(|native| crate::place::x11(native, point));
+            }
             if let winit::event::WindowEvent::Focused(active) = event {
                 if *active {
                     seen_focus.set(true);
@@ -433,7 +510,7 @@ impl Desktop {
         let tx = self.action_tx.clone();
         popup.window().on_close_requested(move || {
             let _ = tx.send(Action::Dismiss);
-            slint::CloseRequestResponse::HideWindow
+            slint::CloseRequestResponse::KeepWindowShown
         });
         self.popup = Some(popup.clone_strong());
         self.refresh_rows();
@@ -449,6 +526,7 @@ impl Desktop {
                 .window()
                 .with_winit_window(|window| crate::place::x11(window, point));
         }
+        self.animate_popup(false);
         Ok(())
     }
 
@@ -478,6 +556,7 @@ impl Desktop {
             }
             connect!(on_language_selected, Action::Language(index), index);
             connect!(on_theme_selected, Action::Theme(index), index);
+            connect!(on_tiles_selected, Action::Tiles(value), value);
             connect!(on_size_selected, Action::Scale(value), value);
             connect!(
                 on_proportions_selected,
@@ -533,6 +612,7 @@ impl Desktop {
             ThemePref::Light => 1,
             ThemePref::Dark => 2,
         });
+        window.set_tiles(self.config.tiles);
         window.set_size_value(self.config.pet_scale() * 100.0);
         window.set_width_value(self.config.width as i32);
         window.set_height_value(self.config.height as i32);
@@ -570,12 +650,6 @@ impl Desktop {
             .collect();
         if let Some(popup) = &self.popup {
             popup.set_rows(model(rows.clone()));
-            if matches!(self.session, Session::X11) {
-                let point = self.tray_point;
-                popup
-                    .window()
-                    .with_winit_window(|window| crate::place::x11(window, point));
-            }
         }
         if let Some(window) = &self.window {
             window.set_rows(model(rows));
@@ -585,7 +659,7 @@ impl Desktop {
 
     fn refresh_style(&self) {
         let strings: ModelRc<SharedString> =
-            model((0..=42).map(|id| self.catalog.text(id).into()).collect());
+            model((0..=45).map(|id| self.catalog.text(id).into()).collect());
         let dark = self.config.dark();
         if let Some(popup) = &self.popup {
             popup.global::<Translations>().set_strings(strings.clone());
@@ -757,6 +831,7 @@ pub(crate) fn run(session: Session, open_settings: bool) -> Result<(), Fault> {
         counts,
         tray,
         popup: None,
+        popup_transition: None,
         window: None,
         focus_lost: Rc::new(Cell::new(false)),
         shown: Instant::now(),
@@ -807,4 +882,28 @@ pub(crate) fn run(session: Session, open_settings: bool) -> Result<(), Fault> {
         return Err(fault);
     }
     result.map_err(|error| Fault::new("MAKO-UI-0001", error.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reversing_the_popup_transition_keeps_its_current_reveal() {
+        let closing = PopupTransition {
+            from: 1.0,
+            closing: true,
+            started: Instant::now(),
+        };
+        let interrupted = closing.reveal(0.8);
+        let reopening = PopupTransition {
+            from: interrupted,
+            closing: false,
+            started: Instant::now(),
+        };
+        assert!((reopening.reveal(0.0) - interrupted).abs() <= f32::EPSILON);
+        assert!(reopening.reveal(0.5) > interrupted);
+        assert_eq!(reopening.reveal(1.0), 1.0);
+        assert_eq!(closing.reveal(1.0), 0.0);
+    }
 }

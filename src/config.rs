@@ -25,6 +25,7 @@ pub enum ThemePref {
 pub struct Settings {
     pub language: LanguagePref,
     pub theme: ThemePref,
+    pub tiles: bool,
     pub chibi: String,
     pub scale: String,
     pub width: u32,
@@ -37,6 +38,7 @@ impl Default for Settings {
         Self {
             language: LanguagePref::System,
             theme: ThemePref::System,
+            tiles: false,
             chibi: "bear-girl".to_string(),
             scale: "1".to_string(),
             width: 100,
@@ -74,6 +76,7 @@ impl Settings {
                         _ => ThemePref::System,
                     }
                 }
+                "tiles" => settings.tiles = value == "true",
                 "chibi" if crate::pack::safe_id(value) => settings.chibi = value.to_string(),
                 "scale" => settings.scale = value.to_owned(),
                 "width" => settings.width = proportion(value),
@@ -111,7 +114,7 @@ impl Settings {
             )
         })?;
         let body = format!(
-            "language = \"{}\"\ntheme = \"{}\"\nchibi = \"{}\"\nscale = \"{}\"\nwidth = {}\nheight = {}\nfavorites = \"{}\"\n",
+            "language = \"{}\"\ntheme = \"{}\"\ntiles = {}\nchibi = \"{}\"\nscale = \"{}\"\nwidth = {}\nheight = {}\nfavorites = \"{}\"\n",
             match self.language {
                 LanguagePref::System => "system",
                 LanguagePref::En => "en",
@@ -122,6 +125,7 @@ impl Settings {
                 ThemePref::Light => "light",
                 ThemePref::Dark => "dark",
             },
+            self.tiles,
             self.chibi,
             self.pet_scale(),
             self.width,
