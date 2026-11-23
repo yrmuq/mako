@@ -45,7 +45,7 @@ jobs:
           restore-keys: |
             mako-appimage-${{ runner.os }}-${{ runner.arch }}-
       - name: AppImage tools
-        run: sudo apt-get update && sudo apt-get install -y file curl
+        run: sudo apt-get update && sudo apt-get install -y file curl libfontconfig1-dev
       - run: sh packaging/check.sh
       - run: sh packaging/appimage/build.sh
       - run: sh packaging/appimage/check.sh

@@ -27,6 +27,9 @@ pub struct Settings {
     pub theme: ThemePref,
     pub chibi: String,
     pub scale: String,
+    pub width: u32,
+    pub height: u32,
+    pub favorites: Vec<String>,
 }
 
 impl Default for Settings {
@@ -36,6 +39,9 @@ impl Default for Settings {
             theme: ThemePref::System,
             chibi: "bear-girl".to_string(),
             scale: "1".to_string(),
+            width: 100,
+            height: 100,
+            favorites: vec![crate::pack::BUILTIN_ID.into()],
         }
     }
 }
@@ -46,6 +52,7 @@ impl Settings {
             return Self::default();
         };
         let mut settings = Self::default();
+        let mut has_favorites = false;
         for line in text.lines() {
             let line = line.trim();
             let Some((key, value)) = line.split_once('=') else {
@@ -68,9 +75,23 @@ impl Settings {
                     }
                 }
                 "chibi" if crate::pack::safe_id(value) => settings.chibi = value.to_string(),
-                "scale" => settings.scale = normalize_scale(value).to_string(),
+                "scale" => settings.scale = value.to_owned(),
+                "width" => settings.width = proportion(value),
+                "height" => settings.height = proportion(value),
+                "favorites" => {
+                    has_favorites = true;
+                    settings.favorites.clear();
+                    for id in value.split(',').filter(|id| crate::pack::safe_id(id)) {
+                        if !settings.favorites.iter().any(|value| value == id) {
+                            settings.favorites.push(id.to_string());
+                        }
+                    }
+                }
                 _ => {}
             }
+        }
+        if !has_favorites && settings.chibi != crate::pack::BUILTIN_ID {
+            settings.favorites.push(settings.chibi.clone());
         }
         settings
     }
@@ -90,7 +111,7 @@ impl Settings {
             )
         })?;
         let body = format!(
-            "language = \"{}\"\ntheme = \"{}\"\nchibi = \"{}\"\nscale = \"{}\"\n",
+            "language = \"{}\"\ntheme = \"{}\"\nchibi = \"{}\"\nscale = \"{}\"\nwidth = {}\nheight = {}\nfavorites = \"{}\"\n",
             match self.language {
                 LanguagePref::System => "system",
                 LanguagePref::En => "en",
@@ -102,7 +123,10 @@ impl Settings {
                 ThemePref::Dark => "dark",
             },
             self.chibi,
-            self.scale_key(),
+            self.pet_scale(),
+            self.width,
+            self.height,
+            self.favorites.join(","),
         );
         let temporary = path.with_extension("toml.part");
         fs::write(&temporary, body).map_err(|error| {
@@ -128,28 +152,33 @@ impl Settings {
     }
 
     pub fn pet_scale(&self) -> f32 {
-        match self.scale_key() {
-            "0.8" => 0.8,
-            "0.6" => 0.6,
-            "0.4" => 0.4,
-            "0.2" => 0.2,
-            _ => 1.0,
-        }
+        self.scale
+            .parse::<f32>()
+            .ok()
+            .filter(|value| value.is_finite())
+            .unwrap_or(1.0)
+            .clamp(0.2, 2.0)
     }
 
-    pub fn scale_key(&self) -> &str {
-        normalize_scale(&self.scale)
+    pub fn scales(&self) -> (f32, f32) {
+        let scale = self.pet_scale();
+        (
+            scale * self.width as f32 / 100.0,
+            scale * self.height as f32 / 100.0,
+        )
+    }
+
+    pub fn dark(&self) -> bool {
+        match self.theme {
+            ThemePref::System => system_dark(),
+            ThemePref::Light => false,
+            ThemePref::Dark => true,
+        }
     }
 }
 
-pub fn normalize_scale(value: &str) -> &'static str {
-    match value {
-        "0.8" => "0.8",
-        "0.6" => "0.6",
-        "0.4" => "0.4",
-        "0.2" => "0.2",
-        _ => "1",
-    }
+fn proportion(value: &str) -> u32 {
+    value.parse::<u32>().unwrap_or(100).clamp(25, 200)
 }
 
 pub fn system_dark() -> bool {

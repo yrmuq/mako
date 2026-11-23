@@ -40,6 +40,6 @@ rot torso 0 2
 rot head 0 6 0.28 8 0.55 6
 rot left-hand 0 -36 0.14 -43 0.28 -35 0.42 -42 0.55 -36
 rot right-hand 0 -29 0.14 -24 0.28 -31 0.42 -24 0.55 -29
-image left-leg 0 left-leg-sit?
-image right-leg 0 right-leg-sit?
+rot left-leg 0 -92
+rot right-leg 0 -76
 image eyes 0 eyes-open

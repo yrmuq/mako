@@ -1,15 +1,20 @@
 // Copyright (C) 2026 yrmuq
 // SPDX-License-Identifier: GPL-3.0-only
 
+mod about;
 mod app;
 mod config;
+mod desktop;
 mod draw;
+mod game;
 mod host_wayland;
 mod host_x11;
 mod i18n;
 mod pack;
+mod place;
 mod rag;
 mod sim;
+mod updates;
 
 use std::env;
 use std::fmt;
@@ -38,22 +43,15 @@ impl fmt::Display for Fault {
 }
 
 pub fn run() -> Result<(), Fault> {
-    let mut args = env::args().skip(1);
-    if args.any(|arg| arg == "--help" || arg == "-h") {
-        println!(
-            "mako — a desktop pet for KDE Plasma\n\n\
-             bear girl walks along the bottom edge of the screen.\n\
-             Drag with the left button and release to throw. Right-click opens the chibi, size, language, theme and quit.\n\n\
-             --help    Show this help"
-        );
+    let args: Vec<_> = env::args().skip(1).collect();
+    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        println!("mako — a desktop pet for KDE Plasma\n\nDrag with the left button and release to throw. Open settings from the tray.\n\n  --settings  Open settings at startup\n  --help      Show this help");
         return Ok(());
     }
-    match session()? {
-        Session::Wayland => host_wayland::run(),
-        Session::X11 => host_x11::run(),
-    }
+    desktop::run(session()?, args.iter().any(|arg| arg == "--settings"))
 }
 
+#[derive(Clone, Copy)]
 enum Session {
     Wayland,
     X11,

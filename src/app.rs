@@ -3,30 +3,23 @@
 
 use tiny_skia::Point;
 
-use crate::config::{system_dark, LanguagePref, Settings, ThemePref};
-use crate::draw::{self, Frame, Hit, Motion, Part, RowId, Scene};
-use crate::i18n::{Catalog, ID_NAME};
-use crate::pack::{self, BonePoint, Choice, Pack, BUILTIN_ID};
+use crate::config::Settings;
+use crate::draw::{self, Frame, Motion, Part, Scene};
+use crate::pack::{BonePoint, Pack};
 use crate::rag::Ragdoll;
 use crate::sim::{Activity, Pet, Room, FEET_X, FEET_Y, GRAVITY, SPRITE_H, SPRITE_W};
-
-const MENU_W: f32 = draw::MENU_W;
 
 struct Grip {
     point: BonePoint,
     cursor: Point,
-    sitting: bool,
 }
 
 pub struct App {
     pub pet: Pet,
     pub room: Room,
     settings: Settings,
-    catalog: Catalog,
     pack: Pack,
     rag: Ragdoll,
-    choices: Vec<Choice>,
-    menu: bool,
     grip: Option<Grip>,
     committed_x: i32,
     committed_y: i32,
@@ -37,10 +30,7 @@ pub struct App {
     prev_vy: f32,
     screen: (f32, f32),
     bottom: f32,
-    pub dark: bool,
-    pub exit: bool,
     pub scale: u32,
-    hits: Vec<Hit>,
     pub logical_w: u32,
     pub logical_h: u32,
     pub origin_x: i32,
@@ -49,28 +39,16 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(room: Room) -> Self {
-        let settings = Settings::load();
-        let catalog = Catalog::load(&settings.code());
+    pub fn new(room: Room, settings: Settings, pack: Pack) -> Self {
         let pet = Pet::on_floor(&room);
-        let dark = match settings.theme {
-            ThemePref::System => system_dark(),
-            ThemePref::Light => false,
-            ThemePref::Dark => true,
-        };
-        let pack = Pack::open(&settings.chibi);
-        let choices = pack::choices();
         let rag = Ragdoll::new(&pack);
         let screen = screen_of(&room);
         let mut app = Self {
             pet,
             room,
             settings,
-            catalog,
             pack,
             rag,
-            choices,
-            menu: false,
             grip: None,
             committed_x: 0,
             committed_y: 0,
@@ -81,10 +59,7 @@ impl App {
             prev_vy: 0.0,
             screen,
             bottom: 0.0,
-            dark,
-            exit: false,
             scale: 1,
-            hits: Vec::new(),
             logical_w: SPRITE_W as u32,
             logical_h: SPRITE_H as u32,
             origin_x: 0,
@@ -143,7 +118,7 @@ impl App {
             if self.pet.activity == Activity::Fall {
                 let ax = ((self.pet.vx - vx) / dt.max(0.001)).clamp(-14000.0, 14000.0);
                 let ay = ((self.pet.vy - vy) / dt.max(0.001)).clamp(-14000.0, 14000.0);
-                self.rag.step(dt, ax, ay, self.pet_scale());
+                self.rag.step(dt, ax, ay, self.settings.pet_scale());
             } else if self.pet.activity == Activity::Down {
                 let ax = ((self.pet.vx - vx) / dt.max(0.001)).clamp(-9000.0, 9000.0);
                 // The landing frame still feels the floor. After that, gravity must not
@@ -153,8 +128,8 @@ impl App {
                 } else {
                     crate::sim::GRAVITY
                 };
-                self.rag.plant(self.pet.face, vx);
-                self.rag.step(dt, ax, ay, self.pet_scale());
+                self.rag.plant(vx * self.pet.face);
+                self.rag.step(dt, ax, ay, self.settings.pet_scale());
             } else if self.rag.is_planted() {
                 self.rag.clear_plant();
                 self.rag.relax(dt);
@@ -178,11 +153,7 @@ impl App {
     pub fn pointer(&mut self, lx: f32, ly: f32, kind: Pointer) {
         match kind {
             Pointer::LeftDown => {
-                if let Some((id, key)) = self.hit(lx, ly) {
-                    self.activate(id, &key);
-                    return;
-                }
-                if self.grip.is_some() || self.in_menu(lx, ly) {
+                if self.grip.is_some() {
                     return;
                 }
                 let Some(point) = draw::pick(&self.committed_parts, lx, ly) else {
@@ -197,12 +168,7 @@ impl App {
                 self.rag.live = true;
                 let cursor =
                     Point::from_xy(self.committed_x as f32 + lx, self.committed_y as f32 + ly);
-                self.grip = Some(Grip {
-                    point,
-                    cursor,
-                    sitting: self.pet.activity == Activity::Sit,
-                });
-                self.menu = false;
+                self.grip = Some(Grip { point, cursor });
                 self.pet.grab();
                 self.trail.clear();
                 self.trail.push((self.clock, cursor.x, cursor.y));
@@ -212,20 +178,17 @@ impl App {
             Pointer::Motion if self.grip.is_some() => self.move_grip(lx, ly),
             Pointer::LeftUp if self.grip.is_some() => {
                 self.move_grip(lx, ly);
-                self.grip = None;
+                let grip = self.grip.take().expect("active grip");
                 let (vx, vy) = self.flick();
+                self.rag.release(
+                    &self.pack,
+                    grip.point,
+                    Point::from_xy(vx * self.pet.face, vy),
+                    self.settings.scales(),
+                );
                 self.trail.clear();
                 self.pet.release(&self.room, vx, vy);
                 self.sync_geometry();
-            }
-            Pointer::RightDown => {
-                if self.grip.is_none() {
-                    self.menu = !self.menu;
-                    if self.menu {
-                        self.choices = pack::choices();
-                    }
-                    self.sync_geometry();
-                }
             }
             Pointer::Motion | Pointer::LeftUp => {}
         }
@@ -249,13 +212,6 @@ impl App {
         }
     }
 
-    pub fn key_escape(&mut self) {
-        if self.menu {
-            self.menu = false;
-            self.sync_geometry();
-        }
-    }
-
     pub fn render(&mut self) -> Frame {
         let scene = Scene {
             cycle: self.pet.phase,
@@ -273,42 +229,20 @@ impl App {
                 self.pet.tilt()
             },
             facing_left: self.pet.face < 0.0,
-            menu: self.menu,
-            menu_left: self.menu_left(),
-            dark: self.dark,
-            pet_scale: self.pet_scale(),
+            scales: self.settings.scales(),
             pose: if self.rag.live {
                 self.rag.degrees()
             } else {
                 Vec::new()
             },
             anchor: self.grip.as_ref().map(|grip| grip.point),
-            hold_sitting: self.grip.as_ref().is_some_and(|grip| grip.sitting),
-            rows: draw::rows(
-                &self.catalog,
-                &self.pet_title(),
-                match self.settings.language {
-                    LanguagePref::System => "system",
-                    LanguagePref::En => "en",
-                    LanguagePref::Ru => "ru",
-                },
-                match self.settings.theme {
-                    ThemePref::System => "system",
-                    ThemePref::Light => "light",
-                    ThemePref::Dark => "dark",
-                },
-                self.settings.scale_key(),
-                &self.choices,
-                &self.pack.id,
-            ),
         };
         let mut frame = draw::render(&scene, &self.pack, self.scale);
-        self.hits = frame.hits.clone();
         self.parts = std::mem::take(&mut frame.parts);
         self.logical_w = frame.width / self.scale.max(1);
         self.logical_h = frame.height / self.scale.max(1);
-        let feet_x = self.layout_pet_x() + self.feet_x() - frame.shift.0 as f32;
-        let feet_y = self.pet_top() + self.feet_y() - frame.shift.1 as f32;
+        let feet_x = self.feet_x() - frame.shift.0 as f32;
+        let feet_y = self.feet_y() - frame.shift.1 as f32;
         if let (Some(grip), Some(anchor)) = (&self.grip, frame.anchor) {
             let support = frame.support.unwrap_or(feet_y);
             let floor_origin = (self.room.floor - support).floor() as i32;
@@ -330,120 +264,26 @@ impl App {
         self.committed_parts = std::mem::take(&mut self.parts);
     }
 
-    fn activate(&mut self, id: RowId, key: &str) {
-        match id {
-            RowId::SystemLang => self.settings.language = LanguagePref::System,
-            RowId::English => self.settings.language = LanguagePref::En,
-            RowId::Russian => self.settings.language = LanguagePref::Ru,
-            RowId::SystemTheme => self.settings.theme = ThemePref::System,
-            RowId::Light => self.settings.theme = ThemePref::Light,
-            RowId::Dark => self.settings.theme = ThemePref::Dark,
-            RowId::Chibi => {
-                self.settings.chibi = key.to_string();
-                self.pack = Pack::open(key);
-                self.rag = Ragdoll::new(&self.pack);
-            }
-            RowId::Scale => {
-                self.settings.scale = crate::config::normalize_scale(key).to_string();
-                self.fit_room();
-                if self.grip.is_none()
-                    && self.pet.activity != Activity::Fall
-                    && self.pet.activity != Activity::Down
-                {
-                    self.pet.y = self.room.floor;
-                    self.pet.x = self.pet.x.clamp(self.room.left, self.room.right);
-                }
-            }
-            RowId::Quit => {
-                self.exit = true;
-                return;
-            }
-            RowId::Name | RowId::ChibiLabel | RowId::Language | RowId::Theme | RowId::Size => {
-                return
-            }
-        }
-        self.dark = match self.settings.theme {
-            ThemePref::System => system_dark(),
-            ThemePref::Light => false,
-            ThemePref::Dark => true,
-        };
-        self.catalog = Catalog::load(&self.settings.code());
-        if let Err(error) = self.settings.save() {
-            eprintln!("{error}");
-        }
+    pub fn pack_id(&self) -> &str {
+        &self.pack.id
+    }
+
+    pub fn apply_settings(&mut self, settings: Settings) {
+        self.settings = settings;
+        self.fit_room();
         self.sync_geometry();
     }
 
-    fn hit(&self, x: f32, y: f32) -> Option<(RowId, String)> {
-        self.hits
-            .iter()
-            .find(|hit| x >= hit.x && y >= hit.y && x < hit.x + hit.w && y < hit.y + hit.h)
-            .map(|hit| (hit.id, hit.key.clone()))
-    }
-
-    fn pet_title(&self) -> String {
-        if self.pack.id == BUILTIN_ID {
-            self.catalog.text(ID_NAME).to_string()
-        } else {
-            self.pack.name.clone()
-        }
-    }
-
-    fn menu_left(&self) -> bool {
-        self.pet.x + MENU_W > self.room.right
-    }
-
-    fn in_menu(&self, x: f32, y: f32) -> bool {
-        let bottom = if self.menu {
-            self.pet_h().max(SPRITE_H)
-        } else {
-            self.pet_h()
-        };
-        if !self.menu || y < 0.0 || y >= bottom {
-            return false;
-        }
-        let menu_x = if self.menu_left() {
-            0.0
-        } else {
-            self.layout_pet_x() + self.pet_w()
-        };
-        x >= menu_x && x < menu_x + MENU_W
-    }
-
-    fn layout_pet_x(&self) -> f32 {
-        if self.menu && self.menu_left() {
-            MENU_W
-        } else {
-            0.0
-        }
-    }
-
-    fn pet_scale(&self) -> f32 {
-        self.settings.pet_scale()
+    pub fn hit_body(&self, screen_x: f32, screen_y: f32) -> bool {
+        let (x, y) = self.pointer_from_screen(screen_x, screen_y);
+        draw::pick(&self.committed_parts, x, y).is_some()
     }
 
     fn feet_x(&self) -> f32 {
-        FEET_X * self.pet_scale()
+        FEET_X * self.settings.scales().0
     }
-
     fn feet_y(&self) -> f32 {
-        FEET_Y * self.pet_scale()
-    }
-
-    fn pet_w(&self) -> f32 {
-        SPRITE_W * self.pet_scale()
-    }
-
-    fn pet_h(&self) -> f32 {
-        SPRITE_H * self.pet_scale()
-    }
-
-    fn pet_top(&self) -> f32 {
-        if self.menu {
-            (SPRITE_H - self.pet_h()).max(0.0)
-        } else {
-            0.0
-        }
+        draw::scene_size(self.settings.scales()).1 as f32
     }
 
     fn motion_name(&self) -> &'static str {
@@ -492,21 +332,20 @@ impl App {
 
     fn fit_room(&mut self) {
         let (width, height) = self.screen;
-        let inset = FEET_X * self.pet_scale();
+        let inset = self.feet_x().min((width - 34.0).max(0.0) / 2.0);
         self.room = Room {
             left: 16.0 + inset,
             right: (width - 16.0 - inset).max(16.0 + inset + 1.0),
-            floor: (height - self.bottom).max(self.feet_y()),
+            floor: (height - self.bottom).max(1.0),
         };
     }
 
     fn sync_geometry(&mut self) {
-        let (width, height) = draw::scene_size(self.menu, self.pet_scale());
+        let (width, height) = draw::scene_size(self.settings.scales());
         self.logical_w = width;
         self.logical_h = height;
-        let pet_x = self.layout_pet_x();
-        self.origin_x = (self.pet.x - pet_x - self.feet_x()).round() as i32;
-        self.origin_y = (self.pet.y - self.pet_top() - self.feet_y()).round() as i32;
+        self.origin_x = (self.pet.x - self.feet_x()).round() as i32;
+        self.origin_y = (self.pet.y - self.feet_y()).round() as i32;
     }
 }
 
@@ -514,7 +353,6 @@ pub enum Pointer {
     Motion,
     LeftDown,
     LeftUp,
-    RightDown,
 }
 
 pub fn startup_room(width: f32, height: f32) -> Room {
@@ -533,6 +371,10 @@ fn screen_of(room: &Room) -> (f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_app(room: Room) -> App {
+        App::new(room, Settings::default(), Pack::builtin())
+    }
 
     fn visible_part(app: &mut App, name: &str, bottom: bool) -> (f32, f32) {
         app.render();
@@ -553,7 +395,7 @@ mod tests {
 
     #[test]
     fn drag_follows_the_latest_point_until_the_surface_commits() {
-        let mut app = App::new(startup_room(800.0, 600.0));
+        let mut app = test_app(startup_room(800.0, 600.0));
         let (x, y) = visible_part(&mut app, "torso", false);
         let origin_x = app.origin_x;
         let origin_y = app.origin_y;
@@ -567,68 +409,16 @@ mod tests {
     }
 
     #[test]
-    fn menu_padding_does_not_start_a_drag() {
-        let mut app = App::new(startup_room(800.0, 600.0));
-        app.pointer(20.0, 20.0, Pointer::RightDown);
-        let (x, y) = visible_part(&mut app, "torso", false);
-        app.pointer(SPRITE_W + 12.0, 20.0, Pointer::LeftDown);
-        assert_ne!(app.pet.activity, Activity::Drag);
-        app.pointer(x, y, Pointer::LeftDown);
-        assert_eq!(app.pet.activity, Activity::Drag);
-    }
-
-    #[test]
     fn screen_pointer_uses_the_committed_window() {
-        let app = App::new(startup_room(800.0, 600.0));
+        let app = test_app(startup_room(800.0, 600.0));
         let (x, y) =
             app.pointer_from_screen(app.origin_x as f32 + 12.0, app.origin_y as f32 + 40.0);
         assert_eq!((x, y), (12.0, 40.0));
     }
 
     #[test]
-    fn menu_click_selects_the_row_under_the_pointer() {
-        let mut app = App::new(startup_room(1200.0, 800.0));
-        app.pointer(40.0, 40.0, Pointer::RightDown);
-        let frame = app.render();
-        let light = frame
-            .hits
-            .iter()
-            .find(|hit| hit.id == RowId::Light)
-            .expect("light row");
-        app.pointer(
-            light.x + light.w * 0.5,
-            light.y + light.h * 0.5,
-            Pointer::LeftDown,
-        );
-        assert!(!app.dark);
-        assert!(!app.exit);
-        let dark = frame
-            .hits
-            .iter()
-            .find(|hit| hit.id == RowId::Dark)
-            .expect("dark row");
-        app.pointer(
-            dark.x + dark.w * 0.5,
-            dark.y + dark.h * 0.5,
-            Pointer::LeftDown,
-        );
-        assert!(app.dark);
-        let quit = frame
-            .hits
-            .iter()
-            .find(|hit| hit.id == RowId::Quit)
-            .expect("quit row");
-        app.pointer(
-            quit.x + quit.w * 0.5,
-            quit.y + quit.h * 0.5,
-            Pointer::LeftDown,
-        );
-        assert!(app.exit);
-    }
-
-    #[test]
     fn a_small_size_shrinks_the_frame() {
-        let mut app = App::new(startup_room(800.0, 600.0));
+        let mut app = test_app(startup_room(800.0, 600.0));
         app.settings.scale = "0.2".to_string();
         app.fit_room();
         app.pet.y = app.room.floor;
@@ -639,7 +429,7 @@ mod tests {
 
     #[test]
     fn a_flick_throws_along_the_drag() {
-        let mut app = App::new(startup_room(1200.0, 800.0));
+        let mut app = test_app(startup_room(1200.0, 800.0));
         let (x, y) = visible_part(&mut app, "torso", false);
         let start_x = app.pet.x;
         app.pointer(x, y, Pointer::LeftDown);
@@ -668,7 +458,7 @@ mod tests {
 
     #[test]
     fn letting_go_after_a_pause_does_not_throw() {
-        let mut app = App::new(startup_room(1200.0, 800.0));
+        let mut app = test_app(startup_room(1200.0, 800.0));
         let (x, y) = visible_part(&mut app, "torso", false);
         app.pointer(x, y, Pointer::LeftDown);
         app.clock = 0.02;
@@ -684,7 +474,7 @@ mod tests {
 
     #[test]
     fn a_downward_mouse_flick_bounces_with_the_frame_inside_the_screen_edge() {
-        let mut app = App::new(startup_room(1200.0, 800.0));
+        let mut app = test_app(startup_room(1200.0, 800.0));
         app.set_bottom(48.0);
         app.set_room(startup_room(1200.0, 800.0));
         app.pet.x = app.room.right;
@@ -707,34 +497,33 @@ mod tests {
         assert!(app.pet.vy > 0.0);
 
         let mut bounced = false;
-        for _ in 0..160 {
+        let mut rested = false;
+        for _ in 0..360 {
             app.tick(1.0 / 60.0);
             let frame = app.render();
             assert!(app.origin_x >= 0 && app.origin_x + frame.width as i32 <= 1200);
             assert!(app.origin_y + frame.height as i32 <= app.room.floor as i32);
-            assert_ne!(app.pet.activity, Activity::Down);
+            rested |= app.pet.activity == Activity::Down;
             bounced |= app.pet.vy < 0.0 && app.pet.y < app.room.floor - 10.0;
             if app.pet.activity == Activity::Idle {
                 break;
             }
         }
         assert!(bounced);
+        assert!(rested);
         assert_eq!(app.pet.activity, Activity::Idle);
     }
 
     #[test]
     fn the_floor_is_the_top_edge_of_the_bottom_panel() {
-        let mut app = App::new(startup_room(800.0, 600.0));
+        let mut app = test_app(startup_room(800.0, 600.0));
         assert_eq!(app.room.floor, 600.0);
         app.set_bottom(48.0);
         for scale in ["0.2", "0.4", "0.6", "0.8", "1"] {
             app.settings.scale = scale.to_string();
-            for menu in [false, true] {
-                app.menu = menu;
-                app.set_room(startup_room(800.0, 600.0));
-                assert_eq!(app.room.floor, 552.0);
-                assert_eq!(app.origin_y + app.logical_h as i32, 552);
-            }
+            app.set_room(startup_room(800.0, 600.0));
+            assert_eq!(app.room.floor, 552.0);
+            assert_eq!(app.origin_y + app.logical_h as i32, 552);
         }
     }
     #[test]
@@ -747,7 +536,7 @@ mod tests {
             ("right-leg", true),
         ] {
             for face in [-1.0, 1.0] {
-                let mut app = App::new(startup_room(1200.0, 800.0));
+                let mut app = test_app(startup_room(1200.0, 800.0));
                 app.pet.face = face;
                 let (x, y) = visible_part(&mut app, part, bottom);
                 app.pointer(x, y, Pointer::LeftDown);

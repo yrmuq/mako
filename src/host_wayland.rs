@@ -21,13 +21,16 @@ use wayland_client::globals::registry_queue_init;
 use wayland_client::protocol::{wl_output, wl_pointer, wl_seat, wl_shm, wl_surface};
 use wayland_client::{Connection, QueueHandle};
 
-use crate::app::{startup_room, App, Pointer};
+use crate::app::{startup_room, Pointer};
+use crate::config::Settings;
+use crate::game::{Command, Game};
+use crate::pack::Pack;
 use crate::Fault;
+use std::sync::mpsc::Receiver;
 
 const BTN_LEFT: u32 = 0x110;
-const BTN_RIGHT: u32 = 0x111;
 
-pub fn run() -> Result<(), Fault> {
+pub fn run(settings: Settings, first: Pack, commands: Receiver<Command>) -> Result<(), Fault> {
     let conn = Connection::connect_to_env().map_err(|error| {
         Fault::new(
             "MAKO-WL-0001",
@@ -79,26 +82,50 @@ pub fn run() -> Result<(), Fault> {
         pool,
         frames: Vec::new(),
         frame_px: None,
-        shown: None,
+        shown: Vec::new(),
+        frame_requested: false,
         needs_full_damage: true,
         layer,
         compositor,
-        app: App::new(startup_room(1920.0, 1080.0)),
+        game: Game::new(startup_room(1920.0, 1080.0), settings, first, commands),
         pointer: None,
         configured: false,
         last_time: 0,
         output_ready: false,
         screen: None,
     };
-    while !state.app.exit {
-        queue.blocking_dispatch(&mut state).map_err(|error| {
-            Fault::new(
-                "MAKO-WL-0001",
-                format!("The Wayland connection failed: {error}"),
-            )
-        })?;
+    use rustix::event::{poll, PollFd, PollFlags, Timespec};
+    let timeout = Timespec {
+        tv_sec: 0,
+        tv_nsec: 16_000_000,
+    };
+    while !state.game.exit {
+        let changed = state.game.commands();
+        if changed && state.configured && !state.frame_requested {
+            state.present(&qh);
+        }
+        queue.dispatch_pending(&mut state).map_err(dispatch_error)?;
+        queue.flush().map_err(dispatch_error)?;
+        if let Some(read) = queue.prepare_read() {
+            let socket = read.connection_fd();
+            let mut fd = [PollFd::new(&socket, PollFlags::IN)];
+            match poll(&mut fd, Some(&timeout)) {
+                Ok(0) | Err(rustix::io::Errno::INTR) => {}
+                Ok(_) => {
+                    read.read().map_err(dispatch_error)?;
+                }
+                Err(error) => return Err(dispatch_error(error)),
+            }
+        }
     }
     Ok(())
+}
+
+fn dispatch_error(error: impl std::fmt::Display) -> Fault {
+    Fault::new(
+        "MAKO-WL-0004",
+        format!("The Wayland connection failed: {error}"),
+    )
 }
 
 struct Host {
@@ -109,11 +136,12 @@ struct Host {
     pool: SlotPool,
     frames: Vec<Buffer>,
     frame_px: Option<(i32, i32)>,
-    shown: Option<PxRect>,
+    shown: Vec<PxRect>,
+    frame_requested: bool,
     needs_full_damage: bool,
     layer: LayerSurface,
     compositor: CompositorState,
-    app: App,
+    game: Game,
     pointer: Option<wl_pointer::WlPointer>,
     configured: bool,
     last_time: u32,
@@ -133,7 +161,7 @@ impl Host {
             }
         }
         if let Some((width, height, scale)) = found {
-            self.app.scale = scale;
+            self.game.set_scale(scale);
             self.output_ready = true;
             if self.screen.is_none() {
                 self.note_screen(width.round() as u32, height.round() as u32);
@@ -146,23 +174,27 @@ impl Host {
             return;
         }
         self.screen = Some((width, height));
-        self.app.set_bottom(crate::config::bottom_panel());
-        self.app.set_room(startup_room(width as f32, height as f32));
+        self.game.set_room(
+            startup_room(width as f32, height as f32),
+            crate::config::bottom_panel(),
+        );
     }
 
     fn present(&mut self, qh: &QueueHandle<Self>) {
         let Some((screen_w, screen_h)) = self.screen else {
             let surface = self.layer.wl_surface();
             surface.frame(qh, surface.clone());
+            self.frame_requested = true;
             self.layer.commit();
             return;
         };
-        let scale = self.app.scale.max(1);
+        let scale = self.game.scale().max(1);
         let buf_w = (screen_w as i32).saturating_mul(scale as i32);
         let buf_h = (screen_h as i32).saturating_mul(scale as i32);
         let Some(stride) = buf_w.checked_mul(4) else {
             let surface = self.layer.wl_surface();
             surface.frame(qh, surface.clone());
+            self.frame_requested = true;
             self.layer.commit();
             return;
         };
@@ -175,22 +207,28 @@ impl Host {
         else {
             let surface = self.layer.wl_surface();
             surface.frame(qh, surface.clone());
+            self.frame_requested = true;
             self.layer.commit();
             return;
         };
-        self.app.prepare();
-        let frame = self.app.render();
-        let next = PxRect {
-            x: self.app.origin_x.saturating_mul(scale as i32),
-            y: self.app.origin_y.saturating_mul(scale as i32),
-            w: frame.width as i32,
-            h: frame.height as i32,
-        };
-        {
-            let canvas = self.frames[index]
-                .canvas(&mut self.pool)
-                .expect("MAKO-WL-0003: Could not draw a frame");
-            canvas.fill(0);
+        let surface = self.layer.wl_surface();
+        let region = Region::new(&self.compositor)
+            .expect("MAKO-WL-0003: Could not limit pointer input to the pet");
+        let mut next = Vec::with_capacity(self.game.pets.len());
+        let canvas = self.frames[index]
+            .canvas(&mut self.pool)
+            .expect("MAKO-WL-0003: Could not draw a frame");
+        canvas.fill(0);
+        for pet in &mut self.game.pets {
+            let app = &mut pet.app;
+            app.prepare();
+            let frame = app.render();
+            let rect = PxRect {
+                x: app.origin_x.saturating_mul(scale as i32),
+                y: app.origin_y.saturating_mul(scale as i32),
+                w: frame.width as i32,
+                h: frame.height as i32,
+            };
             blit(
                 canvas,
                 buf_w as u32,
@@ -198,32 +236,34 @@ impl Host {
                 &frame.bgra,
                 frame.width,
                 frame.height,
-                next.x,
-                next.y,
+                rect.x,
+                rect.y,
             );
-        }
-        let surface = self.layer.wl_surface();
-        let region = Region::new(&self.compositor)
-            .expect("MAKO-WL-0003: Could not limit pointer input to the pet");
-        let input_w = self.app.logical_w as i32;
-        let input_h = self.app.logical_h as i32;
-        if input_w > 0 && input_h > 0 {
-            region.add(self.app.origin_x, self.app.origin_y, input_w, input_h);
+            region.add(
+                app.origin_x,
+                app.origin_y,
+                app.logical_w as i32,
+                app.logical_h as i32,
+            );
+            next.push(rect);
+            app.note_committed();
         }
         surface.set_input_region(Some(region.wl_region()));
         surface.set_buffer_scale(scale as i32);
-        for damage in present_damages(self.needs_full_damage, buf_w, buf_h, self.shown, next) {
+        for damage in damages(self.needs_full_damage, buf_w, buf_h, &self.shown, &next) {
             surface.damage_buffer(damage.x, damage.y, damage.w, damage.h);
         }
         self.needs_full_damage = false;
-        surface.frame(qh, surface.clone());
+        self.frame_requested = !next.is_empty();
+        if self.frame_requested {
+            surface.frame(qh, surface.clone());
+        }
         self.frames[index]
             .attach_to(surface)
             .expect("MAKO-WL-0003: Could not attach a frame");
         self.layer.commit();
         drop(region);
-        self.shown = Some(next);
-        self.app.note_committed();
+        self.shown = next;
     }
 
     fn ensure_frames(&mut self, width: i32, height: i32, stride: i32) {
@@ -232,7 +272,7 @@ impl Host {
         }
         self.frames.clear();
         self.frame_px = Some((width, height));
-        self.shown = None;
+        self.shown.clear();
         self.needs_full_damage = true;
         let bytes = (height as usize).saturating_mul(stride as usize);
         for _ in 0..2 {
@@ -258,7 +298,7 @@ impl CompositorHandler for Host {
         _: &wl_surface::WlSurface,
         scale: i32,
     ) {
-        self.app.scale = scale.max(1) as u32;
+        self.game.set_scale(scale.max(1) as u32);
     }
 
     fn transform_changed(
@@ -283,7 +323,8 @@ impl CompositorHandler for Host {
             time.wrapping_sub(self.last_time) as f32 / 1000.0
         };
         self.last_time = time;
-        self.app.tick(dt.clamp(0.0, 0.05));
+        self.frame_requested = false;
+        self.game.tick(dt.clamp(0.0, 0.05));
         self.present(qh);
     }
 
@@ -324,7 +365,7 @@ impl OutputHandler for Host {
 
 impl LayerShellHandler for Host {
     fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &LayerSurface) {
-        self.app.exit = true;
+        self.game.exit = true;
     }
 
     fn configure(
@@ -396,16 +437,10 @@ impl PointerHandler for Host {
             if &event.surface != self.layer.wl_surface() {
                 continue;
             }
-            let (x, y) = self
-                .app
-                .pointer_from_screen(event.position.0 as f32, event.position.1 as f32);
             let kind = match event.kind {
                 PointerEventKind::Motion { .. } => Some(Pointer::Motion),
                 PointerEventKind::Press { button, .. } if button == BTN_LEFT => {
                     Some(Pointer::LeftDown)
-                }
-                PointerEventKind::Press { button, .. } if button == BTN_RIGHT => {
-                    Some(Pointer::RightDown)
                 }
                 PointerEventKind::Release { button, .. } if button == BTN_LEFT => {
                     Some(Pointer::LeftUp)
@@ -413,7 +448,8 @@ impl PointerHandler for Host {
                 _ => None,
             };
             if let Some(kind) = kind {
-                self.app.pointer(x, y, kind);
+                self.game
+                    .pointer(event.position.0 as f32, event.position.1 as f32, kind);
             }
         }
     }
@@ -467,28 +503,29 @@ fn clip_rect(rect: PxRect, buf_w: i32, buf_h: i32) -> Option<PxRect> {
     })
 }
 
-fn present_damages(
+fn damages(
     full: bool,
-    buf_w: i32,
-    buf_h: i32,
-    prev: Option<PxRect>,
-    next: PxRect,
+    width: i32,
+    height: i32,
+    before: &[PxRect],
+    after: &[PxRect],
 ) -> Vec<PxRect> {
     if full {
         return vec![PxRect {
             x: 0,
             y: 0,
-            w: buf_w,
-            h: buf_h,
+            w: width,
+            h: height,
         }];
     }
     let mut areas = Vec::new();
-    if let Some(prev) = prev.and_then(|rect| clip_rect(rect, buf_w, buf_h)) {
-        areas.push(prev);
-    }
-    if let Some(next) = clip_rect(next, buf_w, buf_h) {
-        if !areas.contains(&next) {
-            areas.push(next);
+    for rect in before
+        .iter()
+        .chain(after)
+        .filter_map(|rect| clip_rect(*rect, width, height))
+    {
+        if !areas.contains(&rect) {
+            areas.push(rect);
         }
     }
     areas
@@ -532,13 +569,25 @@ fn blit(
         let dst_off = dy as usize * dst_stride + dst_x as usize * 4;
         let src_off = row as usize * src_stride + src_x as usize * 4;
         let bytes = len as usize * 4;
-        dst[dst_off..dst_off + bytes].copy_from_slice(&src[src_off..src_off + bytes]);
+        let target = dst[dst_off..dst_off + bytes].as_chunks_mut::<4>().0;
+        let pixels = src[src_off..src_off + bytes].as_chunks::<4>().0;
+        for (target, pixel) in target.iter_mut().zip(pixels) {
+            if pixel[3] == 255 || target[3] == 0 {
+                *target = *pixel;
+            } else if pixel[3] != 0 {
+                let remainder = 255 - u16::from(pixel[3]);
+                for (channel, above) in target.iter_mut().zip(pixel) {
+                    *channel =
+                        above.saturating_add(((u16::from(*channel) * remainder + 127) / 255) as u8);
+                }
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{blit, present_damages, PxRect};
+    use super::{blit, damages, PxRect};
 
     #[test]
     fn blit_clips_a_frame_to_the_screen() {
@@ -564,7 +613,7 @@ mod tests {
             w: 30,
             h: 40,
         };
-        let damages = present_damages(false, 1920, 1080, Some(prev), next);
+        let damages = damages(false, 1920, 1080, &[prev], &[next]);
         assert_eq!(damages, vec![prev, next]);
         assert!(damages.iter().all(|rect| rect.w * rect.h < 1920 * 1080));
     }
@@ -577,7 +626,7 @@ mod tests {
             w: 20,
             h: 20,
         };
-        let damages = present_damages(true, 800, 600, None, next);
+        let damages = damages(true, 800, 600, &[], &[next]);
         assert_eq!(
             damages,
             vec![PxRect {
@@ -597,7 +646,7 @@ mod tests {
             w: 40,
             h: 80,
         };
-        let damages = present_damages(false, 100, 520, None, next);
+        let damages = damages(false, 100, 520, &[], &[next]);
         assert_eq!(
             damages,
             vec![PxRect {

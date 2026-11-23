@@ -34,6 +34,7 @@ pub struct Ragdoll {
     pub id: String,
     pub live: bool,
     planted: bool,
+    rest_turn: f32,
     joints: Vec<Joint>,
     turn: f32,
     turn_speed: f32,
@@ -63,6 +64,7 @@ impl Ragdoll {
             id: pack.id.clone(),
             live: false,
             planted: false,
+            rest_turn: 0.0,
             joints,
             turn: 0.0,
             turn_speed: 0.0,
@@ -86,8 +88,13 @@ impl Ragdoll {
             return;
         }
         let dt = dt.clamp(0.0, 0.05);
-        self.steer_turn(dt, 0.0, 18.0);
-        let scale = pet_scale.clamp(0.2, 1.0);
+        if self.planted {
+            self.steer_turn(dt, self.rest_turn, 65.0);
+        } else {
+            self.turn = wrap_angle(self.turn + self.turn_speed * dt);
+            self.turn_speed *= (-0.35 * dt).exp();
+        }
+        let scale = pet_scale.clamp(0.05, 4.0);
         // Gravity pulls every loose part. Subtract the body's own acceleration so a
         // real fall is weightless and a yank leaves the limbs behind.
         let gx = -ax;
@@ -196,37 +203,36 @@ impl Ragdoll {
         self.turn = wrap_angle(self.turn + self.turn_speed * dt);
     }
 
-    pub fn plant(&mut self, face: f32, slide: f32) {
-        let sign = if face < 0.0 { -1.0 } else { 1.0 };
-        let first = !self.planted;
+    pub fn release(&mut self, pack: &Pack, grip: BonePoint, velocity: Point, scales: (f32, f32)) {
+        let pose = pack.pose_with("idle", 0.0, Some(&self.degrees()));
+        let pin = grip.in_pose(&pose);
+        let centre = mass_centre(pack, &pose);
+        let (sin, cos) = self.turn.sin_cos();
+        let x = (pin.x - centre.x) * scales.0;
+        let y = (pin.y - centre.y) * scales.1;
+        let (x, y) = (x * cos - y * sin, x * sin + y * cos);
+        let moment = x * velocity.y - y * velocity.x;
+        let radius = (pack.canvas_h * scales.1 * 0.32).max(12.0);
+        self.turn_speed = (self.turn_speed + 0.55 * moment / radius.powi(2)).clamp(-14.0, 14.0);
+    }
+
+    pub fn plant(&mut self, slide: f32) {
+        if self.planted {
+            return;
+        }
         self.planted = true;
         self.live = true;
-        let drag = (slide / 500.0).clamp(-2.4, 2.4);
+        let impact = self.turn + self.turn_speed * 0.08;
+        let side = if impact.sin().abs() > 0.08 {
+            impact.sin()
+        } else {
+            -slide
+        };
+        self.rest_turn = side.signum() * PI * 0.5;
+        self.turn_speed *= 0.45;
         for joint in &mut self.joints {
-            let target = match joint.name.as_str() {
-                "torso" => sign * 1.42,
-                "head" => sign * 0.45,
-                "left-hand" => -1.05,
-                "right-hand" => 1.1,
-                "left-leg" => 0.5,
-                "right-leg" => -0.35,
-                "left-foot" => 0.3,
-                "right-foot" => -0.25,
-                _ => 0.0,
-            };
-            joint.target = target;
-            if !first {
-                continue;
-            }
-            if joint.name == "torso" {
-                joint.omega += sign * 7.0;
-            } else if joint.name == "left-hand" {
-                joint.omega -= 3.2 + drag * 1.4;
-            } else if joint.name == "right-hand" {
-                joint.omega += 3.2 - drag * 1.4;
-            } else if joint.name == "left-leg" || joint.name == "right-leg" {
-                joint.omega -= drag * 0.8;
-            }
+            joint.target = joint.angle * 0.75;
+            joint.omega *= 0.45;
         }
     }
 
@@ -239,15 +245,6 @@ impl Ragdoll {
 
     pub fn is_planted(&self) -> bool {
         self.planted
-    }
-
-    #[cfg(test)]
-    fn torso_degrees(&self) -> f32 {
-        self.joints
-            .iter()
-            .find(|joint| joint.name == "torso")
-            .map(|joint| joint.angle.to_degrees())
-            .unwrap_or(0.0)
     }
 
     pub fn relax(&mut self, dt: f32) {
@@ -446,12 +443,22 @@ mod tests {
     }
 
     #[test]
-    fn a_landing_falls_flat_on_the_face() {
-        let mut rag = Ragdoll::new(&Pack::builtin());
-        rag.plant(1.0, 900.0);
-        for _ in 0..50 {
-            rag.step(1.0 / 60.0, 0.0, GRAVITY, 1.0);
+    fn a_landing_keeps_the_side_set_by_the_tumble() {
+        let pack = Pack::builtin();
+        for side in [-1.0, 1.0] {
+            let mut rag = Ragdoll::new(&pack);
+            rag.live = true;
+            rag.turn = side * 0.5;
+            rag.turn_speed = side * 4.0;
+            for _ in 0..12 {
+                rag.step(1.0 / 60.0, 0.0, GRAVITY, 1.0);
+            }
+            assert!(side * rag.turn() > 1.0);
+            rag.plant(0.0);
+            for _ in 0..50 {
+                rag.step(1.0 / 60.0, 0.0, GRAVITY, 1.0);
+            }
+            assert!((rag.turn() - side * PI / 2.0).abs() < 0.1);
         }
-        assert!(rag.torso_degrees() > 50.0, "{}", rag.torso_degrees());
     }
 }

@@ -3,21 +3,14 @@
 
 //! Bear girl, and any other loaded chibi, posed from separate parts on one skeleton.
 
-use ab_glyph::{point, Font, FontVec, Glyph, PxScale, ScaleFont};
-use std::sync::OnceLock;
-use tiny_skia::{
-    ColorU8, FillRule, Paint, PathBuilder, Pixmap, PixmapPaint, Point, PremultipliedColorU8,
-    Transform,
-};
+#[cfg(test)]
+use tiny_skia::PremultipliedColorU8;
+use tiny_skia::{Pixmap, PixmapPaint, Point, Transform};
 
-use crate::i18n::{
-    Catalog, ID_CHIBI, ID_DARK, ID_ENGLISH, ID_LANGUAGE, ID_LIGHT, ID_NAME, ID_QUIT, ID_RUSSIAN,
-    ID_SIZE, ID_SYSTEM, ID_THEME,
-};
-use crate::pack::{BonePoint, Choice, Pack, Pose, Sprite, BUILTIN_ID};
-use crate::sim::{FEET_X, FEET_Y, SPRITE_H, SPRITE_W};
-
-pub const MENU_W: f32 = 228.0;
+use crate::pack::{BonePoint, Pack, Pose, Sprite, BUILTIN_ID};
+#[cfg(test)]
+use crate::sim::FEET_Y;
+use crate::sim::{FEET_X, SPRITE_H, SPRITE_W};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Motion {
@@ -29,64 +22,21 @@ pub enum Motion {
     Sit,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RowId {
-    Name,
-    ChibiLabel,
-    Chibi,
-    Language,
-    Theme,
-    SystemLang,
-    English,
-    Russian,
-    SystemTheme,
-    Light,
-    Dark,
-    Size,
-    Scale,
-    Quit,
-}
-
-#[derive(Clone, Debug)]
-pub struct Row {
-    pub id: RowId,
-    pub text: String,
-    pub selected: bool,
-    pub label: bool,
-    pub key: String,
-}
-
-#[derive(Clone, Debug)]
-pub struct Hit {
-    pub id: RowId,
-    pub key: String,
-    pub x: f32,
-    pub y: f32,
-    pub w: f32,
-    pub h: f32,
-}
-
 #[derive(Clone, Debug)]
 pub struct Scene {
     pub cycle: f32,
     pub motion: Motion,
     pub tilt: f32,
     pub facing_left: bool,
-    pub menu: bool,
-    pub menu_left: bool,
-    pub dark: bool,
-    pub pet_scale: f32,
+    pub scales: (f32, f32),
     pub pose: Vec<f32>,
     pub anchor: Option<BonePoint>,
-    pub hold_sitting: bool,
-    pub rows: Vec<Row>,
 }
 
 pub struct Frame {
     pub bgra: Vec<u8>,
     pub width: u32,
     pub height: u32,
-    pub hits: Vec<Hit>,
     pub parts: Vec<Part>,
     pub shift: (i32, i32),
     pub anchor: Option<Point>,
@@ -124,24 +74,60 @@ pub fn pick(parts: &[Part], x: f32, y: f32) -> Option<BonePoint> {
     None
 }
 
-pub fn scene_size(menu: bool, pet_scale: f32) -> (u32, u32) {
-    let scale = pet_scale.clamp(0.2, 1.0);
-    let pet_w = SPRITE_W * scale;
-    let pet_h = SPRITE_H * scale;
-    let width = if menu { pet_w + MENU_W } else { pet_w };
-    let height = if menu { pet_h.max(SPRITE_H) } else { pet_h };
-    (width.round() as u32, height.round() as u32)
+pub fn portrait(pack: &Pack) -> Option<Pixmap> {
+    let head = pack.bones.iter().position(|bone| bone.name == "head")?;
+    let pose = pack.pose("idle", 0.0);
+    let (sprite, transform) = posed_sprite(pack, &pose, head)?;
+    let mut corners = [
+        Point::from_xy(0.0, 0.0),
+        Point::from_xy(sprite.image.width() as f32, 0.0),
+        Point::from_xy(0.0, sprite.image.height() as f32),
+        Point::from_xy(sprite.image.width() as f32, sprite.image.height() as f32),
+    ];
+    transform.map_points(&mut corners);
+    let extent = |axis: fn(&Point) -> f32| {
+        let min = corners.iter().map(axis).fold(f32::INFINITY, f32::min);
+        let max = corners.iter().map(axis).fold(f32::NEG_INFINITY, f32::max);
+        (min, max - min)
+    };
+    let (x, width) = extent(|point| point.x);
+    let (y, height) = extent(|point| point.y);
+    let scale = 80.0 / width.max(height).max(1.0);
+    let mut portrait = Pixmap::new(88, 88)?;
+    let view = Transform::from_translate(-x, -y)
+        .post_scale(scale, scale)
+        .post_translate((88.0 - width * scale) / 2.0, (88.0 - height * scale) / 2.0);
+    let mut order: Vec<_> = (0..pack.bones.len()).collect();
+    order.sort_by_key(|&index| pack.bones[index].z);
+    for index in order {
+        let mut parent = Some(index);
+        while let Some(ancestor) = parent.filter(|ancestor| *ancestor != head) {
+            parent = pack.bones[ancestor].parent;
+        }
+        if parent.is_some() {
+            if let Some((sprite, transform)) = posed_sprite(pack, &pose, index) {
+                portrait.draw_pixmap(
+                    0,
+                    0,
+                    sprite.image.as_ref().as_ref(),
+                    &PixmapPaint::default(),
+                    transform.post_concat(view),
+                    None,
+                );
+            }
+        }
+    }
+    Some(portrait)
+}
+
+pub fn scene_size((x, y): (f32, f32)) -> (u32, u32) {
+    ((SPRITE_W * x).round() as u32, (SPRITE_H * y).round() as u32)
 }
 
 pub fn render(scene: &Scene, pack: &Pack, scale: u32) -> Frame {
     let scale = scale.max(1);
-    let (logical_w, logical_h) = scene_size(scene.menu, scene.pet_scale);
-    let pet_x = if scene.menu && scene.menu_left {
-        MENU_W
-    } else {
-        0.0
-    };
-    let (mut parts, mut anchor) = pet_parts(pet_x, scene, pack);
+    let (logical_w, logical_h) = scene_size(scene.scales);
+    let (mut parts, mut anchor) = pet_parts(scene, pack);
     let dynamic_pose = matches!(scene.motion, Motion::Drag | Motion::Fall | Motion::Down)
         || !scene.pose.is_empty();
     let (left, top, right, bottom) = if dynamic_pose {
@@ -182,16 +168,10 @@ pub fn render(scene: &Scene, pack: &Pack, scale: u32) -> Frame {
             None,
         );
     }
-    let hits = if scene.menu {
-        draw_menu(&mut pixmap, scene, scale, pet_x, (left, top))
-    } else {
-        Vec::new()
-    };
     Frame {
         bgra: rgba_to_bgra(pixmap.data()),
         width,
         height,
-        hits,
         parts,
         shift: (left, top),
         anchor,
@@ -227,163 +207,7 @@ fn part_bounds(parts: &[Part], width: i32, height: i32) -> (i32, i32, i32, i32) 
     )
 }
 
-pub fn rows(
-    catalog: &Catalog,
-    title: &str,
-    lang_sel: &str,
-    theme_sel: &str,
-    size_sel: &str,
-    chibis: &[Choice],
-    selected: &str,
-) -> Vec<Row> {
-    let row = |id, text: String, selected, label, key: &str| Row {
-        id,
-        text,
-        selected,
-        label,
-        key: key.to_string(),
-    };
-    let mut rows = vec![
-        row(RowId::Name, title.to_string(), false, true, ""),
-        row(
-            RowId::ChibiLabel,
-            catalog.text(ID_CHIBI).to_string(),
-            false,
-            true,
-            "",
-        ),
-    ];
-    for chibi in chibis {
-        let name = if chibi.id == BUILTIN_ID {
-            catalog.text(ID_NAME).to_string()
-        } else {
-            clip_name(&chibi.name)
-        };
-        rows.push(row(
-            RowId::Chibi,
-            name,
-            chibi.id == selected,
-            false,
-            &chibi.id,
-        ));
-    }
-    rows.extend([
-        row(
-            RowId::Language,
-            catalog.text(ID_LANGUAGE).to_string(),
-            false,
-            true,
-            "",
-        ),
-        row(
-            RowId::SystemLang,
-            catalog.text(ID_SYSTEM).to_string(),
-            lang_sel == "system",
-            false,
-            "",
-        ),
-        row(
-            RowId::English,
-            catalog.text(ID_ENGLISH).to_string(),
-            lang_sel == "en",
-            false,
-            "",
-        ),
-        row(
-            RowId::Russian,
-            catalog.text(ID_RUSSIAN).to_string(),
-            lang_sel == "ru",
-            false,
-            "",
-        ),
-        row(
-            RowId::Theme,
-            catalog.text(ID_THEME).to_string(),
-            false,
-            true,
-            "",
-        ),
-        row(
-            RowId::SystemTheme,
-            catalog.text(ID_SYSTEM).to_string(),
-            theme_sel == "system",
-            false,
-            "",
-        ),
-        row(
-            RowId::Light,
-            catalog.text(ID_LIGHT).to_string(),
-            theme_sel == "light",
-            false,
-            "",
-        ),
-        row(
-            RowId::Dark,
-            catalog.text(ID_DARK).to_string(),
-            theme_sel == "dark",
-            false,
-            "",
-        ),
-        row(
-            RowId::Size,
-            catalog.text(ID_SIZE).to_string(),
-            false,
-            true,
-            "",
-        ),
-        row(RowId::Scale, "1×".to_string(), size_sel == "1", false, "1"),
-        row(
-            RowId::Scale,
-            "0.8×".to_string(),
-            size_sel == "0.8",
-            false,
-            "0.8",
-        ),
-        row(
-            RowId::Scale,
-            "0.6×".to_string(),
-            size_sel == "0.6",
-            false,
-            "0.6",
-        ),
-        row(
-            RowId::Scale,
-            "0.4×".to_string(),
-            size_sel == "0.4",
-            false,
-            "0.4",
-        ),
-        row(
-            RowId::Scale,
-            "0.2×".to_string(),
-            size_sel == "0.2",
-            false,
-            "0.2",
-        ),
-        row(
-            RowId::Quit,
-            catalog.text(ID_QUIT).to_string(),
-            false,
-            false,
-            "",
-        ),
-    ]);
-    rows
-}
-
-fn clip_name(text: &str) -> String {
-    let mut out = String::new();
-    for (index, ch) in text.chars().enumerate() {
-        if index == 18 {
-            out.push_str("...");
-            break;
-        }
-        out.push(ch);
-    }
-    out
-}
-
-fn pet_parts(origin_x: f32, scene: &Scene, pack: &Pack) -> (Vec<Part>, Option<Point>) {
+fn pet_parts(scene: &Scene, pack: &Pack) -> (Vec<Part>, Option<Point>) {
     let anim = match scene.motion {
         Motion::Walk => "walk",
         Motion::Fall => "fall",
@@ -395,32 +219,20 @@ fn pet_parts(origin_x: f32, scene: &Scene, pack: &Pack) -> (Vec<Part>, Option<Po
     let pose = if scene.pose.is_empty() {
         pack.pose(anim, scene.cycle)
     } else {
-        pack.pose_with(
-            if scene.hold_sitting { "sit" } else { "idle" },
-            scene.cycle,
-            Some(&scene.pose),
-        )
+        pack.pose_with(anim, scene.cycle, Some(&scene.pose))
     };
-    let pet_scale = scene.pet_scale.clamp(0.2, 1.0);
-    let fit = (SPRITE_W / pack.canvas_w).min(SPRITE_H / pack.canvas_h) * pet_scale;
-    let pet_h = SPRITE_H * pet_scale;
-    let pet_top = if scene.menu {
-        (SPRITE_H - pet_h).max(0.0)
-    } else {
-        0.0
-    };
-    let ground = pet_top + FEET_Y * pet_scale;
-    let bob = pose.bob * fit;
-    let mut view = Transform::from_scale(fit, fit)
+    let (scale_x, scale_y) = scene.scales;
+    let fit = (SPRITE_W / pack.canvas_w).min(SPRITE_H / pack.canvas_h);
+    let (fit_x, fit_y) = (fit * scale_x, fit * scale_y);
+    let ground = scene_size(scene.scales).1 as f32;
+    let centre_x = FEET_X * scale_x;
+    let bob = pose.bob * fit_y;
+    let mut view = Transform::from_scale(fit_x, fit_y)
         .post_translate(
-            origin_x + FEET_X * pet_scale - pack.feet_x * fit,
-            ground - pack.feet_y * fit + bob,
+            centre_x - pack.feet_x * fit_x,
+            ground - pack.feet_y * fit_y + bob,
         )
-        .post_rotate_at(
-            scene.tilt.to_degrees(),
-            origin_x + FEET_X * pet_scale,
-            ground + bob,
-        );
+        .post_rotate_at(scene.tilt.to_degrees(), centre_x, ground + bob);
     let support_motion = match scene.motion {
         Motion::Idle | Motion::Walk if !scene.pose.is_empty() || scene.tilt.abs() > 0.001 => {
             Motion::Down
@@ -431,8 +243,8 @@ fn pet_parts(origin_x: f32, scene: &Scene, pack: &Pack) -> (Vec<Part>, Option<Po
         view = view.post_translate(0.0, ground - contact);
     }
     let mirror = if scene.facing_left {
-        let width = scene_size(false, pet_scale).0 as f32;
-        Transform::from_row(-1.0, 0.0, 0.0, 1.0, 2.0 * origin_x + width, 0.0)
+        let width = scene_size(scene.scales).0 as f32;
+        Transform::from_row(-1.0, 0.0, 0.0, 1.0, width, 0.0)
     } else {
         Transform::identity()
     };
@@ -468,7 +280,7 @@ fn pet_parts(origin_x: f32, scene: &Scene, pack: &Pack) -> (Vec<Part>, Option<Po
         })
         .collect();
     if scene.motion == Motion::Sit {
-        parts.extend(laptop_part(origin_x, ground, pet_scale, mirror, pack));
+        parts.extend(laptop_part(ground, scene.scales, mirror, pack));
     }
     let anchor = scene.anchor.map(|anchor| {
         let mut position = anchor.in_pose(&pose);
@@ -525,9 +337,8 @@ fn posed_sprite<'a>(pack: &'a Pack, pose: &Pose, index: usize) -> Option<(&'a Sp
 }
 
 fn laptop_part(
-    origin_x: f32,
     ground: f32,
-    pet_scale: f32,
+    (scale_x, scale_y): (f32, f32),
     mirror: Transform,
     pack: &Pack,
 ) -> Option<Part> {
@@ -537,9 +348,9 @@ fn laptop_part(
     }
     let sw = sprite.image.width() as f32;
     let sh = sprite.image.height() as f32;
-    let dw = 86.0 * pet_scale;
-    let dh = dw * sh / sw;
-    let x = origin_x + (FEET_X + 50.0) * pet_scale - dw * 0.5;
+    let dw = 86.0 * scale_x;
+    let dh = 86.0 * scale_y * sh / sw;
+    let x = (FEET_X + 50.0) * scale_x - dw * 0.5;
     let y = ground - dh;
     Some(Part {
         sprite: sprite.clone(),
@@ -548,170 +359,6 @@ fn laptop_part(
             .post_concat(mirror),
         joint: None,
     })
-}
-
-fn draw_menu(
-    pixmap: &mut Pixmap,
-    scene: &Scene,
-    scale: u32,
-    pet_x: f32,
-    shift: (i32, i32),
-) -> Vec<Hit> {
-    let s = scale as f32;
-    let n = scene.rows.len() as f32;
-    let top = 6.0 - shift.1 as f32;
-    let row_h = ((SPRITE_H - 12.0) / n).min(24.0);
-    let x = if scene.menu_left {
-        4.0
-    } else {
-        pet_x + SPRITE_W * scene.pet_scale.clamp(0.2, 1.0) + 4.0
-    } - shift.0 as f32;
-    let w = MENU_W - 8.0;
-    let h = row_h * n;
-    let panel = if scene.dark {
-        rgba(42, 36, 34, 235)
-    } else {
-        rgba(255, 248, 240, 238)
-    };
-    let ink = if scene.dark {
-        rgba(248, 240, 232, 255)
-    } else {
-        rgba(58, 40, 32, 255)
-    };
-    let muted = if scene.dark {
-        rgba(196, 176, 164, 255)
-    } else {
-        rgba(110, 84, 72, 255)
-    };
-    let mark = rgba(176, 112, 72, 255);
-    fill_rect(pixmap, x, top, w, h, 10.0, panel, s);
-
-    let mut hits = Vec::new();
-    let font = font();
-    let font_px = (row_h * 0.58).clamp(9.0, 15.0);
-    for (index, row) in scene.rows.iter().enumerate() {
-        let ry = top + index as f32 * row_h;
-        let color = if row.selected {
-            mark
-        } else if row.label {
-            muted
-        } else {
-            ink
-        };
-        let prefix = if row.selected { "● " } else { "" };
-        let text = format!("{prefix}{}", row.text);
-        draw_text(
-            pixmap,
-            font,
-            x + 12.0,
-            ry + row_h * 0.72,
-            font_px * s,
-            &text,
-            color,
-            s,
-        );
-        if !row.label {
-            hits.push(Hit {
-                id: row.id,
-                key: row.key.clone(),
-                x,
-                y: ry,
-                w,
-                h: row_h,
-            });
-        }
-    }
-    hits
-}
-
-#[allow(clippy::too_many_arguments)]
-fn fill_rect(
-    pixmap: &mut Pixmap,
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
-    radius: f32,
-    color: ColorU8,
-    scale: f32,
-) {
-    let mut builder = PathBuilder::new();
-    let r = radius.min(w * 0.5).min(h * 0.5);
-    builder.move_to(x + r, y);
-    builder.line_to(x + w - r, y);
-    builder.quad_to(x + w, y, x + w, y + r);
-    builder.line_to(x + w, y + h - r);
-    builder.quad_to(x + w, y + h, x + w - r, y + h);
-    builder.line_to(x + r, y + h);
-    builder.quad_to(x, y + h, x, y + h - r);
-    builder.line_to(x, y + r);
-    builder.quad_to(x, y, x + r, y);
-    builder.close();
-    let Some(path) = builder.finish() else {
-        return;
-    };
-    pixmap.fill_path(
-        &path,
-        &paint_color(color),
-        FillRule::Winding,
-        Transform::from_scale(scale, scale),
-        None,
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draw_text(
-    pixmap: &mut Pixmap,
-    font: &FontVec,
-    x: f32,
-    y: f32,
-    size: f32,
-    text: &str,
-    color: ColorU8,
-    scale: f32,
-) {
-    let px = PxScale::from(size);
-    let mut caret = x * scale;
-    let baseline = y * scale;
-    for ch in text.chars() {
-        let glyph = Glyph {
-            id: font.glyph_id(ch),
-            scale: px,
-            position: point(caret, baseline),
-        };
-        if let Some(outlined) = font.outline_glyph(glyph) {
-            let bounds = outlined.px_bounds();
-            outlined.draw(|gx, gy, coverage| {
-                let px = bounds.min.x as i32 + gx as i32;
-                let py = bounds.min.y as i32 + gy as i32;
-                if px < 0 || py < 0 || px >= pixmap.width() as i32 || py >= pixmap.height() as i32 {
-                    return;
-                }
-                blend(pixmap, px as u32, py as u32, color, coverage);
-            });
-        }
-        caret += font.as_scaled(px).h_advance(font.glyph_id(ch));
-    }
-}
-
-fn blend(pixmap: &mut Pixmap, x: u32, y: u32, color: ColorU8, coverage: f32) {
-    let width = pixmap.width();
-    let Some(pixel) = pixmap.pixels_mut().get_mut((y * width + x) as usize) else {
-        return;
-    };
-    let alpha = color.alpha() as f32 / 255.0 * coverage.clamp(0.0, 1.0);
-    let inv = 1.0 - alpha;
-    let r = color.red() as f32 * alpha + pixel.red() as f32 * inv;
-    let g = color.green() as f32 * alpha + pixel.green() as f32 * inv;
-    let b = color.blue() as f32 * alpha + pixel.blue() as f32 * inv;
-    let a = alpha * 255.0 + pixel.alpha() as f32 * inv;
-    *pixel = PremultipliedColorU8::from_rgba(
-        r.round() as u8,
-        g.round() as u8,
-        b.round() as u8,
-        a.round() as u8,
-    )
-    .unwrap_or(PremultipliedColorU8::from_rgba(0, 0, 0, 0).unwrap());
 }
 
 fn rgba_to_bgra(data: &[u8]) -> Vec<u8> {
@@ -724,25 +371,6 @@ fn rgba_to_bgra(data: &[u8]) -> Vec<u8> {
     out
 }
 
-fn font() -> &'static FontVec {
-    static FONT: OnceLock<FontVec> = OnceLock::new();
-    FONT.get_or_init(|| {
-        FontVec::try_from_vec(include_bytes!("../assets/DejaVuSans.ttf").to_vec())
-            .expect("MAKO-FONT-0001: The bundled menu font is invalid")
-    })
-}
-
-fn paint_color(color: ColorU8) -> Paint<'static> {
-    let mut paint = Paint::default();
-    paint.set_color_rgba8(color.red(), color.green(), color.blue(), color.alpha());
-    paint.anti_alias = true;
-    paint
-}
-
-fn rgba(r: u8, g: u8, b: u8, a: u8) -> ColorU8 {
-    ColorU8::from_rgba(r, g, b, a)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -753,14 +381,9 @@ mod tests {
             motion: Motion::Idle,
             tilt: 0.0,
             facing_left: false,
-            menu: false,
-            menu_left: false,
-            dark: false,
-            pet_scale: 1.0,
+            scales: (1.0, 1.0),
             pose: Vec::new(),
             anchor: None,
-            hold_sitting: false,
-            rows: Vec::new(),
         }
     }
 
@@ -887,7 +510,7 @@ mod tests {
         let pack = Pack::builtin();
         let mut scene = still();
         for pet_scale in [0.2, 0.4, 0.6, 0.8, 1.0] {
-            scene.pet_scale = pet_scale;
+            scene.scales = (pet_scale, pet_scale);
             for facing_left in [false, true] {
                 scene.facing_left = facing_left;
                 for motion in [Motion::Walk, Motion::Sit] {
@@ -941,64 +564,6 @@ mod tests {
             }
         }
         assert!(found);
-    }
-
-    #[test]
-    fn menu_hits_stay_inside_the_frame_and_off_the_pet() {
-        let mut scene = still();
-        scene.menu = true;
-        scene.rows = menu_rows();
-        let right = render(&scene, &Pack::builtin(), 1);
-        assert_rows_fit(&right.hits, false);
-        scene.menu_left = true;
-        let left = render(&scene, &Pack::builtin(), 1);
-        assert_rows_fit(&left.hits, true);
-        std::fs::write("/tmp/mako-menu.png", encode(&scene)).expect("preview");
-    }
-
-    fn assert_rows_fit(hits: &[Hit], menu_left: bool) {
-        assert!(hits.len() >= 7);
-        for hit in hits {
-            assert!(hit.y >= 0.0);
-            assert!(hit.y + hit.h <= SPRITE_H + 0.01);
-            assert!(hit.h > 8.0);
-            if menu_left {
-                assert!(hit.x + hit.w <= MENU_W + 0.01);
-            } else {
-                assert!(hit.x >= SPRITE_W - 0.01);
-            }
-        }
-        for (index, hit) in hits.iter().enumerate() {
-            for other in &hits[index + 1..] {
-                let separated = hit.x + hit.w <= other.x
-                    || other.x + other.w <= hit.x
-                    || hit.y + hit.h <= other.y
-                    || other.y + other.h <= hit.y;
-                assert!(separated);
-            }
-        }
-    }
-
-    fn menu_rows() -> Vec<Row> {
-        let row = |id, label| Row {
-            id,
-            text: "item".to_string(),
-            selected: false,
-            label,
-            key: String::new(),
-        };
-        vec![
-            row(RowId::Name, true),
-            row(RowId::Language, true),
-            row(RowId::SystemLang, false),
-            row(RowId::English, false),
-            row(RowId::Russian, false),
-            row(RowId::Theme, true),
-            row(RowId::SystemTheme, false),
-            row(RowId::Light, false),
-            row(RowId::Dark, false),
-            row(RowId::Quit, false),
-        ]
     }
 
     fn encode(scene: &Scene) -> Vec<u8> {

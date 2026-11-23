@@ -145,12 +145,6 @@ pub struct Pose {
     pub bob: f32,
 }
 
-#[derive(Clone, Debug)]
-pub struct Choice {
-    pub id: String,
-    pub name: String,
-}
-
 struct Raw {
     heart: Option<String>,
     body: Option<String>,
@@ -163,20 +157,6 @@ impl Pack {
         static PACK: OnceLock<Pack> = OnceLock::new();
         PACK.get_or_init(|| load_builtin().unwrap_or_else(|error| panic!("{error}")))
             .clone()
-    }
-
-    pub fn open(id: &str) -> Self {
-        if id.is_empty() || id == BUILTIN_ID || !safe_id(id) {
-            return Self::builtin();
-        }
-        let path = chibi_dir().join(format!("{id}.zip"));
-        match from_path(&path, id) {
-            Ok(pack) => pack,
-            Err(error) => {
-                eprintln!("{error}");
-                Self::builtin()
-            }
-        }
     }
 
     pub fn sprite(&self, name: &str) -> Option<&Sprite> {
@@ -347,11 +327,8 @@ fn sample_step<T>(samples: &[Sample<T>], time: f32) -> Option<&T> {
     chosen.or_else(|| samples.first().map(|sample| &sample.value))
 }
 
-pub fn choices() -> Vec<Choice> {
-    let mut found = vec![Choice {
-        id: BUILTIN_ID.to_string(),
-        name: "bear girl".to_string(),
-    }];
+pub fn installed() -> Vec<Pack> {
+    let mut found = vec![Pack::builtin()];
     let Ok(entries) = fs::read_dir(chibi_dir()) else {
         return found;
     };
@@ -370,17 +347,16 @@ pub fn choices() -> Vec<Choice> {
         zips.push((stem.to_string(), path));
     }
     zips.sort_by(|left, right| left.0.cmp(&right.0));
-    // shortcut: six extra chibis, until the menu can scroll
-    for (id, path) in zips.into_iter().take(6) {
-        match heart_name(&path) {
-            Ok(name) => found.push(Choice { id, name }),
+    for (id, path) in zips {
+        match from_path(&path, &id) {
+            Ok(pack) => found.push(pack),
             Err(error) => eprintln!("{error}"),
         }
     }
     found
 }
 
-pub fn chibi_dir() -> PathBuf {
+fn chibi_dir() -> PathBuf {
     let root = if let Some(value) = env::var_os("XDG_DATA_HOME") {
         let path = PathBuf::from(value);
         if path.is_absolute() {
@@ -436,13 +412,6 @@ fn load_builtin() -> Result<Pack, Fault> {
         "",
         (49.0, 47.0),
         include_bytes!("../assets/bear-girl/creature/leg.png"),
-    )?;
-    add_shared_limb(
-        &mut pack,
-        "leg",
-        "-sit",
-        (340.0, 610.0),
-        include_bytes!("../assets/bear-girl/creature/leg-sit.png"),
     )?;
     Ok(pack)
 }
@@ -553,11 +522,6 @@ fn from_reader<R: Read + Seek>(id: &str, reader: R) -> Result<Pack, Fault> {
         );
     }
     assemble(id, &heart, &body, &anima, images)
-}
-
-fn heart_name(path: &Path) -> Result<String, Fault> {
-    let pack = from_path(path, "listed")?;
-    Ok(pack.name)
 }
 
 fn read_zip<R: Read + Seek>(reader: R) -> Result<Raw, Fault> {
@@ -1057,6 +1021,81 @@ fn crop(pixmap: Pixmap) -> Result<Sprite, Fault> {
     })
 }
 
+pub fn import(path: &Path) -> Result<Pack, Fault> {
+    use std::io::Write;
+
+    let basename = path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("chibi");
+    let normalized: String = basename
+        .chars()
+        .take(100)
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let base = if normalized.is_empty() || normalized == BUILTIN_ID {
+        "imported-chibi"
+    } else {
+        &normalized
+    };
+    let file = File::open(path).map_err(import_read)?;
+    let mut bytes = Vec::new();
+    file.take(MAX_TOTAL + 1)
+        .read_to_end(&mut bytes)
+        .map_err(import_read)?;
+    if bytes.len() as u64 > MAX_TOTAL {
+        return Err(Fault::new(
+            "MAKO-IMPORT-0002",
+            "The ZIP exceeds the chibi archive size limit",
+        ));
+    }
+    let mut pack = from_reader(base, Cursor::new(&bytes))?;
+    let folder = chibi_dir();
+    fs::create_dir_all(&folder).map_err(import_write)?;
+    let temporary = tempfile::NamedTempFile::new_in(&folder).map_err(import_write)?;
+    temporary
+        .as_file()
+        .write_all(&bytes)
+        .map_err(import_write)?;
+    for number in 1.. {
+        let id = if number == 1 {
+            base.to_owned()
+        } else {
+            format!("{base}-{number}")
+        };
+        let destination = folder.join(format!("{id}.zip"));
+        match fs::hard_link(temporary.path(), destination) {
+            Ok(()) => {
+                pack.id = id;
+                return Ok(pack);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(import_write(error)),
+        }
+    }
+    unreachable!()
+}
+
+fn import_read(error: std::io::Error) -> Fault {
+    Fault::new(
+        "MAKO-IMPORT-0001",
+        format!("Could not read the selected ZIP: {error}"),
+    )
+}
+
+fn import_write(error: std::io::Error) -> Fault {
+    Fault::new(
+        "MAKO-IMPORT-0003",
+        format!("Could not install the ZIP: {error}"),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1175,7 +1214,7 @@ mod tests {
     #[test]
     fn bear_girl_reuses_the_same_limb_art_on_both_sides() {
         let pack = Pack::builtin();
-        for (limb, suffix) in [("hand", ""), ("leg", ""), ("leg", "-sit")] {
+        for (limb, suffix) in [("hand", ""), ("leg", "")] {
             let left_bone = &pack.bones[pack.names[&format!("left-{limb}")]];
             let right_bone = &pack.bones[pack.names[&format!("right-{limb}")]];
             let left = pack.sprite(&format!("left-{limb}{suffix}")).unwrap();

@@ -8,7 +8,7 @@
 ---
 
 > [!NOTE]
-> **Active Development:** `mako` changes frequently and may contain bugs. Saved language, theme and chibi settings may become outdated; delete the config file to restore the defaults.
+> **Active Development:** `mako` changes frequently and may contain bugs. Delete the config file to restore the default settings.
 
 ---
 
@@ -18,30 +18,32 @@
 
 ## Features
 
-- One pet, bear girl, in a dark brown bear onesie. Her head, body, limbs, eyes and mouth are separate pieces on the same skeleton.
-- Another chibi can be chosen from a zip. No second chibi is included.
-- Walking, falling, and dragging on the screen edges.
-- English and Russian text, with system, light and dark menu colors.
-- Separate Wayland and X11 backends for KDE Plasma.
+- One built-in character with separately animated body parts and point-based mouse grabs.
+- Multiple live chibis, ZIP character packs and a quick list in the KDE tray.
+- English and Russian settings with native Wayland and X11 support.
 
 ---
-
-## Controls & Shortcuts
 
 <details>
 <summary><h2>Controls & Shortcuts</h2></summary>
 
 | Input | Action |
 | --- | --- |
-| Left button | Grab a visible body part and drag. Bear girl hangs from the point you grabbed. A flick throws her, twice as hard. A downward throw bounces off the floor, with each bounce smaller than the last. Other throws end with a short face-down skid. Letting go after she has stopped just drops her. |
-| Right button | Open or close the menu. |
-| Menu rows | Choose the chibi, size, language, theme, or quit. |
+| Left button | Grab any visible body part. Flick to throw and tumble or throw down for a series of diminishing bounces. |
+| Tray icon | Open the quick panel. Use `+` or `−` to add or remove one copy of a chibi. |
+| Gear and pin | Open Settings or keep the quick panel open when it loses focus. |
+| General | Choose a language, theme and overall scale from 20% to 200%. |
+| Chibis | Drag rows to reorder the tray list. Use the cross to remove a row, or Add to browse and import installed chibis. |
+| About | View the project details and check for updates. Click the logo five times to reveal Dev. |
+| Dev | Enter the width and height independently from 25% to 200% of the original proportions. |
 
-She walks on the upper edge of the bottom panel and sits there to type with her legs bent. The laptop rests on the same edge with its screen facing her. It is a separate item, `pocket/it-1.png`.
+Bear girl walks and sits on the upper edge of the bottom panel. Her hands and legs use the same parts while she types. The laptop rests on the same edge with its screen facing her.
 
-The menu language follows `LANGUAGE`, `LC_ALL`, `LC_MESSAGES` and `LANG` until a manual choice is saved. The menu colors follow the KDE color scheme until a manual theme is saved. The onesie itself stays brown. The chosen chibi is saved as `chibi`. The size is `1`, `0.8`, `0.6`, `0.4` or `0.2`, saved as `scale`.
+The system language follows `LANGUAGE`, `LC_ALL`, `LC_MESSAGES` and `LANG`. The system theme follows the KDE color scheme. The config stores the quick-list order, language, theme, overall scale and proportions.
 
-Zip archives in `~/.local/share/mako/chibis/` are listed, or under `XDG_DATA_HOME` when that is an absolute path. At most six archives are shown. An archive without a `heart` name is ignored. If `body` is missing, bear girl's skeleton is used. If `anima` is missing, bear girl's animations are used.
+### Character archives
+
+Use **Chibis → Add → Import** to install a ZIP. Installed archives are stored in `$XDG_DATA_HOME/mako/chibis/`, or `~/.local/share/mako/chibis/` by default. A pack requires a name in `heart`. Missing `body` or `anima` files use bear girl's skeleton or animations.
 
 | Path | Role |
 | --- | --- |
@@ -50,6 +52,7 @@ Zip archives in `~/.local/share/mako/chibis/` are listed, or under `XDG_DATA_HOM
 | `anima` | Animations: `anim`, `rot`, `image`, `bob`. Add `?` to a frame name to use the bone's default image if that frame is missing. |
 | `creature/*.png` | Parts, named `head`, `left-hand`, `eyes-open` |
 | `pocket/*.png` | Items, named `it-1`, `it-2` |
+
 
 </details>
 
@@ -86,8 +89,10 @@ The development draft has no update metadata and no `.zsync` file. It is not ins
 
 | Component | Upstream | License | Integration Details |
 | --- | --- | --- | --- |
-| DejaVu Sans | [dejavu-fonts/dejavu-fonts](https://github.com/dejavu-fonts/dejavu-fonts) | `Bitstream-Vera` and public domain | Embedded for menu text. |
+| Slint | [slint-ui/slint](https://github.com/slint-ui/slint) | `GPL-3.0-only` | Tray panel and preferences. |
+| Breeze | [KDE/breeze-icons](https://github.com/KDE/breeze-icons) | `LGPL-3.0-or-later` | Tray panel controls. |
+| shinpi | [yrmuq/shinpi](https://github.com/yrmuq/shinpi) | `GPL-3.0-only` | Tray and preferences layout. |
+| `ksni` | [iovxw/ksni](https://github.com/iovxw/ksni) | `Unlicense` | StatusNotifier tray icon. |
 | `smithay-client-toolkit` | [Smithay/client-toolkit](https://github.com/Smithay/client-toolkit) | `MIT` | Wayland layer-shell host. |
 | `x11rb` | [psychon/x11rb](https://github.com/psychon/x11rb) | `MIT OR Apache-2.0` | X11 host. |
 | `tiny-skia` | [linebender/tiny-skia](https://github.com/linebender/tiny-skia) | `BSD-3-Clause` | CPU drawing. |
-| `ab_glyph` | [alexheretic/ab-glyph](https://github.com/alexheretic/ab-glyph) | `Apache-2.0` | Menu text rasterization. |

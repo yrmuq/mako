@@ -1,0 +1,537 @@
+// Copyright (C) 2026 yrmuq
+// SPDX-License-Identifier: GPL-3.0-only
+
+import { Button, ComboBox, Palette, ScrollView, Slider, SpinBox } from "std-widgets.slint";
+
+export global Translations {
+    in-out property <[string]> strings;
+    public pure function tr(index: int) -> string { return strings[index]; }
+}
+
+export struct Attribution {
+    name: string,
+    upstream: string,
+    detail: string,
+    url: string,
+}
+
+// Colors are filled from the active KDE scheme. Defaults are current Breeze Light.
+export global Breeze {
+    in-out property <bool> dark: false;
+    in-out property <color> window: #eff0f1;
+    in-out property <color> button: #fcfcfc;
+    in-out property <color> button-hover: #f6f6f7;
+    in-out property <color> fg: #232629;
+    in-out property <color> inactive: #707d8a;
+    in-out property <color> selection: #3daee9;
+    in-out property <color> selection-fg: #ffffff;
+    in-out property <color> frame: #c6c8c9;
+    // Breeze focusOutlineColor: 85% accent mixed with 15% text.
+    in-out property <color> outline: #399acc;
+    out property <length> radius: 5px;
+}
+
+component ToolButton inherits Rectangle {
+    in property <bool> active: false;
+    in property <bool> flat: false;
+    callback clicked;
+    width: 32px;
+    height: 32px;
+    border-radius: Breeze.radius;
+    background: flat ? transparent : (active ? Breeze.selection : (hover.has-hover || keys.has-focus ? Breeze.button-hover : transparent));
+    border-width: active || keys.has-focus ? 1px : 0;
+    border-color: Breeze.outline;
+    VerticalLayout {
+        alignment: center;
+        HorizontalLayout {
+            alignment: center;
+            @children
+        }
+    }
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.clicked(); }
+    in property <string> label;
+    forward-focus: keys;
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (event.text == "\n" || event.text == " ") {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+    hover := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+component BreezeIcon inherits Rectangle {
+    in property <image> source;
+    in property <bool> tint: true;
+    in property <color> ink;
+    width: 22px;
+    height: 22px;
+    background: transparent;
+    if root.tint: Image {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        source: root.source;
+        colorize: root.ink;
+    }
+    if !root.tint: Image {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        source: root.source;
+    }
+}
+
+
+component SettingRow inherits HorizontalLayout {
+    in property <string> label;
+    in property <length> label-width: 260px;
+    spacing: 16px;
+    Text {
+        text: root.label;
+        color: Breeze.fg;
+        width: root.label-width;
+        vertical-alignment: center;
+        wrap: word-wrap;
+    }
+    @children
+}
+
+component AboutLink inherits Rectangle {
+    in property <string> label;
+    callback activate;
+    background: transparent;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.activate(); }
+    forward-focus: keys;
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (event.text == "\n" || event.text == " ") { root.activate(); return accept; }
+            return reject;
+        }
+    }
+    border-width: keys.has-focus ? 1px : 0px;
+    border-color: Breeze.outline;
+    VerticalLayout {
+        spacing: 0px;
+        Text { text: root.label; color: Breeze.selection; }
+        Rectangle { height: 1px; background: Breeze.selection; }
+    }
+    TouchArea {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        mouse-cursor: pointer;
+        clicked => { keys.focus(); root.activate(); }
+    }
+}
+
+component PageTabs inherits Rectangle {
+    in property <[string]> labels;
+    in-out property <int> selected;
+    height: 32px;
+    accessible-role: tab-list;
+    accessible-item-count: root.labels.length;
+    accessible-delegate-focus: root.selected;
+    forward-focus: keys;
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.LeftArrow || event.text == Key.Home) {
+                root.selected = event.text == Key.Home ? 0 : Math.max(0, root.selected - 1);
+                return accept;
+            }
+            if (event.text == Key.RightArrow || event.text == Key.End) {
+                root.selected = event.text == Key.End ? root.labels.length - 1 : Math.min(root.labels.length - 1, root.selected + 1);
+                return accept;
+            }
+            return reject;
+        }
+    }
+    HorizontalLayout {
+        spacing: 2px;
+        for label[index] in root.labels: Rectangle {
+            accessible-role: tab;
+            accessible-label: label;
+            accessible-item-index: index;
+            accessible-item-selectable: true;
+            accessible-item-selected: root.selected == index;
+            accessible-action-default => { root.selected = index; keys.focus(); }
+            preferred-width: 0px; min-width: 0px; horizontal-stretch: 1;
+            background: touch.has-hover ? Breeze.button-hover : transparent;
+            border-radius: Breeze.radius;
+            border-width: 1px;
+            border-color: root.selected == index ? Breeze.outline : Breeze.frame;
+            Text {
+                x: 8px; width: parent.width - 16px; height: parent.height;
+                text: label; color: Breeze.fg;
+                font-weight: root.selected == index ? 600 : 400;
+                vertical-alignment: center; horizontal-alignment: center; overflow: elide;
+            }
+            touch := TouchArea { mouse-cursor: pointer; clicked => { root.selected = index; keys.focus(); } }
+        }
+    }
+}
+
+component PartRow inherits VerticalLayout {
+    in property <Attribution> part;
+    callback open-link(string);
+    spacing: 0px;
+    HorizontalLayout {
+        spacing: 8px;
+        padding-top: 6px; padding-bottom: 6px;
+        Text { text: root.part.name; width: 90px; wrap: word-wrap; color: Breeze.fg; vertical-alignment: center; }
+        VerticalLayout {
+            width: 145px; alignment: center;
+            AboutLink { label: root.part.upstream; activate => { root.open-link(root.part.url); } }
+        }
+        Text { text: root.part.detail; horizontal-stretch: 1; wrap: word-wrap; color: Breeze.fg; vertical-alignment: center; }
+    }
+    Rectangle { height: 1px; background: Breeze.frame; }
+}
+
+export struct ChibiRow {
+    id: string,
+    name: string,
+    face: image,
+    count: int,
+    added: bool,
+}
+
+component ChibiName inherits HorizontalLayout {
+    in property <ChibiRow> entry;
+    spacing: 8px;
+    Image { source: root.entry.face; width: 36px; height: 36px; image-fit: contain; }
+    Text {
+        text: root.entry.name; color: Breeze.fg; vertical-alignment: center;
+        overflow: elide; horizontal-stretch: 1; min-width: 0px;
+    }
+}
+
+export component Popup inherits Window {
+    title: "mako-popup";
+    icon: @image-url("../assets/icon.svg");
+    no-frame: true;
+    always-on-top: true;
+    background: transparent;
+    width: 300px;
+    height: 52px + Math.min(420px, Math.max(88px, root.rows.length * 46px));
+    in property <[ChibiRow]> rows;
+    in-out property <bool> pinned;
+    callback configure(bool);
+    in property <bool> dark;
+    changed dark => { Palette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light; }
+    callback pin-toggled();
+    callback add-instance(string);
+    callback remove-instance(string);
+    default-font-size: 13.333px;
+    Rectangle {
+        background: Breeze.window;
+        border-radius: Breeze.radius;
+        border-width: 1px; border-color: Breeze.frame;
+        VerticalLayout {
+            padding: 8px; spacing: 4px;
+            Rectangle {
+                height: 32px;
+                Text { x: 8px; height: parent.height; text: Translations.tr(13); color: Breeze.fg; vertical-alignment: center; font-weight: 600; }
+                ToolButton {
+                    x: parent.width - 68px; label: Translations.tr(16);
+                    clicked => { root.configure(false); }
+                    BreezeIcon { source: @image-url("icons/configure.svg"); ink: Breeze.fg; }
+                }
+                pin := ToolButton {
+                    x: parent.width - 32px; label: Translations.tr(17); active: root.pinned;
+                    clicked => { root.pin-toggled(); }
+                    BreezeIcon { source: @image-url("icons/window-pin.svg"); ink: pin.active ? Breeze.selection-fg : Breeze.fg; }
+                }
+            }
+            if root.rows.length == 0: VerticalLayout {
+                alignment: center;
+                HorizontalLayout { alignment: center; Button { text: Translations.tr(18); clicked => { root.configure(true); } } }
+            }
+            if root.rows.length > 0: ScrollView {
+                VerticalLayout {
+                    spacing: 4px;
+                    for row in root.rows: Rectangle {
+                        height: 42px; border-radius: Breeze.radius;
+                        border-width: 1px; border-color: Breeze.frame; background: Breeze.button;
+                        HorizontalLayout {
+                            padding-left: 6px; padding-right: 4px; spacing: 2px;
+                            ChibiName { entry: row; horizontal-stretch: 1; }
+                            Text { text: "\{row.count}"; color: Breeze.fg; vertical-alignment: center; }
+                            if row.count > 0: ToolButton {
+                                label: Translations.tr(20);
+                                clicked => { root.remove-instance(row.id); }
+                                Text { text: "−"; font-size: 20px; color: Breeze.fg; }
+                            }
+                            if row.count == 0: Rectangle {
+                                width: 32px;
+                                Text { text: "−"; font-size: 20px; color: Breeze.inactive; horizontal-alignment: center; vertical-alignment: center; }
+                            }
+                            ToolButton {
+                                label: Translations.tr(19);
+                                clicked => { root.add-instance(row.id); }
+                                Text { text: "+"; font-size: 20px; color: Breeze.fg; }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component SettingsWindow inherits Window {
+    title: "mako";
+    icon: @image-url("../assets/icon.svg");
+    width: 600px; height: 630px;
+    background: Breeze.window;
+    default-font-size: 13.333px;
+    in-out property <int> tab;
+    in-out property <bool> dev-open;
+    in-out property <int> language-index;
+    in-out property <int> theme-index;
+    in-out property <float> size-value: 100;
+    in-out property <int> width-value: 100;
+    in-out property <int> height-value: 100;
+    in property <string> version;
+    in property <[ChibiRow]> rows;
+    in property <[ChibiRow]> installed;
+    in property <[Attribution]> parts;
+    in property <bool> importing;
+    in property <string> status;
+    in property <string> update-status;
+    in property <bool> update-available;
+    in property <bool> checking;
+    private property <bool> adding;
+    private property <int> drag-from: -1;
+    private property <int> drag-to: -1;
+    callback language-selected(int);
+    callback theme-selected(int);
+    callback size-selected(float);
+    callback proportions-selected(int, int);
+    callback add-favorite(string);
+    callback remove-favorite(string);
+    callback move-favorite(int, int);
+    callback refresh-installed();
+    callback import-zip();
+    callback logo-tapped();
+    callback check-update();
+    callback open-link(string);
+    changed tab => {
+        if root.tab == 2 { root.check-update(); }
+    }
+    public function open-chibis() { root.tab = 1; }
+    VerticalLayout {
+        padding: 8px; spacing: 8px;
+        PageTabs {
+            labels: root.dev-open ? [Translations.tr(12), Translations.tr(13), Translations.tr(14), Translations.tr(15)] : [Translations.tr(12), Translations.tr(13), Translations.tr(14)];
+            selected <=> root.tab;
+        }
+        if root.tab == 0: VerticalLayout {
+            padding: 12px; spacing: 14px; alignment: start;
+            SettingRow {
+                label: Translations.tr(2);
+                ComboBox {
+                    model: [Translations.tr(4), Translations.tr(5), Translations.tr(6)];
+                    current-index <=> root.language-index;
+                    selected => { root.language-selected(self.current-index); }
+                }
+            }
+            SettingRow {
+                label: Translations.tr(3);
+                ComboBox {
+                    model: [Translations.tr(4), Translations.tr(7), Translations.tr(8)];
+                    current-index <=> root.theme-index;
+                    selected => { root.theme-selected(self.current-index); }
+                }
+            }
+            SettingRow {
+                label: Translations.tr(11);
+                Slider {
+                    minimum: 20; maximum: 200; step: 1;
+                    value <=> root.size-value;
+                    changed(value) => { root.size-selected(value); }
+                }
+                Text { text: "\{Math.round(root.size-value)}%"; width: 48px; vertical-alignment: center; color: Breeze.fg; }
+            }
+        }
+        if root.tab == 1: VerticalLayout {
+            padding: 8px; spacing: 10px;
+            if root.rows.length == 0: Text { text: Translations.tr(24); color: Breeze.inactive; }
+            ScrollView {
+                VerticalLayout {
+                    spacing: 6px;
+                    for row[i] in root.rows: Rectangle {
+                        height: 58px; border-radius: Breeze.radius; border-width: 1px;
+                        border-color: root.drag-to == i ? Breeze.selection : Breeze.frame;
+                        background: root.drag-from == i ? Breeze.button-hover : Breeze.window;
+                        HorizontalLayout {
+                            padding-left: 8px; padding-right: 7px;
+                            Rectangle {
+                                horizontal-stretch: 1;
+                                ChibiName { entry: row; }
+                                forward-focus: reorder-keys;
+                                reorder-keys := FocusScope {
+                                    key-pressed(event) => {
+                                        if event.text == Key.UpArrow && i > 0 { root.move-favorite(i, i - 1); return accept; }
+                                        if event.text == Key.DownArrow && i + 1 < root.rows.length { root.move-favorite(i, i + 1); return accept; }
+                                        return reject;
+                                    }
+                                }
+                                drag := TouchArea {
+                                    mouse-cursor: root.drag-from == i ? grabbing : grab;
+                                    pointer-event(event) => {
+                                        if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                                            root.drag-from = i;
+                                            root.drag-to = i;
+                                            reorder-keys.focus();
+                                        }
+                                        if event.kind == PointerEventKind.up && root.drag-from == i {
+                                            root.move-favorite(i, root.drag-to);
+                                            root.drag-from = -1;
+                                            root.drag-to = -1;
+                                        }
+                                        if event.kind == PointerEventKind.cancel {
+                                            root.drag-from = -1;
+                                            root.drag-to = -1;
+                                        }
+                                    }
+                                    moved => {
+                                        if root.drag-from == i {
+                                            root.drag-to = Math.clamp(i + Math.round((self.mouse-y - self.pressed-y) / 64px), 0, root.rows.length - 1);
+                                        }
+                                    }
+                                }
+                            }
+                            ToolButton {
+                                label: Translations.tr(21) + " " + row.name; flat: true;
+                                clicked => { root.remove-favorite(row.id); }
+                                Text { text: "×"; font-size: 24px; color: #da4453; }
+                            }
+                        }
+                    }
+                }
+            }
+            Button { text: Translations.tr(18); clicked => { root.refresh-installed(); root.adding = true; } }
+        }
+        if root.tab == 2: ScrollView {
+            VerticalLayout {
+                padding: 23px; spacing: 8px;
+                HorizontalLayout {
+                    spacing: 20px;
+                    VerticalLayout {
+                        horizontal-stretch: 1; alignment: center; spacing: 8px;
+                        HorizontalLayout {
+                            alignment: center;
+                            ToolButton {
+                                width: 100px; height: 100px; flat: true; label: "mako";
+                                clicked => { root.logo-tapped(); }
+                                Image { source: @image-url("../assets/icon.svg"); width: 100%; height: 100%; image-fit: contain; }
+                            }
+                        }
+                        Text { text: "mako"; font-size: 16px; font-weight: 700; color: Breeze.fg; horizontal-alignment: center; }
+                    }
+                    VerticalLayout {
+                        horizontal-stretch: 1; alignment: center; spacing: 8px;
+                        HorizontalLayout {
+                            alignment: start; spacing: 6px;
+                            Text { text: Translations.tr(27); color: Breeze.fg; vertical-alignment: center; }
+                            AboutLink { label: "github"; activate => { root.open-link("https://github.com/yrmuq/mako"); } }
+                        }
+                        HorizontalLayout {
+                            alignment: start; spacing: 6px;
+                            Text { text: Translations.tr(28); color: Breeze.fg; vertical-alignment: center; }
+                            AboutLink { label: "GPL-3.0-only"; activate => { root.open-link("https://github.com/yrmuq/mako/blob/main/LICENSE"); } }
+                        }
+                        Text { text: Translations.tr(29) + " " + root.version; color: Breeze.fg; }
+                        if root.update-status != "": Text { text: root.update-status; color: Breeze.fg; wrap: word-wrap; }
+                        HorizontalLayout {
+                            alignment: start; spacing: 6px;
+                            if !root.update-available: Button { text: Translations.tr(35); enabled: !root.checking; clicked => { root.check-update(); } }
+                            if root.update-available: Button { text: Translations.tr(34); clicked => { root.open-link("https://github.com/yrmuq/mako/releases/latest"); } }
+                        }
+                    }
+                }
+                Rectangle { min-height: 26px; background: transparent; }
+                VerticalLayout {
+                    spacing: 0px;
+                    HorizontalLayout {
+                        spacing: 8px; padding-bottom: 4px;
+                        Text { text: Translations.tr(30); font-weight: 700; color: Breeze.fg; width: 90px; }
+                        Text { text: Translations.tr(31); font-weight: 700; color: Breeze.fg; width: 145px; }
+                        Text { text: Translations.tr(32); font-weight: 700; color: Breeze.fg; horizontal-stretch: 1; }
+                    }
+                    Rectangle { height: 1px; background: Breeze.frame; }
+                    for part in root.parts: PartRow { part: part; open-link(url) => { root.open-link(url); } }
+                }
+            }
+        }
+        if root.tab == 3 && root.dev-open: VerticalLayout {
+            padding: 12px; spacing: 14px; alignment: start;
+            SettingRow {
+                label: Translations.tr(25) + " (%)";
+                SpinBox {
+                    minimum: 25; maximum: 200; value <=> root.width-value;
+                    edited(value) => { root.proportions-selected(value, root.height-value); }
+                }
+            }
+            SettingRow {
+                label: Translations.tr(26) + " (%)";
+                SpinBox {
+                    minimum: 25; maximum: 200; value <=> root.height-value;
+                    edited(value) => { root.proportions-selected(root.width-value, value); }
+                }
+            }
+        }
+    }
+    if root.adding: Rectangle {
+        width: root.width; height: root.height; background: #00000055;
+        TouchArea {}
+        Rectangle {
+            width: parent.width - 40px; height: parent.height - 80px;
+            x: 20px; y: 40px;
+            background: Breeze.window; border-color: Breeze.frame; border-radius: Breeze.radius; border-width: 1px;
+            VerticalLayout {
+                padding: 14px; spacing: 10px;
+                HorizontalLayout {
+                    Text { text: Translations.tr(23); font-weight: 600; color: Breeze.fg; vertical-alignment: center; horizontal-stretch: 1; }
+                    ToolButton { label: Translations.tr(33); clicked => { root.adding = false; } Text { text: "×"; color: Breeze.fg; font-size: 24px; } }
+                }
+                ScrollView {
+                    VerticalLayout {
+                        spacing: 6px;
+                        for row in root.installed: Rectangle {
+                            height: 52px; background: Breeze.button; border-color: Breeze.frame; border-width: 1px; border-radius: Breeze.radius;
+                            HorizontalLayout {
+                                padding: 7px; spacing: 8px;
+                                ChibiName { entry: row; horizontal-stretch: 1; }
+                                if row.added: Text { text: "✓"; color: Breeze.inactive; vertical-alignment: center; width: 32px; horizontal-alignment: center; }
+                                if !row.added: ToolButton {
+                                    label: Translations.tr(18) + " " + row.name;
+                                    clicked => { root.add-favorite(row.id); }
+                                    Text { text: "+"; color: Breeze.fg; font-size: 22px; }
+                                }
+                            }
+                        }
+                    }
+                }
+                if root.status != "": Text { text: root.status; color: Breeze.fg; wrap: word-wrap; }
+                Button { text: Translations.tr(22); enabled: !root.importing; clicked => { root.import-zip(); } }
+            }
+        }
+    }
+    in property <bool> dark;
+    changed dark => { Palette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light; }
+}

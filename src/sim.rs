@@ -50,7 +50,6 @@ pub struct Pet {
     pub activity: Activity,
     pub time: f32,
     pub phase: f32,
-    airborne: bool,
     landing: Landing,
     rests: u32,
 }
@@ -66,7 +65,6 @@ impl Pet {
             activity: Activity::Idle,
             time: 0.0,
             phase: 0.0,
-            airborne: false,
             landing: Landing::Drop,
             rests: 0,
         }
@@ -122,11 +120,7 @@ impl Pet {
         };
         self.y = self.y.min(room.floor);
         if self.landing != Landing::Drop || self.y < room.floor - 2.0 {
-            self.airborne = self.y < room.floor - 14.0;
             self.start(Activity::Fall);
-            if self.vx.abs() > 1.0 {
-                self.face = if self.vx >= 0.0 { 1.0 } else { -1.0 };
-            }
         } else {
             self.y = room.floor;
             self.x = self.x.clamp(room.left, room.right);
@@ -153,17 +147,12 @@ impl Pet {
         self.vy += GRAVITY * dt;
         self.x += self.vx * dt;
         self.y += (start_vy + self.vy) * 0.5 * dt;
-        if self.y < room.floor - 14.0 {
-            self.airborne = true;
-        }
         if self.x < room.left {
             self.x = room.left;
             self.vx = self.vx.abs();
-            self.face = 1.0;
         } else if self.x > room.right {
             self.x = room.right;
             self.vx = -self.vx.abs();
-            self.face = -1.0;
         }
         if self.y >= room.floor {
             self.y = room.floor;
@@ -182,14 +171,12 @@ impl Pet {
                     self.vx *= 0.8;
                     return;
                 }
-                self.landing = Landing::Drop;
-                self.vy = 0.0;
             }
-            if self.airborne && self.landing == Landing::Throw && self.vy > 80.0 {
-                // A real throw skids a short way. A plain drop does not.
-                self.vx *= 0.55;
+            if self.landing != Landing::Drop {
+                if self.vy > 80.0 {
+                    self.vx *= 0.55;
+                }
                 self.vy = 0.0;
-                self.airborne = false;
                 self.landing = Landing::Drop;
                 self.start(Activity::Down);
             } else if self.vy > 500.0 {
@@ -327,7 +314,7 @@ mod tests {
     }
 
     #[test]
-    fn a_flight_lands_face_down_instead_of_standing() {
+    fn a_throw_lands_in_a_down_pose() {
         let room = room();
         let mut pet = Pet::on_floor(&room);
         pet.y = room.floor - 220.0;
@@ -345,7 +332,7 @@ mod tests {
     }
 
     #[test]
-    fn a_faceplant_skids_a_short_way() {
+    fn a_throw_skids_a_short_way() {
         let room = room();
         let mut pet = Pet::on_floor(&room);
         pet.x = room.left + 30.0;
@@ -399,7 +386,6 @@ mod tests {
                 let was_rising = pet.vy < 0.0;
                 pet.step(&room, 1.0 / fps);
                 assert!(pet.y <= room.floor);
-                assert_ne!(pet.activity, Activity::Down);
                 if was_rising && pet.vy >= 0.0 {
                     heights.push(room.floor - pet.y);
                 }
@@ -438,7 +424,7 @@ mod tests {
             pet.step(&room, 1.0 / 60.0);
         }
         assert!(pet.x > start + 80.0, "{}", pet.x);
-        assert_eq!(pet.activity, Activity::Fall);
+        assert_eq!(pet.activity, Activity::Down);
     }
 
     impl Pet {

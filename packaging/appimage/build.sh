@@ -39,8 +39,8 @@ mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib" \
 cp "$BIN" "$APPDIR/usr/bin/mako"
 cp "$ROOT"/languages/*.ini "$APPDIR/usr/share/mako/languages/"
 cp "$ROOT/LICENSE" "$ROOT/NOTICE" "$ROOT/README.md" "$PACK/BUNDLED.txt" \
-    "$ROOT/assets/DejaVu-LICENSE.txt" \
     "$APPDIR/usr/share/doc/mako/"
+cp "$ROOT/ui/icons/COPYING" "$APPDIR/usr/share/doc/mako/Breeze-LICENSE.txt"
 
 # The display libraries stay on the host. A bundled libwayland would not match the compositor.
 ldd "$BIN" | awk '/=>/ { print $3 }' | while read -r lib; do

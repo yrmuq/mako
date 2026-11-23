@@ -10,16 +10,7 @@ use std::fs;
 use std::path::PathBuf;
 
 pub const ID_NAME: u32 = 1;
-pub const ID_LANGUAGE: u32 = 2;
-pub const ID_THEME: u32 = 3;
-pub const ID_SYSTEM: u32 = 4;
-pub const ID_ENGLISH: u32 = 5;
-pub const ID_RUSSIAN: u32 = 6;
-pub const ID_LIGHT: u32 = 7;
-pub const ID_DARK: u32 = 8;
 pub const ID_QUIT: u32 = 9;
-pub const ID_CHIBI: u32 = 10;
-pub const ID_SIZE: u32 = 11;
 
 const ENGLISH: &str = include_str!("../languages/English.ini");
 const RUSSIAN: &str = include_str!("../languages/Russian.ini");
@@ -52,7 +43,7 @@ impl Catalog {
             .get(&id)
             .map(|entry| entry.text.as_str())
             .filter(|text| !text.is_empty())
-            .unwrap_or_else(|| english_of(id))
+            .unwrap_or("")
     }
 }
 
@@ -74,23 +65,6 @@ pub fn system_code() -> &'static str {
         }
     }
     "en"
-}
-
-fn english_of(id: u32) -> &'static str {
-    match id {
-        ID_NAME => "bear girl",
-        ID_LANGUAGE => "Language",
-        ID_THEME => "Theme",
-        ID_SYSTEM => "System",
-        ID_ENGLISH => "English",
-        ID_RUSSIAN => "Russian",
-        ID_LIGHT => "Light",
-        ID_DARK => "Dark",
-        ID_QUIT => "Quit",
-        ID_CHIBI => "Chibi",
-        ID_SIZE => "Size",
-        _ => "",
-    }
 }
 
 fn merge(english: Catalog, external: Catalog, bundled: Catalog) -> Catalog {
@@ -203,7 +177,7 @@ mod tests {
         let catalog = parse(RUSSIAN);
         assert_eq!(catalog.text(ID_QUIT), "Выход");
         assert_eq!(catalog.text(ID_NAME), "девочка-медведь");
-        assert_eq!(catalog.text(ID_SIZE), "Размер");
+        assert_eq!(catalog.text(11), "Размер");
     }
 
     #[test]

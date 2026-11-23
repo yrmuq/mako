@@ -30,4 +30,6 @@ jobs:
           key: mako-check-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             mako-check-${{ runner.os }}-${{ runner.arch }}-
+      - name: Install fontconfig headers
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev
       - run: sh packaging/check.sh

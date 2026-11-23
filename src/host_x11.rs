@@ -1,6 +1,8 @@
 // Copyright (C) 2026 yrmuq
 // SPDX-License-Identifier: GPL-3.0-only
 
+use std::collections::HashMap;
+use std::sync::mpsc::Receiver;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -14,9 +16,12 @@ use x11rb::protocol::Event;
 use x11rb::wrapper::ConnectionExt as _;
 
 use crate::app::{startup_room, App, Pointer};
+use crate::config::Settings;
+use crate::game::{Command, Game};
+use crate::pack::Pack;
 use crate::Fault;
 
-pub fn run() -> Result<(), Fault> {
+pub fn run(settings: Settings, first: Pack, commands: Receiver<Command>) -> Result<(), Fault> {
     let (conn, screen_number) = x11rb::connect(None).map_err(|error| {
         Fault::new(
             "MAKO-X11-0001",
@@ -35,7 +40,51 @@ pub fn run() -> Result<(), Fault> {
             screen.height_in_pixels as f32,
         )
     });
-    let mut app = App::new(room);
+    let mut game = Game::new(room, settings, first, commands);
+    let mut windows = HashMap::new();
+    let mut last = Instant::now();
+    while !game.exit {
+        game.commands();
+        let removed: Vec<_> = windows
+            .keys()
+            .copied()
+            .filter(|id| !game.pets.iter().any(|pet| pet.id == *id))
+            .collect();
+        for id in removed {
+            let (window, gc) = windows.remove(&id).unwrap();
+            conn.free_gc(gc).map_err(x11)?;
+            conn.destroy_window(window).map_err(x11)?;
+        }
+        while let Some(event) = conn.poll_for_event().map_err(x11)? {
+            handle(&mut game, event);
+        }
+        let now = Instant::now();
+        game.tick(now.saturating_duration_since(last).as_secs_f32());
+        last = now;
+        for pet in &mut game.pets {
+            let (window, gc) =
+                match windows.entry(pet.id) {
+                    std::collections::hash_map::Entry::Occupied(entry) => *entry.get(),
+                    std::collections::hash_map::Entry::Vacant(entry) => *entry.insert(
+                        create_window(&conn, screen, visual, depth, colormap, &mut pet.app)?,
+                    ),
+                };
+            present(&conn, window, gc, &mut pet.app)?;
+        }
+        conn.flush().map_err(x11)?;
+        thread::sleep(Duration::from_millis(16));
+    }
+    Ok(())
+}
+
+fn create_window(
+    conn: &impl Connection,
+    screen: &Screen,
+    visual: u32,
+    depth: u8,
+    colormap: u32,
+    app: &mut App,
+) -> Result<(u32, u32), Fault> {
     let window = conn.generate_id().map_err(x11)?;
     let gc = conn.generate_id().map_err(x11)?;
     conn.create_window(
@@ -65,25 +114,9 @@ pub fn run() -> Result<(), Fault> {
     .map_err(x11)?;
     conn.create_gc(gc, window, &CreateGCAux::new().foreground(0))
         .map_err(x11)?;
-    set_title(&conn, window)?;
+    set_title(conn, window)?;
     conn.map_window(window).map_err(x11)?;
-    conn.flush().map_err(x11)?;
-    let mut last = Instant::now();
-    while !app.exit {
-        while let Some(event) = conn.poll_for_event().map_err(x11)? {
-            handle(&mut app, event);
-        }
-        let now = Instant::now();
-        let dt = now.saturating_duration_since(last).as_secs_f32();
-        last = now;
-        app.tick(dt);
-        present(&conn, window, gc, &mut app)?;
-        conn.flush().map_err(x11)?;
-        thread::sleep(Duration::from_millis(16));
-    }
-    let _ = conn.destroy_window(window);
-    let _ = conn.flush();
-    Ok(())
+    Ok((window, gc))
 }
 
 fn present(conn: &impl Connection, window: u32, gc: u32, app: &mut App) -> Result<(), Fault> {
@@ -119,26 +152,17 @@ fn present(conn: &impl Connection, window: u32, gc: u32, app: &mut App) -> Resul
     Ok(())
 }
 
-fn handle(app: &mut App, event: Event) {
+fn handle(game: &mut Game, event: Event) {
     match event {
-        Event::ButtonPress(press) => {
-            let kind = match press.detail {
-                1 => Pointer::LeftDown,
-                3 => Pointer::RightDown,
-                _ => return,
-            };
-            let (x, y) = app.pointer_from_screen(press.root_x as f32, press.root_y as f32);
-            app.pointer(x, y, kind);
+        Event::ButtonPress(event) if event.detail == 1 => {
+            game.pointer(event.root_x as f32, event.root_y as f32, Pointer::LeftDown)
         }
-        Event::ButtonRelease(release) if release.detail == 1 => {
-            let (x, y) = app.pointer_from_screen(release.root_x as f32, release.root_y as f32);
-            app.pointer(x, y, Pointer::LeftUp);
+        Event::ButtonRelease(event) if event.detail == 1 => {
+            game.pointer(event.root_x as f32, event.root_y as f32, Pointer::LeftUp)
         }
-        Event::MotionNotify(motion) => {
-            let (x, y) = app.pointer_from_screen(motion.root_x as f32, motion.root_y as f32);
-            app.pointer(x, y, Pointer::Motion);
+        Event::MotionNotify(event) => {
+            game.pointer(event.root_x as f32, event.root_y as f32, Pointer::Motion)
         }
-        Event::KeyPress(_) => app.key_escape(),
         _ => {}
     }
 }
