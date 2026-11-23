@@ -6,7 +6,7 @@
 pub const SPRITE_W: f32 = 288.0;
 pub const SPRITE_H: f32 = 270.0;
 pub const FEET_X: f32 = SPRITE_W * 0.5;
-pub const FEET_Y: f32 = 258.0;
+pub const FEET_Y: f32 = SPRITE_H;
 const IDLE_FOR: f32 = 1.6;
 const WALK_FOR: f32 = 2.8;
 const SIT_FOR: f32 = 7.0;

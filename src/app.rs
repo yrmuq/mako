@@ -616,8 +616,14 @@ mod tests {
         let mut app = App::new(startup_room(800.0, 600.0));
         assert_eq!(app.room.floor, 600.0);
         app.set_bottom(48.0);
-        app.set_room(startup_room(800.0, 600.0));
-        assert_eq!(app.room.floor, 552.0);
-        assert_eq!(app.origin_y as f32 + FEET_Y, 552.0);
+        for scale in ["0.2", "0.4", "0.6", "0.8", "1"] {
+            app.settings.scale = scale.to_string();
+            for menu in [false, true] {
+                app.menu = menu;
+                app.set_room(startup_room(800.0, 600.0));
+                assert_eq!(app.room.floor, 552.0);
+                assert_eq!(app.origin_y + app.logical_h as i32, 552);
+            }
+        }
     }
 }
