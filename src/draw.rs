@@ -321,18 +321,15 @@ fn draw_pet(pixmap: &mut Pixmap, origin_x: f32, scene: &Scene, pack: &Pack, scal
     }
     let view = view.post_scale(scale as f32, scale as f32);
     let mut order: Vec<usize> = (0..pack.bones.len()).collect();
-    order.sort_by_key(|&index| pack.bones[index].z);
-    if scene.motion == Motion::Sit {
-        // Put the bent legs in front of the hips and the hands in front of their knees.
-        order.sort_by_key(|&index| {
-            let name = &pack.bones[index].name;
-            if name.ends_with("hand") {
-                2
-            } else {
-                u8::from(leg(name))
-            }
-        });
-    }
+    order.sort_by_key(|&index| {
+        let bone = &pack.bones[index];
+        let layer = match scene.motion {
+            Motion::Sit if bone.name.ends_with("hand") => 2,
+            Motion::Sit if pack.id != BUILTIN_ID && leg(&bone.name) => 1,
+            _ => 0,
+        };
+        (layer, bone.z)
+    });
     for index in order {
         paint_bone(pixmap, pack, &pose, view, index);
     }

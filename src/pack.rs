@@ -1099,4 +1099,32 @@ mod tests {
         assert_eq!(open.image[eyes], "eyes-open");
         assert_eq!(shut.image[eyes], "eyes-closed");
     }
+
+    #[test]
+    fn bear_girl_limb_joints_overlap_the_torso() {
+        let pack = Pack::builtin();
+        let torso = &pack.bones[pack.names["torso"]];
+        let is_opaque = |sprite: &Sprite, x: f32, y: f32| {
+            let (x, y) = (x - sprite.x, y - sprite.y);
+            x >= 0.0
+                && y >= 0.0
+                && sprite
+                    .image
+                    .pixel(x as u32, y as u32)
+                    .is_some_and(|pixel| pixel.alpha() > 200)
+        };
+        let body = pack.sprite(&torso.image).unwrap();
+        for name in ["left-hand", "right-hand", "left-leg", "right-leg"] {
+            let limb = &pack.bones[pack.names[name]];
+            let sprite = pack.sprite(&limb.image).unwrap();
+            assert!(
+                is_opaque(body, torso.pivot_x + limb.x, torso.pivot_y + limb.y),
+                "{name}"
+            );
+            assert!(is_opaque(sprite, limb.pivot_x, limb.pivot_y), "{name}");
+            if name.ends_with("leg") {
+                assert!(limb.z < torso.z, "{name}");
+            }
+        }
+    }
 }

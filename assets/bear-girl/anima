@@ -1,7 +1,7 @@
 anim idle 1.6
 rot head 0 2 0.8 -2 1.6 2
-rot left-hand 0 -3
-rot right-hand 0 3
+rot left-hand 0 5
+rot right-hand 0 -5
 bob 0 0 0.8 -5 1.6 0
 image eyes 0 eyes-open
 
