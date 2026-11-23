@@ -216,6 +216,12 @@ impl Ragdoll {
         self.turn_speed = (self.turn_speed + 0.55 * moment / radius.powi(2)).clamp(-14.0, 14.0);
     }
 
+    pub fn impact(&mut self, spin: f32) {
+        self.clear_plant();
+        self.live = true;
+        self.turn_speed = (self.turn_speed + spin).clamp(-14.0, 14.0);
+    }
+
     pub fn plant(&mut self, slide: f32) {
         if self.planted {
             return;

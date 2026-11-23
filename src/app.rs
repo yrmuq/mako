@@ -1,7 +1,7 @@
 // Copyright (C) 2026 yrmuq
 // SPDX-License-Identifier: GPL-3.0-only
 
-use tiny_skia::Point;
+use tiny_skia::{Point, Rect};
 
 use crate::config::Settings;
 use crate::draw::{self, Frame, Motion, Part, Scene};
@@ -36,11 +36,14 @@ pub struct App {
     pub origin_x: i32,
     pub origin_y: i32,
     clock: f32,
+    blink_at: f32,
+    blink_length: f32,
 }
 
 impl App {
     pub fn new(room: Room, settings: Settings, pack: Pack) -> Self {
-        let pet = Pet::on_floor(&room);
+        let pet = Pet::on_floor(&room, pack.animation_length("walk"));
+        let blink_length = pack.animation_length("blink").unwrap_or(0.0);
         let rag = Ragdoll::new(&pack);
         let screen = screen_of(&room);
         let mut app = Self {
@@ -65,6 +68,8 @@ impl App {
             origin_x: 0,
             origin_y: 0,
             clock: 0.0,
+            blink_at: next_blink(0.0),
+            blink_length,
         };
         app.fit_room();
         app.pet.y = app.room.floor;
@@ -93,6 +98,9 @@ impl App {
 
     pub fn tick(&mut self, dt: f32) {
         self.clock += dt;
+        if self.clock >= self.blink_at + self.blink_length {
+            self.blink_at = next_blink(self.clock);
+        }
         let dt = dt.clamp(0.0, 0.05);
         self.sync_rag();
         if let Some(grip) = &self.grip {
@@ -212,9 +220,10 @@ impl App {
         }
     }
 
-    pub fn render(&mut self) -> Frame {
-        let scene = Scene {
+    fn scene(&self) -> Scene {
+        Scene {
             cycle: self.pet.phase,
+            blink: (self.clock >= self.blink_at).then_some(self.clock - self.blink_at),
             motion: match self.pet.activity {
                 Activity::Walk => Motion::Walk,
                 Activity::Fall => Motion::Fall,
@@ -236,8 +245,29 @@ impl App {
                 Vec::new()
             },
             anchor: self.grip.as_ref().map(|grip| grip.point),
-        };
-        let mut frame = draw::render(&scene, &self.pack, self.scale);
+        }
+    }
+
+    pub fn collision_bounds(&self) -> Option<Rect> {
+        if self.grip.is_some() {
+            return None;
+        }
+        let origin = Point::from_xy(self.pet.x - self.feet_x(), self.pet.y - self.feet_y());
+        draw::collision_bounds(&self.scene(), &self.pack, origin, self.screen.0)
+    }
+
+    pub fn knock_back(&mut self, vx: f32, vy: f32) {
+        if !self.rag.live {
+            let degrees = self.pack.local_degrees(self.motion_name(), self.pet.phase);
+            self.rag.seed(&degrees);
+        }
+        self.rag
+            .impact((vx * self.pet.face / 85.0).clamp(-12.0, 12.0));
+        self.pet.knock_back(vx, vy);
+    }
+
+    pub fn render(&mut self) -> Frame {
+        let mut frame = draw::render(&self.scene(), &self.pack, self.scale);
         self.parts = std::mem::take(&mut frame.parts);
         self.logical_w = frame.width / self.scale.max(1);
         self.logical_h = frame.height / self.scale.max(1);
@@ -347,6 +377,10 @@ impl App {
         self.origin_x = (self.pet.x - self.feet_x()).round() as i32;
         self.origin_y = (self.pet.y - self.feet_y()).round() as i32;
     }
+}
+
+fn next_blink(now: f32) -> f32 {
+    now + 2.4 + 2.4 * fastrand::f32()
 }
 
 pub enum Pointer {

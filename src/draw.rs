@@ -5,9 +5,9 @@
 
 #[cfg(test)]
 use tiny_skia::PremultipliedColorU8;
-use tiny_skia::{Pixmap, PixmapPaint, Point, Transform};
+use tiny_skia::{Pixmap, PixmapPaint, Point, Rect, Transform};
 
-use crate::pack::{BonePoint, Pack, Pose, Sprite, BUILTIN_ID};
+use crate::pack::{BonePoint, Face, Pack, Pose, Sprite, BUILTIN_ID};
 #[cfg(test)]
 use crate::sim::FEET_Y;
 use crate::sim::{FEET_X, SPRITE_H, SPRITE_W};
@@ -25,6 +25,7 @@ pub enum Motion {
 #[derive(Clone, Debug)]
 pub struct Scene {
     pub cycle: f32,
+    pub blink: Option<f32>,
     pub motion: Motion,
     pub tilt: f32,
     pub facing_left: bool,
@@ -121,27 +122,52 @@ pub fn portrait(pack: &Pack) -> Option<Pixmap> {
     Some(portrait)
 }
 
+pub fn collision_bounds(
+    scene: &Scene,
+    pack: &Pack,
+    origin: Point,
+    screen_width: f32,
+) -> Option<Rect> {
+    let (parts, _) = pet_parts(scene, pack);
+    let body = parts
+        .iter()
+        .filter(|part| part.joint.is_some())
+        .filter_map(|part| {
+            Rect::from_xywh(
+                0.0,
+                0.0,
+                part.sprite.image.width() as f32,
+                part.sprite.image.height() as f32,
+            )?
+            .transform(part.transform)
+        })
+        .reduce(|a, b| {
+            Rect::from_ltrb(
+                a.left().min(b.left()),
+                a.top().min(b.top()),
+                a.right().max(b.right()),
+                a.bottom().max(b.bottom()),
+            )
+            .expect("valid body bounds")
+        })?;
+    let (left, top, right, bottom) = frame_bounds(scene, &parts);
+    let width = (right - left) as f32;
+    let visible = Rect::from_xywh(left as f32, top as f32, width, (bottom - top) as f32)?;
+    let x = (origin.x + left as f32)
+        .round()
+        .clamp(0.0, (screen_width - width).max(0.0));
+    body.intersect(&visible)?
+        .transform(Transform::from_translate(x - left as f32, origin.y.round()))
+}
+
 pub fn scene_size((x, y): (f32, f32)) -> (u32, u32) {
     ((SPRITE_W * x).round() as u32, (SPRITE_H * y).round() as u32)
 }
 
 pub fn render(scene: &Scene, pack: &Pack, scale: u32) -> Frame {
     let scale = scale.max(1);
-    let (logical_w, logical_h) = scene_size(scene.scales);
     let (mut parts, mut anchor) = pet_parts(scene, pack);
-    let dynamic_pose = matches!(scene.motion, Motion::Drag | Motion::Fall | Motion::Down)
-        || !scene.pose.is_empty();
-    let (left, top, right, bottom) = if dynamic_pose {
-        let bounds = part_bounds(&parts, logical_w as i32, logical_h as i32);
-        if scene.motion == Motion::Drag {
-            bounds
-        } else {
-            // The transformed ink is already aligned to the floor contact line.
-            (bounds.0, bounds.1, bounds.2, logical_h as i32)
-        }
-    } else {
-        (0, 0, logical_w as i32, logical_h as i32)
-    };
+    let (left, top, right, bottom) = frame_bounds(scene, &parts);
     let width = (right - left) as u32 * scale;
     let height = (bottom - top) as u32 * scale;
     let mut pixmap = Pixmap::new(width, height).expect("pixmap");
@@ -177,6 +203,23 @@ pub fn render(scene: &Scene, pack: &Pack, scale: u32) -> Frame {
         shift: (left, top),
         anchor,
         support,
+    }
+}
+
+fn frame_bounds(scene: &Scene, parts: &[Part]) -> (i32, i32, i32, i32) {
+    let (logical_w, logical_h) = scene_size(scene.scales);
+    let dynamic_pose = matches!(scene.motion, Motion::Drag | Motion::Fall | Motion::Down)
+        || !scene.pose.is_empty();
+    if dynamic_pose {
+        let bounds = part_bounds(parts, logical_w as i32, logical_h as i32);
+        if scene.motion == Motion::Drag {
+            bounds
+        } else {
+            // The transformed ink is already aligned to the floor contact line.
+            (bounds.0, bounds.1, bounds.2, logical_h as i32)
+        }
+    } else {
+        (0, 0, logical_w as i32, logical_h as i32)
     }
 }
 
@@ -217,11 +260,12 @@ fn pet_parts(scene: &Scene, pack: &Pack) -> (Vec<Part>, Option<Point>) {
         Motion::Sit => "sit",
         Motion::Idle => "idle",
     };
-    let pose = if scene.pose.is_empty() {
-        pack.pose(anim, scene.cycle)
-    } else {
-        pack.pose_with(anim, scene.cycle, Some(&scene.pose))
+    let face = match scene.motion {
+        Motion::Fall | Motion::Drag => Face::Shock,
+        _ => scene.blink.map_or(Face::Neutral, Face::Blink),
     };
+    let degrees = (!scene.pose.is_empty()).then_some(scene.pose.as_slice());
+    let pose = pack.pose_for(anim, scene.cycle, degrees, face);
     let (scale_x, scale_y) = scene.scales;
     let fit = (SPRITE_W / pack.canvas_w).min(SPRITE_H / pack.canvas_h);
     let (fit_x, fit_y) = (fit * scale_x, fit * scale_y);
@@ -379,6 +423,7 @@ mod tests {
     fn still() -> Scene {
         Scene {
             cycle: 0.0,
+            blink: None,
             motion: Motion::Idle,
             tilt: 0.0,
             facing_left: false,

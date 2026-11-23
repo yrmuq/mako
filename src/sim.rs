@@ -8,7 +8,7 @@ pub const SPRITE_H: f32 = 270.0;
 pub const FEET_X: f32 = SPRITE_W * 0.5;
 pub const FEET_Y: f32 = SPRITE_H;
 const IDLE_FOR: f32 = 1.6;
-const WALK_FOR: f32 = 2.8;
+const FALLBACK_WALK_CYCLE: f32 = 0.7;
 const SIT_FOR: f32 = 7.0;
 const DOWN_FOR: f32 = 2.6;
 const WALK_SPEED: f32 = 78.0;
@@ -51,11 +51,13 @@ pub struct Pet {
     pub time: f32,
     pub phase: f32,
     landing: Landing,
-    rests: u32,
+    walk_cycle: f32,
+    walk_for: f32,
 }
 
 impl Pet {
-    pub fn on_floor(room: &Room) -> Self {
+    pub fn on_floor(room: &Room, walk_cycle: Option<f32>) -> Self {
+        let walk_cycle = walk_cycle.unwrap_or(FALLBACK_WALK_CYCLE);
         Self {
             x: ((room.left + room.right) * 0.5).clamp(room.left, room.right),
             y: room.floor,
@@ -66,7 +68,8 @@ impl Pet {
             time: 0.0,
             phase: 0.0,
             landing: Landing::Drop,
-            rests: 0,
+            walk_cycle,
+            walk_for: 4.0 * walk_cycle,
         }
     }
 
@@ -88,15 +91,34 @@ impl Pet {
                 self.y = room.floor;
                 self.x = self.x.clamp(room.left, room.right);
                 if self.time >= IDLE_FOR {
-                    self.rests += 1;
-                    if self.rests.is_multiple_of(2) {
-                        self.start(Activity::Sit);
-                    } else {
-                        self.start(Activity::Walk);
-                    }
+                    self.choose_activity(fastrand::u8(0..100), fastrand::u8(3..=5));
                 }
             }
         }
+    }
+
+    fn choose_activity(&mut self, roll: u8, walk_cycles: u8) {
+        match roll {
+            0..50 => {
+                self.walk_for = f32::from(walk_cycles) * self.walk_cycle;
+                self.start(Activity::Walk);
+            }
+            50..80 => self.start(Activity::Sit),
+            _ => self.start(Activity::Idle),
+        }
+    }
+
+    pub fn can_strike(&self) -> bool {
+        (matches!(self.activity, Activity::Fall) && self.landing != Landing::Drop
+            || self.activity == Activity::Down)
+            && self.vx.hypot(self.vy) >= 140.0
+    }
+
+    pub fn knock_back(&mut self, vx: f32, vy: f32) {
+        self.vx = vx;
+        self.vy = vy;
+        self.landing = Landing::Throw;
+        self.start(Activity::Fall);
     }
 
     pub fn grab(&mut self) {
@@ -139,6 +161,7 @@ impl Pet {
     fn start(&mut self, activity: Activity) {
         self.activity = activity;
         self.time = 0.0;
+        self.phase = 0.0;
     }
 
     fn fall(&mut self, room: &Room, dt: f32) {
@@ -238,7 +261,8 @@ impl Pet {
 
     fn walk(&mut self, room: &Room, dt: f32) {
         self.vx = self.face.signum() * WALK_SPEED;
-        self.x += self.vx * dt;
+        let travel_time = (self.walk_for - (self.time - dt)).clamp(0.0, dt);
+        self.x += self.vx * travel_time;
         self.y = room.floor;
         if self.x <= room.left {
             self.x = room.left;
@@ -247,7 +271,7 @@ impl Pet {
             self.x = room.right;
             self.face = -1.0;
         }
-        if self.time >= WALK_FOR {
+        if self.time >= self.walk_for {
             self.start(Activity::Idle);
         }
     }
@@ -268,7 +292,7 @@ mod tests {
     #[test]
     fn fall_lands_on_the_floor() {
         let room = room();
-        let mut pet = Pet::on_floor(&room);
+        let mut pet = Pet::on_floor(&room, None);
         pet.y = 100.0;
         pet.become_for_test(Activity::Fall);
         for _ in 0..180 {
@@ -281,7 +305,7 @@ mod tests {
     #[test]
     fn walk_turns_around_at_the_right_edge() {
         let room = room();
-        let mut pet = Pet::on_floor(&room);
+        let mut pet = Pet::on_floor(&room, None);
         pet.x = room.right - 1.0;
         pet.face = 1.0;
         pet.become_for_test(Activity::Walk);
@@ -293,7 +317,7 @@ mod tests {
     #[test]
     fn a_sideways_throw_arcs_up_then_lands() {
         let room = room();
-        let mut pet = Pet::on_floor(&room);
+        let mut pet = Pet::on_floor(&room, None);
         let start_x = pet.x;
         pet.y = room.floor - 80.0;
         pet.release(&room, 420.0, -900.0);
@@ -316,7 +340,7 @@ mod tests {
     #[test]
     fn a_throw_lands_in_a_down_pose() {
         let room = room();
-        let mut pet = Pet::on_floor(&room);
+        let mut pet = Pet::on_floor(&room, None);
         pet.y = room.floor - 220.0;
         pet.release(&room, 80.0, 40.0);
         let mut saw_down = false;
@@ -334,7 +358,7 @@ mod tests {
     #[test]
     fn a_throw_skids_a_short_way() {
         let room = room();
-        let mut pet = Pet::on_floor(&room);
+        let mut pet = Pet::on_floor(&room, None);
         pet.x = room.left + 30.0;
         pet.y = room.floor - 120.0;
         pet.release(&room, 700.0, 30.0);
@@ -358,7 +382,7 @@ mod tests {
     #[test]
     fn a_still_drop_lands_on_her_feet() {
         let room = room();
-        let mut pet = Pet::on_floor(&room);
+        let mut pet = Pet::on_floor(&room, None);
         pet.y = room.floor - 160.0;
         pet.release(&room, 0.0, 0.0);
         let mut saw_down = false;
@@ -377,7 +401,7 @@ mod tests {
     fn a_downward_throw_rebounds_with_smaller_hops_then_settles() {
         let room = room();
         for fps in [30.0, 60.0, 144.0] {
-            let mut pet = Pet::on_floor(&room);
+            let mut pet = Pet::on_floor(&room, None);
             pet.y += 10.0;
             pet.release(&room, 0.0, 1100.0);
             assert_eq!(pet.activity, Activity::Fall);
@@ -401,23 +425,33 @@ mod tests {
     }
 
     #[test]
-    fn the_second_rest_is_spent_sitting() {
-        let room = room();
-        let mut pet = Pet::on_floor(&room);
-        pet.become_for_test(Activity::Idle);
-        pet.time = IDLE_FOR;
-        pet.step(&room, 1.0 / 60.0);
-        assert_eq!(pet.activity, Activity::Walk);
-        pet.become_for_test(Activity::Idle);
-        pet.time = IDLE_FOR;
-        pet.step(&room, 1.0 / 60.0);
+    fn idle_rolls_choose_actions_and_walks_use_the_packs_cycle_length() {
+        let room = Room {
+            left: 0.0,
+            right: 1600.0,
+            floor: 800.0,
+        };
+        for count in 3..=5 {
+            let mut pet = Pet::on_floor(&room, Some(0.8));
+            let start_x = pet.x;
+            pet.choose_activity(49, count);
+            assert_eq!(pet.activity, Activity::Walk);
+            while pet.activity == Activity::Walk {
+                pet.step(&room, 0.04);
+            }
+            assert!((pet.x - start_x - WALK_SPEED * 0.8 * f32::from(count)).abs() < 0.1);
+        }
+        let mut pet = Pet::on_floor(&room, None);
+        pet.choose_activity(50, 4);
         assert_eq!(pet.activity, Activity::Sit);
+        pet.choose_activity(80, 4);
+        assert_eq!(pet.activity, Activity::Idle);
     }
 
     #[test]
     fn a_sideways_flick_on_the_floor_keeps_going() {
         let room = room();
-        let mut pet = Pet::on_floor(&room);
+        let mut pet = Pet::on_floor(&room, None);
         let start = pet.x;
         pet.release(&room, 700.0, 0.0);
         for _ in 0..20 {

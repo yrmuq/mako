@@ -37,13 +37,13 @@
 | About | View the project details and check for updates. Click the logo five times to reveal Dev. |
 | Dev | Enter the width and height independently from 25% to 200% of the original proportions. |
 
-Bear girl walks and sits on the upper edge of the bottom panel. Her hands and legs use the same parts while she types. The laptop rests on the same edge with its screen facing her.
+Bear girl randomly walks, sits or pauses on the upper edge of the bottom panel. Each walk lasts three to five animation cycles. She looks shocked while grabbed or flying, and a thrown chibi can send others tumbling on impact. Her hands and legs use the same parts while she types. The laptop rests on the same edge with its screen facing her.
 
 The system language follows `LANGUAGE`, `LC_ALL`, `LC_MESSAGES` and `LANG`. The system theme follows the KDE color scheme. The config stores the quick-list order, language, theme, overall scale and proportions.
 
 ### Character archives
 
-Use **Chibis → Add → Import** to install a ZIP. Installed archives are stored in `$XDG_DATA_HOME/mako/chibis/`, or `~/.local/share/mako/chibis/` by default. A pack requires a name in `heart`. Missing `body` or `anima` files use bear girl's skeleton or animations.
+Use **Chibis → Add → Import** to install a ZIP. Installed archives are stored in `$XDG_DATA_HOME/mako/chibis/`, or `~/.local/share/mako/chibis/` by default. A pack requires a name in `heart`. Missing `body` or `anima` files use bear girl's skeleton or animations. A pack can add optional `creature/eyes-shock.png` and `creature/mouth-shock.png` sprites for bones named `eyes` and `mouth`.
 
 | Path | Role |
 | --- | --- |

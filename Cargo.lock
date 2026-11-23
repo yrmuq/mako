@@ -2556,6 +2556,7 @@ dependencies = [
 name = "mako"
 version = "0.1.0"
 dependencies = [
+ "fastrand",
  "ksni",
  "png 0.17.16",
  "rfd",

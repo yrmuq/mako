@@ -17,7 +17,6 @@ use zip::ZipArchive;
 use crate::Fault;
 
 pub const BUILTIN_ID: &str = "bear-girl";
-const BLINK_EVERY: f32 = 3.2;
 const MAX_FILE: u64 = 4_000_000;
 const MAX_TOTAL: u64 = 24_000_000;
 
@@ -139,6 +138,13 @@ impl BonePoint {
     }
 }
 
+#[derive(Clone, Copy)]
+pub enum Face {
+    Neutral,
+    Blink(f32),
+    Shock,
+}
+
 pub struct Pose {
     pub placed: Vec<Placed>,
     pub image: Vec<String>,
@@ -169,7 +175,40 @@ impl Pack {
 
     /// Local bone degrees. `degrees` replaces the animation rotations and stops the bob.
     pub fn pose_with(&self, anim_name: &str, time: f32, degrees: Option<&[f32]>) -> Pose {
-        let (mut angle, image, mut bob) = self.sample_locals(anim_name, time);
+        self.pose_for(anim_name, time, degrees, Face::Neutral)
+    }
+
+    pub fn pose_for(
+        &self,
+        anim_name: &str,
+        time: f32,
+        degrees: Option<&[f32]>,
+        face: Face,
+    ) -> Pose {
+        let (mut angle, mut image, mut bob) = self.sample_locals(anim_name, time);
+        match face {
+            Face::Blink(phase) => {
+                if let Some(blink) = self
+                    .anims
+                    .iter()
+                    .find(|anim| anim.name == "blink" && phase < anim.length)
+                {
+                    apply(blink, phase, &self.names, &mut angle, &mut image, &mut bob);
+                }
+            }
+            Face::Shock => {
+                for (bone, sprite) in [("eyes", "eyes-shock"), ("mouth", "mouth-shock")] {
+                    if let Some(index) = self
+                        .names
+                        .get(bone)
+                        .filter(|_| self.images.contains_key(sprite))
+                    {
+                        image[*index] = sprite.into();
+                    }
+                }
+            }
+            Face::Neutral => {}
+        }
         if let Some(degrees) = degrees {
             for (slot, value) in angle.iter_mut().zip(degrees) {
                 *slot = *value;
@@ -209,13 +248,14 @@ impl Pack {
                 &mut bob,
             );
         }
-        if let Some(blink) = self.anims.iter().find(|anim| anim.name == "blink") {
-            let phase = local_time(time, BLINK_EVERY);
-            if phase < blink.length {
-                apply(blink, phase, &self.names, &mut angle, &mut image, &mut bob);
-            }
-        }
         (angle, image, bob)
+    }
+
+    pub fn animation_length(&self, name: &str) -> Option<f32> {
+        self.anims
+            .iter()
+            .find(|anim| anim.name == name)
+            .map(|anim| anim.length)
     }
 
     fn anim_or_idle(&self, name: &str) -> Option<&Anim> {
@@ -455,6 +495,14 @@ const BUILTIN_IMAGES: &[(&str, &[u8])] = &[
     (
         "mouth",
         include_bytes!("../assets/bear-girl/creature/mouth.png"),
+    ),
+    (
+        "eyes-shock",
+        include_bytes!("../assets/bear-girl/creature/eyes-shock.png"),
+    ),
+    (
+        "mouth-shock",
+        include_bytes!("../assets/bear-girl/creature/mouth-shock.png"),
     ),
     (
         "torso",
@@ -1173,10 +1221,20 @@ mod tests {
     }
 
     #[test]
+    fn shock_swaps_both_face_layers_while_ragdoll_rotations_are_preserved() {
+        let pack = Pack::builtin();
+        let angles = vec![12.0; pack.bones.len()];
+        let shock = pack.pose_for("fall", 0.08, Some(&angles), Face::Shock);
+        assert_eq!(shock.image[pack.names["eyes"]], "eyes-shock");
+        assert_eq!(shock.image[pack.names["mouth"]], "mouth-shock");
+        assert_eq!(shock.placed[pack.names["torso"]].rot, 12.0);
+    }
+
+    #[test]
     fn blink_swaps_the_open_eyes() {
         let pack = Pack::builtin();
         let open = pack.pose("idle", 0.0);
-        let shut = pack.pose("idle", 0.08);
+        let shut = pack.pose_for("idle", 0.08, None, Face::Blink(0.08));
         let eyes = pack.names["eyes"];
         assert_eq!(open.image[eyes], "eyes-open");
         assert_eq!(shut.image[eyes], "eyes-closed");

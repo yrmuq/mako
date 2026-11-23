@@ -9,7 +9,7 @@
 - `src/desktop.rs` and `ui/app.slint` — tray, quick panel, preferences and ZIP import.
 - `src/icons.rs` — desktop icon-theme lookup and symbolic icon tint detection.
 - `src/place.rs` and `ui/place.js` — tray popup positioning.
-- `src/game.rs` — live chibi instances and pointer routing.
+- `src/game.rs` — live chibi instances, pointer routing and swept body collisions.
 - `src/app.rs` — pointer gestures and geometry for one chibi.
 - `src/host_wayland.rs` — one anchored KWin layer, input limited to live chibis, shared-memory buffer.
 - `src/host_x11.rs` — one override-redirect ARGB window per chibi on X11.
