@@ -42,13 +42,14 @@ cp "$ROOT/LICENSE" "$ROOT/NOTICE" "$ROOT/README.md" "$PACK/BUNDLED.txt" \
     "$APPDIR/usr/share/doc/mako/"
 cp "$ROOT/ui/icons/COPYING" "$APPDIR/usr/share/doc/mako/Breeze-LICENSE.txt"
 
-# Load the display libraries and graphics drivers from the host.
+# Keep graphics drivers and the font stack paired with the host desktop.
 ldd "$BIN" | awk '/=>/ { print $3 }' | while read -r lib; do
     [ -f "$lib" ] || continue
     base=$(basename "$lib")
     case "$base" in
         libc.so*|libm.so*|libdl.so*|libpthread.so*|librt.so*|libresolv.so*|libutil.so*|ld-linux*) continue ;;
         libgcc_s.so*|libstdc++.so*) continue ;;
+        libfontconfig.so*|libfreetype.so*|libexpat.so*|libz.so*|libbz2.so*|libpng16.so*|libbrotli*.so*) continue ;;
         libwayland-*.so*|libxkbcommon*.so*) continue ;;
         libGL*.so*|libOpenGL.so*|libEGL*.so*|libglapi.so*|libdrm.so*|libgbm.so*) continue ;;
     esac

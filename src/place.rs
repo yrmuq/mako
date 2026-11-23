@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use slint::winit_030::winit::{dpi::PhysicalPosition, window::Window};
 use x11rb::{connection::Connection, protocol::xproto::ConnectionExt};
-use zbus::blocking::{Connection as Bus, Proxy};
+use zbus::blocking::{connection::Builder, Connection as Bus, Proxy};
 
 const SERVICE: &str = "org.kde.KWin";
 const LEGACY_SCRIPT: &str = "mako-tray-placement";
@@ -22,6 +22,10 @@ impl Ready {
     }
 }
 
+fn ready_connection(sender: SyncSender<()>) -> zbus::Result<Bus> {
+    Builder::session()?.serve_at(PLACER, Ready(sender))?.build()
+}
+
 pub struct Kwin {
     bus: Bus,
     plugin: String,
@@ -30,9 +34,8 @@ pub struct Kwin {
 
 impl Kwin {
     pub fn install() -> Result<Self, Box<dyn std::error::Error>> {
-        let bus = Bus::session()?;
         let (ready, registered) = mpsc::sync_channel(1);
-        bus.object_server().at(PLACER, Ready(ready))?;
+        let bus = ready_connection(ready)?;
         let destination = bus.unique_name().ok_or("missing D-Bus unique name")?;
         let destination = serde_json::to_string(destination.as_str())?;
         let mut script = tempfile::Builder::new()
@@ -124,4 +127,27 @@ pub fn x11(window: &Window, tray_point: (i32, i32)) {
     };
     let x = (x - size.width as i32 / 2).clamp(left, right);
     window.set_outer_position(PhysicalPosition::new(x, y.clamp(top, bottom)));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires a private D-Bus session"]
+    fn placement_callback_runs_without_an_application_runtime() {
+        let (ready, registered) = mpsc::sync_channel(1);
+        let service = ready_connection(ready).expect("start the placement callback");
+        let caller = Bus::session().expect("connect as the placement script");
+        let proxy = Proxy::new(
+            &caller,
+            service.unique_name().unwrap().as_str(),
+            PLACER,
+            "io.github.yrmuq.mako.Placer",
+        )
+        .unwrap();
+
+        proxy.call::<_, _, ()>("Ready", &()).unwrap();
+        registered.recv_timeout(Duration::from_secs(3)).unwrap();
+    }
 }
