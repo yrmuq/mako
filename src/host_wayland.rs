@@ -146,6 +146,7 @@ impl Host {
             return;
         }
         self.screen = Some((width, height));
+        self.app.set_bottom(crate::config::bottom_panel());
         self.app.set_room(startup_room(width as f32, height as f32));
     }
 

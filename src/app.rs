@@ -30,6 +30,7 @@ pub struct App {
     prev_vx: f32,
     prev_vy: f32,
     screen: (f32, f32),
+    bottom: f32,
     pub dark: bool,
     pub exit: bool,
     pub scale: u32,
@@ -75,6 +76,7 @@ impl App {
             prev_vx: 0.0,
             prev_vy: 0.0,
             screen,
+            bottom: 0.0,
             dark,
             exit: false,
             scale: 1,
@@ -91,6 +93,10 @@ impl App {
         app.sync_geometry();
         app.note_committed();
         app
+    }
+
+    pub fn set_bottom(&mut self, bottom: f32) {
+        self.bottom = bottom.max(0.0);
     }
 
     pub fn set_room(&mut self, room: Room) {
@@ -408,18 +414,29 @@ impl App {
     }
 
     fn flick(&self) -> (f32, f32) {
-        if self.trail.len() < 2 {
-            return (
-                (self.pet.vx * 2.0).clamp(-4800.0, 4800.0),
-                (self.pet.vy * 2.0).clamp(-4800.0, 4800.0),
-            );
+        let Some(&(t1, x1, y1)) = self.trail.last() else {
+            return (0.0, 0.0);
+        };
+        // The hand already stopped. Holding her and letting go is not a throw.
+        if self.clock - t1 > 0.08 {
+            return (0.0, 0.0);
         }
-        let (t0, x0, y0) = self.trail[0];
-        let (t1, x1, y1) = *self.trail.last().expect("trail");
+        let (t0, x0, y0) = self
+            .trail
+            .iter()
+            .rev()
+            .find(|(time, _, _)| t1 - *time >= 0.045)
+            .copied()
+            .unwrap_or(self.trail[0]);
         let dt = (t1 - t0).max(0.016);
+        let vx = (x1 - x0) / dt;
+        let vy = (y1 - y0) / dt;
+        if vx.hypot(vy) < 240.0 {
+            return (0.0, 0.0);
+        }
         (
-            ((x1 - x0) / dt * 2.0).clamp(-4800.0, 4800.0),
-            ((y1 - y0) / dt * 2.0).clamp(-4800.0, 4800.0),
+            (vx * 2.0).clamp(-4800.0, 4800.0),
+            (vy * 2.0).clamp(-4800.0, 4800.0),
         )
     }
 
@@ -436,7 +453,7 @@ impl App {
         self.room = Room {
             left: 16.0 + inset,
             right: (width - 16.0 - inset).max(16.0 + inset + 1.0),
-            floor: (height - drop).max(self.feet_y()),
+            floor: (height - self.bottom - drop).max(self.feet_y()),
         };
     }
 
@@ -584,5 +601,33 @@ mod tests {
         assert!(far > start_x + 40.0, "{far}");
         assert!(high < app.room.floor - 5.0, "{high}");
         assert!(app.rag.live);
+    }
+
+    #[test]
+    fn letting_go_after_a_pause_does_not_throw() {
+        let mut app = App::new(startup_room(1200.0, 800.0));
+        app.pointer(40.0, 80.0, Pointer::LeftDown);
+        app.clock = 0.02;
+        app.pointer(100.0, 40.0, Pointer::Motion);
+        app.clock = 0.05;
+        app.pointer(160.0, 20.0, Pointer::Motion);
+        app.clock = 0.40;
+        app.pointer(160.0, 20.0, Pointer::LeftUp);
+        assert!(app.pet.vx.abs() < 1.0, "{}", app.pet.vx);
+        assert!(app.pet.vy.abs() < 1.0, "{}", app.pet.vy);
+    }
+
+    #[test]
+    fn the_floor_clears_a_bottom_panel() {
+        let mut app = App::new(startup_room(800.0, 600.0));
+        let on_the_glass = app.room.floor;
+        app.set_bottom(48.0);
+        app.set_room(startup_room(800.0, 600.0));
+        assert!(
+            (on_the_glass - app.room.floor - 48.0).abs() < 0.1,
+            "{} {}",
+            on_the_glass,
+            app.room.floor
+        );
     }
 }

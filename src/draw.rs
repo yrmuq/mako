@@ -320,11 +320,19 @@ fn draw_pet(pixmap: &mut Pixmap, origin_x: f32, scene: &Scene, pack: &Pack, scal
     let mut order: Vec<usize> = (0..pack.bones.len()).collect();
     order.sort_by_key(|&index| pack.bones[index].z);
     if scene.motion == Motion::Sit {
-        // The lid sits in front of her body. Both paws stay on top of the keyboard.
+        // Legs stay in front of the body. The lid covers the lap, and both paws
+        // stay on top of the keyboard.
+        let front = |index: usize| {
+            let name = pack.bones[index].name.as_str();
+            name.ends_with("leg") || name.ends_with("foot")
+        };
         for &index in order
             .iter()
-            .filter(|&&index| !pack.bones[index].name.ends_with("hand"))
+            .filter(|&&index| !front(index) && !pack.bones[index].name.ends_with("hand"))
         {
+            paint_bone(pixmap, pack, &pose, view, index);
+        }
+        for &index in order.iter().filter(|&&index| front(index)) {
             paint_bone(pixmap, pack, &pose, view, index);
         }
         draw_laptop(pixmap, origin_x, pet_top, pet_scale, scale, pack);
@@ -390,10 +398,10 @@ fn draw_laptop(
     if sw < 1.0 || sh < 1.0 {
         return;
     }
-    let dw = 100.0 * pet_scale;
+    let dw = 118.0 * pet_scale;
     let dh = dw * sh / sw;
     let x = origin_x + FEET_X * pet_scale - dw * 0.5;
-    let y = pet_top + FEET_Y * pet_scale - dh * 0.84;
+    let y = pet_top + FEET_Y * pet_scale - dh * 0.72;
     let px = scale as f32;
     let local = Transform::from_scale(dw / sw * px, dh / sh * px).post_translate(x * px, y * px);
     pixmap.draw_pixmap(

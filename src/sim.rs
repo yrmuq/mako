@@ -42,6 +42,7 @@ pub struct Pet {
     pub time: f32,
     pub phase: f32,
     pub airborne: bool,
+    pub tossed: bool,
     rests: u32,
 }
 
@@ -57,6 +58,7 @@ impl Pet {
             time: 0.0,
             phase: 0.0,
             airborne: false,
+            tossed: false,
             rests: 0,
         }
     }
@@ -94,14 +96,16 @@ impl Pet {
         self.activity = Activity::Drag;
         self.vx = 0.0;
         self.vy = 0.0;
+        self.tossed = false;
         self.time = 0.0;
     }
 
-    /// Release a drag. A downward or sideways throw falls; a rest lands or idles.
+    /// Release a drag. A flick flies. A still hand just drops her.
     pub fn release(&mut self, room: &Room, vx: f32, vy: f32) {
         self.vx = vx;
         self.vy = vy;
-        let moving = vx.abs() > 40.0 || vy.abs() > 40.0 || self.y < room.floor - 2.0;
+        self.tossed = vx.abs() >= 80.0 || vy <= -80.0;
+        let moving = self.tossed || self.y < room.floor - 2.0;
         if moving {
             self.airborne = self.y < room.floor - 14.0;
             self.start(Activity::Fall);
@@ -146,11 +150,12 @@ impl Pet {
         }
         if self.y >= room.floor {
             self.y = room.floor;
-            if self.airborne && self.vy > 80.0 {
-                // A flight smacks into the floor and keeps sliding.
-                self.vx *= 0.8;
+            if self.airborne && self.tossed && self.vy > 80.0 {
+                // A real throw skids a short way. A plain drop does not.
+                self.vx *= 0.55;
                 self.vy = 0.0;
                 self.airborne = false;
+                self.tossed = false;
                 self.start(Activity::Down);
             } else if self.vy > 500.0 {
                 self.vy = -self.vy * 0.28;
@@ -176,7 +181,7 @@ impl Pet {
     fn down(&mut self, room: &Room, dt: f32) {
         self.y = room.floor;
         self.vy = 0.0;
-        let drag = 620.0 * dt;
+        let drag = (800.0 + 1.6 * self.vx.abs()) * dt;
         if self.vx.abs() <= drag {
             self.vx = 0.0;
         } else {
@@ -305,23 +310,45 @@ mod tests {
     }
 
     #[test]
-    fn a_faceplant_slides_along_the_floor() {
+    fn a_faceplant_skids_a_short_way() {
         let room = room();
         let mut pet = Pet::on_floor(&room);
-        let start = pet.x;
-        pet.y = room.floor - 180.0;
-        pet.release(&room, 1100.0, 40.0);
-        let mut moved: f32 = 0.0;
-        let mut saw = false;
+        pet.x = room.left + 30.0;
+        pet.y = room.floor - 120.0;
+        pet.release(&room, 700.0, 30.0);
+        let mut began = None;
+        let mut far = pet.x;
+        for _ in 0..300 {
+            pet.step(&room, 1.0 / 60.0);
+            if pet.activity == Activity::Down {
+                if began.is_none() {
+                    began = Some(pet.x);
+                }
+                far = far.max(pet.x);
+            }
+        }
+        let began = began.expect("down");
+        let slid = far - began;
+        assert!(slid > 25.0, "{slid}");
+        assert!(slid < 180.0, "{slid}");
+    }
+
+    #[test]
+    fn a_still_drop_lands_on_her_feet() {
+        let room = room();
+        let mut pet = Pet::on_floor(&room);
+        pet.y = room.floor - 160.0;
+        pet.release(&room, 0.0, 0.0);
+        let mut saw_down = false;
         for _ in 0..240 {
             pet.step(&room, 1.0 / 60.0);
             if pet.activity == Activity::Down {
-                saw = true;
-                moved = moved.max((pet.x - start).abs());
+                saw_down = true;
             }
         }
-        assert!(saw);
-        assert!(moved > 80.0, "{moved}");
+        assert!(!saw_down);
+        assert!((pet.y - room.floor).abs() < 0.1);
+        assert_ne!(pet.activity, Activity::Fall);
     }
 
     #[test]

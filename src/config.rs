@@ -188,3 +188,116 @@ fn config_home() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".config")
 }
+
+/// Height of the bottom Plasma panel, so the pet stands on its top edge.
+/// Zero when there is no bottom panel. X11 already uses the work area.
+pub fn bottom_panel() -> f32 {
+    let dir = config_home();
+    let applets =
+        fs::read_to_string(dir.join("plasma-org.kde.plasma.desktop-appletsrc")).unwrap_or_default();
+    let shell = fs::read_to_string(dir.join("plasmashellrc")).unwrap_or_default();
+    panel_inset(&applets, &shell)
+}
+
+pub fn panel_inset(applets: &str, shell: &str) -> f32 {
+    let mut tallest = 0.0_f32;
+    let mut found = false;
+    for id in bottom_panel_ids(applets) {
+        found = true;
+        let header = format!("[PlasmaViews][Panel {id}][Defaults]");
+        let thickness = group_value(shell, &header, "thickness")
+            .and_then(|value| value.parse::<f32>().ok())
+            .unwrap_or(44.0);
+        tallest = tallest.max(thickness);
+    }
+    if !found {
+        return 0.0;
+    }
+    tallest.clamp(20.0, 240.0)
+}
+
+fn bottom_panel_ids(applets: &str) -> Vec<String> {
+    let mut ids = Vec::new();
+    let mut header = "";
+    let mut plugin = "";
+    let mut location = "";
+    let flush = |header: &str, plugin: &str, location: &str, ids: &mut Vec<String>| {
+        if plugin == "org.kde.panel" && location == "4" {
+            if let Some(id) = containment_id(header) {
+                ids.push(id);
+            }
+        }
+    };
+    for line in applets.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            flush(header, plugin, location, &mut ids);
+            header = line;
+            plugin = "";
+            location = "";
+            continue;
+        }
+        if let Some(value) = line.strip_prefix("plugin=") {
+            plugin = value.trim();
+        } else if let Some(value) = line.strip_prefix("location=") {
+            location = value.trim();
+        }
+    }
+    flush(header, plugin, location, &mut ids);
+    ids
+}
+
+fn containment_id(header: &str) -> Option<String> {
+    let rest = header.strip_prefix("[Containments][")?;
+    let id = rest.strip_suffix(']')?;
+    if id.is_empty() || id.contains('[') {
+        return None;
+    }
+    Some(id.to_string())
+}
+
+fn group_value<'a>(text: &'a str, header: &str, key: &str) -> Option<&'a str> {
+    let mut on = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            on = line == header;
+            continue;
+        }
+        if on {
+            if let Some((name, value)) = line.split_once('=') {
+                if name.trim() == key {
+                    return Some(value.trim());
+                }
+            }
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_bottom_panel_raises_the_floor_inset() {
+        let applets = "\
+[Containments][2]
+plugin=org.kde.panel
+location=3
+[Containments][7]
+plugin=org.kde.panel
+location=4
+[Containments][7][General]
+AppletOrder=1
+";
+        let shell = "\
+[PlasmaViews][Panel 7][Defaults]
+thickness=52
+[PlasmaViews][Panel 2][Defaults]
+thickness=80
+";
+        assert_eq!(panel_inset(applets, shell), 52.0);
+        assert_eq!(panel_inset("", ""), 0.0);
+    }
+}
