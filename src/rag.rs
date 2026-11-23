@@ -4,7 +4,11 @@
 //! Loose joints while the pet is held or thrown.
 //! Angle zero is the drawn pose. Positive rotation is clockwise on a y-down screen.
 
-use crate::pack::Pack;
+use std::f32::consts::{PI, TAU};
+
+use tiny_skia::Point;
+
+use crate::pack::{BonePoint, Pack, Pose};
 use crate::sim::GRAVITY;
 
 struct Spec {
@@ -31,6 +35,8 @@ pub struct Ragdoll {
     pub live: bool,
     planted: bool,
     joints: Vec<Joint>,
+    turn: f32,
+    turn_speed: f32,
 }
 
 impl Ragdoll {
@@ -58,6 +64,8 @@ impl Ragdoll {
             live: false,
             planted: false,
             joints,
+            turn: 0.0,
+            turn_speed: 0.0,
         }
     }
 
@@ -78,6 +86,7 @@ impl Ragdoll {
             return;
         }
         let dt = dt.clamp(0.0, 0.05);
+        self.steer_turn(dt, 0.0, 18.0);
         let scale = pet_scale.clamp(0.2, 1.0);
         // Gravity pulls every loose part. Subtract the body's own acceleration so a
         // real fall is weightless and a yank leaves the limbs behind.
@@ -97,20 +106,94 @@ impl Ragdoll {
             let alpha = (-gx * cos - gy * sin) / length
                 - joint.spring * (joint.angle - joint.target)
                 - 1.6 * joint.omega;
+            let limit = joint.limit.max(joint.angle.abs());
             joint.omega = (joint.omega + alpha * dt).clamp(-7.0, 7.0);
             joint.angle += joint.omega * dt;
-            if joint.angle > joint.limit {
-                joint.angle = joint.limit;
+            if joint.angle > limit {
+                joint.angle = limit;
                 if joint.omega > 0.0 {
                     joint.omega = 0.0;
                 }
-            } else if joint.angle < -joint.limit {
-                joint.angle = -joint.limit;
+            } else if joint.angle < -limit {
+                joint.angle = -limit;
                 if joint.omega < 0.0 {
                     joint.omega = 0.0;
                 }
             }
         }
+    }
+
+    pub fn suspend(&mut self, dt: f32, gravity: Point, pack: &Pack, grip: BonePoint) {
+        let pose = pack.pose_with("idle", 0.0, Some(&self.degrees()));
+        let pin = grip.in_pose(&pose);
+        let centre = mass_centre(pack, &pose);
+        let pull = gravity.x.hypot(gravity.y);
+        if pull < 1.0 {
+            return;
+        }
+        let desired = gravity.y.atan2(gravity.x) - (centre.y - pin.y).atan2(centre.x - pin.x);
+        self.steer_turn(dt, desired, 48.0);
+        let (sin, cos) = self.turn.sin_cos();
+        let gx = (cos * gravity.x + sin * gravity.y) / pull;
+        let gy = (-sin * gravity.x + cos * gravity.y) / pull;
+        let strength = (pull / GRAVITY).clamp(0.0, 2.5);
+        let held_side = match pack.bones[grip.bone].name.as_str() {
+            "left-hand" => 1.0,
+            "right-hand" => -1.0,
+            _ => 0.0,
+        };
+        for (index, joint) in self.joints.iter_mut().enumerate().rev() {
+            if !joint.dynamic || joint.parent.is_none() {
+                continue;
+            }
+            let placed = pose.placed[index];
+            let held = is_ancestor(pack, index, Some(grip.bone));
+            let held_hand = held && joint.name.ends_with("hand");
+            let leaning_head = held_side != 0.0 && joint.name == "head";
+            let torque = if held_hand || leaning_head {
+                0.0
+            } else if held {
+                // The pin holds still. The rest of the body pulls the grabbed joint away from it.
+                let (x, y) = (pin.x - placed.x, pin.y - placed.y);
+                -(x * gy - y * gx) / x.hypot(y).max(25.0) * 86.0
+            } else {
+                let (sin, cos) = placed.rot.to_radians().sin_cos();
+                (-gx * cos - gy * sin) * 34.0
+            };
+            let limit = if held_hand {
+                2.9
+            } else if !held && joint.name.ends_with("leg") {
+                1.5
+            } else {
+                joint.limit
+            };
+            let (spring, rest) = if held_hand {
+                // An extended sleeve keeps the grip outside the hood.
+                (36.0, held_side * 2.78)
+            } else if held {
+                (2.0, 0.0)
+            } else if leaning_head {
+                (joint.spring, held_side * 0.65)
+            } else {
+                (joint.spring, 0.0)
+            };
+            joint.omega +=
+                (torque * strength - spring * (joint.angle - rest) - 8.0 * joint.omega) * dt;
+            joint.angle = (joint.angle + joint.omega * dt).clamp(-limit, limit);
+            if joint.angle.abs() >= limit {
+                joint.omega = 0.0;
+            }
+        }
+    }
+
+    pub fn turn(&self) -> f32 {
+        self.turn
+    }
+
+    fn steer_turn(&mut self, dt: f32, target: f32, spring: f32) {
+        let error = wrap_angle(target - self.turn);
+        self.turn_speed += (spring * error - 9.0 * self.turn_speed) * dt;
+        self.turn = wrap_angle(self.turn + self.turn_speed * dt);
     }
 
     pub fn plant(&mut self, face: f32, slide: f32) {
@@ -172,7 +255,8 @@ impl Ragdoll {
             return;
         }
         let dt = dt.clamp(0.0, 0.05);
-        let mut moving = false;
+        self.steer_turn(dt, 0.0, 36.0);
+        let mut moving = self.turn.abs() > 0.015 || self.turn_speed.abs() > 0.1;
         for joint in &mut self.joints {
             if !joint.dynamic {
                 joint.angle = 0.0;
@@ -186,6 +270,8 @@ impl Ragdoll {
             }
         }
         if !moving {
+            self.turn = 0.0;
+            self.turn_speed = 0.0;
             self.live = false;
         }
     }
@@ -207,6 +293,51 @@ impl Ragdoll {
             index = parent;
         }
         total
+    }
+}
+
+fn wrap_angle(angle: f32) -> f32 {
+    (angle + PI).rem_euclid(TAU) - PI
+}
+
+fn is_ancestor(pack: &Pack, joint: usize, mut child: Option<usize>) -> bool {
+    while let Some(index) = child {
+        if index == joint {
+            return true;
+        }
+        child = pack.bones[index].parent;
+    }
+    false
+}
+
+fn mass_centre(pack: &Pack, pose: &Pose) -> Point {
+    let mut point = Point::from_xy(0.0, 0.0);
+    let mut total = 0.0;
+    for (index, bone) in pack.bones.iter().enumerate() {
+        let Some(sprite) = pack.sprite(&bone.image) else {
+            continue;
+        };
+        if sprite.is_blank() {
+            continue;
+        }
+        let mass = match bone.name.as_str() {
+            "torso" => 5.0,
+            "head" => 4.0,
+            "left-hand" | "right-hand" | "left-leg" | "right-leg" => 1.0,
+            _ => 0.2,
+        };
+        let centre = pose.placed[index].point(Point::from_xy(
+            sprite.x + sprite.image.width() as f32 * 0.5 - bone.pivot_x,
+            sprite.y + sprite.image.height() as f32 * 0.5 - bone.pivot_y,
+        ));
+        point.x += centre.x * mass;
+        point.y += centre.y * mass;
+        total += mass;
+    }
+    if total > 0.0 {
+        Point::from_xy(point.x / total, point.y / total)
+    } else {
+        Point::from_xy(pack.feet_x, pack.feet_y * 0.5)
     }
 }
 

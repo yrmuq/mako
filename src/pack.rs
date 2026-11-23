@@ -11,7 +11,7 @@ use std::io::{Cursor, Read, Seek};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
-use tiny_skia::{Pixmap, PremultipliedColorU8, Transform};
+use tiny_skia::{Pixmap, Point, PremultipliedColorU8, Transform};
 use zip::ZipArchive;
 
 use crate::Fault;
@@ -115,6 +115,28 @@ pub struct Placed {
     pub x: f32,
     pub y: f32,
     pub rot: f32,
+}
+
+impl Placed {
+    pub fn point(self, local: Point) -> Point {
+        let (sin, cos) = self.rot.to_radians().sin_cos();
+        Point::from_xy(
+            self.x + cos * local.x - sin * local.y,
+            self.y + sin * local.x + cos * local.y,
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct BonePoint {
+    pub bone: usize,
+    pub local: Point,
+}
+
+impl BonePoint {
+    pub fn in_pose(self, pose: &Pose) -> Point {
+        pose.placed[self.bone].point(self.local)
+    }
 }
 
 pub struct Pose {
@@ -1122,7 +1144,7 @@ mod tests {
     }
 
     #[test]
-    fn bear_girl_limb_joints_overlap_the_torso() {
+    fn bear_girl_joints_overlap_the_torso() {
         let pack = Pack::builtin();
         let torso = &pack.bones[pack.names["torso"]];
         let is_opaque = |sprite: &Sprite, x: f32, y: f32| {
@@ -1135,7 +1157,7 @@ mod tests {
                     .is_some_and(|pixel| pixel.alpha() > 200)
         };
         let body = pack.sprite(&torso.image).unwrap();
-        for name in ["left-hand", "right-hand", "left-leg", "right-leg"] {
+        for name in ["head", "left-hand", "right-hand", "left-leg", "right-leg"] {
             let limb = &pack.bones[pack.names[name]];
             let sprite = pack.sprite(&limb.image).unwrap();
             assert!(
@@ -1147,6 +1169,7 @@ mod tests {
                 assert!(limb.z < torso.z, "{name}");
             }
         }
+        assert!(pack.bones[pack.names["right-hand"]].z < pack.bones[pack.names["right-leg"]].z);
     }
 
     #[test]

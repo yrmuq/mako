@@ -1,14 +1,22 @@
 // Copyright (C) 2026 yrmuq
 // SPDX-License-Identifier: GPL-3.0-only
 
+use tiny_skia::Point;
+
 use crate::config::{system_dark, LanguagePref, Settings, ThemePref};
-use crate::draw::{self, Frame, Hit, Motion, RowId, Scene};
+use crate::draw::{self, Frame, Hit, Motion, Part, RowId, Scene};
 use crate::i18n::{Catalog, ID_NAME};
-use crate::pack::{self, Choice, Pack, BUILTIN_ID};
+use crate::pack::{self, BonePoint, Choice, Pack, BUILTIN_ID};
 use crate::rag::Ragdoll;
-use crate::sim::{Activity, Pet, Room, FEET_X, FEET_Y, SPRITE_H, SPRITE_W};
+use crate::sim::{Activity, Pet, Room, FEET_X, FEET_Y, GRAVITY, SPRITE_H, SPRITE_W};
 
 const MENU_W: f32 = draw::MENU_W;
+
+struct Grip {
+    point: BonePoint,
+    cursor: Point,
+    sitting: bool,
+}
 
 pub struct App {
     pub pet: Pet,
@@ -19,13 +27,11 @@ pub struct App {
     rag: Ragdoll,
     choices: Vec<Choice>,
     menu: bool,
-    dragging: bool,
-    grab_x: f32,
-    grab_y: f32,
+    grip: Option<Grip>,
     committed_x: i32,
     committed_y: i32,
-    committed_pet_x: f32,
-    committed_feet_y: f32,
+    parts: Vec<Part>,
+    committed_parts: Vec<Part>,
     trail: Vec<(f32, f32, f32)>,
     prev_vx: f32,
     prev_vy: f32,
@@ -65,13 +71,11 @@ impl App {
             rag,
             choices,
             menu: false,
-            dragging: false,
-            grab_x: 0.0,
-            grab_y: 0.0,
+            grip: None,
             committed_x: 0,
             committed_y: 0,
-            committed_pet_x: 0.0,
-            committed_feet_y: 0.0,
+            parts: Vec::new(),
+            committed_parts: Vec::new(),
             trail: Vec::new(),
             prev_vx: 0.0,
             prev_vy: 0.0,
@@ -102,7 +106,7 @@ impl App {
     pub fn set_room(&mut self, room: Room) {
         self.screen = screen_of(&room);
         self.fit_room();
-        if !self.dragging
+        if self.grip.is_none()
             && self.pet.activity != Activity::Fall
             && self.pet.activity != Activity::Down
         {
@@ -116,13 +120,22 @@ impl App {
         self.clock += dt;
         let dt = dt.clamp(0.0, 0.05);
         self.sync_rag();
-        if self.dragging {
+        if let Some(grip) = &self.grip {
             self.pet.phase += dt;
-            let ax = ((self.pet.vx - self.prev_vx) / dt.max(0.001)).clamp(-14000.0, 14000.0);
-            let ay = ((self.pet.vy - self.prev_vy) / dt.max(0.001)).clamp(-14000.0, 14000.0);
+            if self
+                .trail
+                .last()
+                .is_some_and(|sample| self.clock - sample.0 > 0.05)
+            {
+                self.pet.vx = 0.0;
+                self.pet.vy = 0.0;
+            }
+            let ax = ((self.pet.vx - self.prev_vx) / dt.max(0.001)).clamp(-8000.0, 8000.0);
+            let ay = ((self.pet.vy - self.prev_vy) / dt.max(0.001)).clamp(-8000.0, 8000.0);
             self.prev_vx = self.pet.vx;
             self.prev_vy = self.pet.vy;
-            self.rag.step(dt, ax, ay, self.pet_scale());
+            let pull = Point::from_xy(-ax * self.pet.face, GRAVITY - ay);
+            self.rag.suspend(dt, pull, &self.pack, grip.point);
         } else {
             let vx = self.pet.vx;
             let vy = self.pet.vy;
@@ -152,7 +165,7 @@ impl App {
     }
 
     pub fn prepare(&mut self) {
-        if !self.dragging {
+        if self.grip.is_none() {
             self.sync_geometry();
         }
     }
@@ -169,10 +182,12 @@ impl App {
                     self.activate(id, &key);
                     return;
                 }
-                if self.in_menu(lx, ly) {
+                if self.grip.is_some() || self.in_menu(lx, ly) {
                     return;
                 }
-                self.dragging = true;
+                let Some(point) = draw::pick(&self.committed_parts, lx, ly) else {
+                    return;
+                };
                 self.sync_rag();
                 self.rag.clear_plant();
                 if !self.rag.live {
@@ -180,37 +195,31 @@ impl App {
                     self.rag.seed(&degrees);
                 }
                 self.rag.live = true;
+                let cursor =
+                    Point::from_xy(self.committed_x as f32 + lx, self.committed_y as f32 + ly);
+                self.grip = Some(Grip {
+                    point,
+                    cursor,
+                    sitting: self.pet.activity == Activity::Sit,
+                });
+                self.menu = false;
                 self.pet.grab();
-                self.grab_x = lx;
-                self.grab_y = ly;
                 self.trail.clear();
+                self.trail.push((self.clock, cursor.x, cursor.y));
                 self.prev_vx = 0.0;
                 self.prev_vy = 0.0;
             }
-            Pointer::Motion if self.dragging => {
-                // Pointer events are measured against the last committed surface, not this drag.
-                self.origin_x = (self.committed_x as f32 + lx - self.grab_x).round() as i32;
-                self.origin_y = (self.committed_y as f32 + ly - self.grab_y).round() as i32;
-                self.pet.x = self.origin_x as f32 + self.committed_pet_x + self.feet_x();
-                self.pet.y = self.origin_y as f32 + self.committed_feet_y;
-                self.trail.push((self.clock, self.pet.x, self.pet.y));
-                self.trail.retain(|(time, _, _)| self.clock - *time <= 0.12);
-                if let Some(&(time, x, y)) = self.trail.first() {
-                    let step = (self.clock - time).max(0.001);
-                    self.pet.vx = (self.pet.x - x) / step;
-                    self.pet.vy = (self.pet.y - y) / step;
-                }
-            }
-            Pointer::LeftUp if self.dragging => {
-                self.dragging = false;
-                self.menu = false;
+            Pointer::Motion if self.grip.is_some() => self.move_grip(lx, ly),
+            Pointer::LeftUp if self.grip.is_some() => {
+                self.move_grip(lx, ly);
+                self.grip = None;
                 let (vx, vy) = self.flick();
                 self.trail.clear();
                 self.pet.release(&self.room, vx, vy);
                 self.sync_geometry();
             }
             Pointer::RightDown => {
-                if !self.dragging {
+                if self.grip.is_none() {
                     self.menu = !self.menu;
                     if self.menu {
                         self.choices = pack::choices();
@@ -219,6 +228,24 @@ impl App {
                 }
             }
             Pointer::Motion | Pointer::LeftUp => {}
+        }
+    }
+
+    fn move_grip(&mut self, lx: f32, ly: f32) {
+        let grip = self.grip.as_mut().expect("active grip");
+        let cursor = Point::from_xy(self.committed_x as f32 + lx, self.committed_y as f32 + ly);
+        if grip.cursor == cursor {
+            return;
+        }
+        self.pet.x += cursor.x - grip.cursor.x;
+        self.pet.y += cursor.y - grip.cursor.y;
+        grip.cursor = cursor;
+        self.trail.push((self.clock, cursor.x, cursor.y));
+        self.trail.retain(|(time, _, _)| self.clock - *time <= 0.12);
+        if let Some(&(time, x, y)) = self.trail.first() {
+            let step = (self.clock - time).max(0.001);
+            self.pet.vx = (cursor.x - x) / step;
+            self.pet.vy = (cursor.y - y) / step;
         }
     }
 
@@ -240,7 +267,11 @@ impl App {
                 Activity::Sit => Motion::Sit,
                 Activity::Idle => Motion::Idle,
             },
-            tilt: if self.rag.live { 0.0 } else { self.pet.tilt() },
+            tilt: if self.rag.live {
+                self.rag.turn()
+            } else {
+                self.pet.tilt()
+            },
             facing_left: self.pet.face < 0.0,
             menu: self.menu,
             menu_left: self.menu_left(),
@@ -251,6 +282,8 @@ impl App {
             } else {
                 Vec::new()
             },
+            anchor: self.grip.as_ref().map(|grip| grip.point),
+            hold_sitting: self.grip.as_ref().is_some_and(|grip| grip.sitting),
             rows: draw::rows(
                 &self.catalog,
                 &self.pet_title(),
@@ -269,16 +302,29 @@ impl App {
                 &self.pack.id,
             ),
         };
-        let frame = draw::render(&scene, &self.pack, self.scale);
+        let mut frame = draw::render(&scene, &self.pack, self.scale);
         self.hits = frame.hits.clone();
+        self.parts = std::mem::take(&mut frame.parts);
+        self.logical_w = frame.width / self.scale.max(1);
+        self.logical_h = frame.height / self.scale.max(1);
+        let feet_x = self.layout_pet_x() + self.feet_x() - frame.shift.0 as f32;
+        let feet_y = self.pet_top() + self.feet_y() - frame.shift.1 as f32;
+        if let (Some(grip), Some(anchor)) = (&self.grip, frame.anchor) {
+            self.origin_x = (grip.cursor.x - anchor.x).round() as i32;
+            self.origin_y = (grip.cursor.y - anchor.y).round() as i32;
+            self.pet.x = self.origin_x as f32 + feet_x;
+            self.pet.y = self.origin_y as f32 + frame.support.unwrap_or(feet_y);
+        } else {
+            self.origin_x = (self.pet.x - feet_x).round() as i32;
+            self.origin_y = (self.pet.y - feet_y).round() as i32;
+        }
         frame
     }
 
     pub fn note_committed(&mut self) {
         self.committed_x = self.origin_x;
         self.committed_y = self.origin_y;
-        self.committed_pet_x = self.layout_pet_x();
-        self.committed_feet_y = self.pet_top() + self.feet_y();
+        self.committed_parts = std::mem::take(&mut self.parts);
     }
 
     fn activate(&mut self, id: RowId, key: &str) {
@@ -297,7 +343,7 @@ impl App {
             RowId::Scale => {
                 self.settings.scale = crate::config::normalize_scale(key).to_string();
                 self.fit_room();
-                if !self.dragging
+                if self.grip.is_none()
                     && self.pet.activity != Activity::Fall
                     && self.pet.activity != Activity::Down
                 {
@@ -485,16 +531,35 @@ fn screen_of(room: &Room) -> (f32, f32) {
 mod tests {
     use super::*;
 
+    fn visible_part(app: &mut App, name: &str, bottom: bool) -> (f32, f32) {
+        app.render();
+        app.note_committed();
+        for row in 0..app.logical_h {
+            let y = if bottom { app.logical_h - 1 - row } else { row };
+            for x in 0..app.logical_w {
+                let (x, y) = (x as f32 + 0.5, y as f32 + 0.5);
+                if draw::pick(&app.committed_parts, x, y)
+                    .is_some_and(|hit| app.pack.bones[hit.bone].name == name)
+                {
+                    return (x, y);
+                }
+            }
+        }
+        panic!("no visible part named {name}");
+    }
+
     #[test]
     fn drag_follows_the_latest_point_until_the_surface_commits() {
         let mut app = App::new(startup_room(800.0, 600.0));
+        let (x, y) = visible_part(&mut app, "torso", false);
         let origin_x = app.origin_x;
         let origin_y = app.origin_y;
-        app.pointer(40.0, 80.0, Pointer::LeftDown);
-        app.pointer(50.0, 90.0, Pointer::Motion);
-        app.pointer(70.0, 100.0, Pointer::Motion);
-        assert_eq!(app.origin_x, origin_x + 30);
-        assert_eq!(app.origin_y, origin_y + 20);
+        app.pointer(x, y, Pointer::LeftDown);
+        app.pointer(x + 10.0, y + 10.0, Pointer::Motion);
+        app.pointer(x + 30.0, y + 20.0, Pointer::Motion);
+        let anchor = app.render().anchor.expect("drag anchor");
+        assert!((app.origin_x as f32 + anchor.x - (origin_x as f32 + x + 30.0)).abs() <= 0.51);
+        assert!((app.origin_y as f32 + anchor.y - (origin_y as f32 + y + 20.0)).abs() <= 0.51);
         assert_eq!(app.committed_x, origin_x);
     }
 
@@ -502,10 +567,10 @@ mod tests {
     fn menu_padding_does_not_start_a_drag() {
         let mut app = App::new(startup_room(800.0, 600.0));
         app.pointer(20.0, 20.0, Pointer::RightDown);
-        app.render();
+        let (x, y) = visible_part(&mut app, "torso", false);
         app.pointer(SPRITE_W + 12.0, 20.0, Pointer::LeftDown);
         assert_ne!(app.pet.activity, Activity::Drag);
-        app.pointer(80.0, 120.0, Pointer::LeftDown);
+        app.pointer(x, y, Pointer::LeftDown);
         assert_eq!(app.pet.activity, Activity::Drag);
     }
 
@@ -572,17 +637,18 @@ mod tests {
     #[test]
     fn a_flick_throws_along_the_drag() {
         let mut app = App::new(startup_room(1200.0, 800.0));
+        let (x, y) = visible_part(&mut app, "torso", false);
         let start_x = app.pet.x;
-        app.pointer(30.0, 80.0, Pointer::LeftDown);
+        app.pointer(x, y, Pointer::LeftDown);
         for step in 1..=5 {
             app.clock = step as f32 * 0.02;
             app.pointer(
-                30.0 + step as f32 * 18.0,
-                80.0 - step as f32 * 14.0,
+                x + step as f32 * 18.0,
+                y - step as f32 * 14.0,
                 Pointer::Motion,
             );
         }
-        app.pointer(120.0, 10.0, Pointer::LeftUp);
+        app.pointer(x + 90.0, y - 70.0, Pointer::LeftUp);
         assert_eq!(app.pet.activity, Activity::Fall);
         assert!(app.pet.vx > 200.0, "{}", app.pet.vx);
         let mut far = app.pet.x;
@@ -600,13 +666,15 @@ mod tests {
     #[test]
     fn letting_go_after_a_pause_does_not_throw() {
         let mut app = App::new(startup_room(1200.0, 800.0));
-        app.pointer(40.0, 80.0, Pointer::LeftDown);
+        let (x, y) = visible_part(&mut app, "torso", false);
+        app.pointer(x, y, Pointer::LeftDown);
         app.clock = 0.02;
-        app.pointer(100.0, 40.0, Pointer::Motion);
+        app.pointer(x + 60.0, y - 40.0, Pointer::Motion);
         app.clock = 0.05;
-        app.pointer(160.0, 20.0, Pointer::Motion);
+        app.pointer(x + 120.0, y - 60.0, Pointer::Motion);
         app.clock = 0.40;
-        app.pointer(160.0, 20.0, Pointer::LeftUp);
+        app.pointer(x + 120.0, y - 60.0, Pointer::LeftUp);
+        assert_eq!(app.pet.activity, Activity::Fall);
         assert!(app.pet.vx.abs() < 1.0, "{}", app.pet.vx);
         assert!(app.pet.vy.abs() < 1.0, "{}", app.pet.vy);
     }
@@ -623,6 +691,61 @@ mod tests {
                 app.set_room(startup_room(800.0, 600.0));
                 assert_eq!(app.room.floor, 552.0);
                 assert_eq!(app.origin_y + app.logical_h as i32, 552);
+            }
+        }
+    }
+    #[test]
+    fn a_visible_limb_stays_at_the_cursor_and_the_body_hangs_below_it() {
+        for (part, bottom) in [
+            ("head", false),
+            ("left-hand", true),
+            ("right-hand", true),
+            ("left-leg", true),
+            ("right-leg", true),
+        ] {
+            for face in [-1.0, 1.0] {
+                let mut app = App::new(startup_room(1200.0, 800.0));
+                app.pet.face = face;
+                let (x, y) = visible_part(&mut app, part, bottom);
+                app.pointer(x, y, Pointer::LeftDown);
+                let (x, y) = app.pointer_from_screen(550.0, 215.0);
+                app.pointer(x, y, Pointer::Motion);
+                for tick in 0..150 {
+                    app.tick(1.0 / 60.0);
+                    if tick % 20 == 0 {
+                        app.render();
+                        app.note_committed();
+                    }
+                }
+                let anchor = app.render().anchor.expect("drag anchor");
+                assert!((app.origin_x as f32 + anchor.x - 550.0).abs() <= 0.51);
+                assert!((app.origin_y as f32 + anchor.y - 215.0).abs() <= 0.51);
+                let grip = app.grip.as_ref().unwrap();
+                let pose = app.pack.pose_with("idle", 0.0, Some(&app.rag.degrees()));
+                let pin = grip.point.in_pose(&pose);
+                let (sin, cos) = app.rag.turn().sin_cos();
+                let below = |name: &str| {
+                    let index = app
+                        .pack
+                        .bones
+                        .iter()
+                        .position(|bone| bone.name == name)
+                        .unwrap();
+                    let joint = pose.placed[index];
+                    (joint.x - pin.x) * sin + (joint.y - pin.y) * cos
+                };
+                assert!(below("torso") > 75.0, "{part}: {}", below("torso"));
+                if part.ends_with("leg") {
+                    assert!(
+                        below("head") > below("torso"),
+                        "head must hang below the torso"
+                    );
+                } else if part.ends_with("hand") {
+                    assert!(
+                        below(part) > 110.0,
+                        "shoulder must hang below the grabbed hand"
+                    );
+                }
             }
         }
     }

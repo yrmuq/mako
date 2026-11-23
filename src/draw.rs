@@ -6,14 +6,15 @@
 use ab_glyph::{point, Font, FontVec, Glyph, PxScale, ScaleFont};
 use std::sync::OnceLock;
 use tiny_skia::{
-    ColorU8, FillRule, Paint, PathBuilder, Pixmap, PixmapPaint, PremultipliedColorU8, Transform,
+    ColorU8, FillRule, Paint, PathBuilder, Pixmap, PixmapPaint, Point, PremultipliedColorU8,
+    Transform,
 };
 
 use crate::i18n::{
     Catalog, ID_CHIBI, ID_DARK, ID_ENGLISH, ID_LANGUAGE, ID_LIGHT, ID_NAME, ID_QUIT, ID_RUSSIAN,
     ID_SIZE, ID_SYSTEM, ID_THEME,
 };
-use crate::pack::{Choice, Pack, Pose, Sprite, BUILTIN_ID};
+use crate::pack::{BonePoint, Choice, Pack, Pose, Sprite, BUILTIN_ID};
 use crate::sim::{FEET_X, FEET_Y, SPRITE_H, SPRITE_W};
 
 pub const MENU_W: f32 = 228.0;
@@ -76,6 +77,8 @@ pub struct Scene {
     pub dark: bool,
     pub pet_scale: f32,
     pub pose: Vec<f32>,
+    pub anchor: Option<BonePoint>,
+    pub hold_sitting: bool,
     pub rows: Vec<Row>,
 }
 
@@ -84,6 +87,41 @@ pub struct Frame {
     pub width: u32,
     pub height: u32,
     pub hits: Vec<Hit>,
+    pub parts: Vec<Part>,
+    pub shift: (i32, i32),
+    pub anchor: Option<Point>,
+    pub support: Option<f32>,
+}
+
+pub struct Part {
+    sprite: Sprite,
+    transform: Transform,
+    joint: Option<BonePoint>,
+}
+
+pub fn pick(parts: &[Part], x: f32, y: f32) -> Option<BonePoint> {
+    for part in parts.iter().rev() {
+        let Some(inverse) = part.transform.invert() else {
+            continue;
+        };
+        let mut pixel = Point::from_xy(x, y);
+        inverse.map_point(&mut pixel);
+        if pixel.x < 0.0 || pixel.y < 0.0 {
+            continue;
+        }
+        if part
+            .sprite
+            .image
+            .pixel(pixel.x as u32, pixel.y as u32)
+            .is_some_and(|color| color.alpha() >= 32)
+        {
+            return part.joint.map(|joint| BonePoint {
+                bone: joint.bone,
+                local: Point::from_xy(joint.local.x + pixel.x, joint.local.y + pixel.y),
+            });
+        }
+    }
+    None
 }
 
 pub fn scene_size(menu: bool, pet_scale: f32) -> (u32, u32) {
@@ -98,20 +136,46 @@ pub fn scene_size(menu: bool, pet_scale: f32) -> (u32, u32) {
 pub fn render(scene: &Scene, pack: &Pack, scale: u32) -> Frame {
     let scale = scale.max(1);
     let (logical_w, logical_h) = scene_size(scene.menu, scene.pet_scale);
-    let width = logical_w * scale;
-    let height = logical_h * scale;
-    let mut pixmap = Pixmap::new(width, height).expect("pixmap");
     let pet_x = if scene.menu && scene.menu_left {
         MENU_W
     } else {
         0.0
     };
-    draw_pet(&mut pixmap, pet_x, scene, pack, scale);
-    if scene.facing_left {
-        mirror_sprite(&mut pixmap, pet_x, scale, scene.pet_scale);
+    let (mut parts, mut anchor) = pet_parts(pet_x, scene, pack);
+    let (left, top, right, bottom) = if matches!(scene.motion, Motion::Drag | Motion::Fall) {
+        part_bounds(&parts, logical_w as i32, logical_h as i32)
+    } else {
+        (0, 0, logical_w as i32, logical_h as i32)
+    };
+    let width = (right - left) as u32 * scale;
+    let height = (bottom - top) as u32 * scale;
+    let mut pixmap = Pixmap::new(width, height).expect("pixmap");
+    if let Some(anchor) = anchor.as_mut() {
+        anchor.x -= left as f32;
+        anchor.y -= top as f32;
+    }
+    let support = if scene.motion == Motion::Drag {
+        parts
+            .iter()
+            .filter_map(|part| part.sprite.lower_edge(part.transform))
+            .max_by(f32::total_cmp)
+            .map(|edge| edge - top as f32)
+    } else {
+        None
+    };
+    for part in &mut parts {
+        part.transform = part.transform.post_translate(-left as f32, -top as f32);
+        pixmap.draw_pixmap(
+            0,
+            0,
+            part.sprite.image.as_ref().as_ref(),
+            &PixmapPaint::default(),
+            part.transform.post_scale(scale as f32, scale as f32),
+            None,
+        );
     }
     let hits = if scene.menu {
-        draw_menu(&mut pixmap, scene, scale, pet_x)
+        draw_menu(&mut pixmap, scene, scale, pet_x, (left, top))
     } else {
         Vec::new()
     };
@@ -120,7 +184,39 @@ pub fn render(scene: &Scene, pack: &Pack, scale: u32) -> Frame {
         width,
         height,
         hits,
+        parts,
+        shift: (left, top),
+        anchor,
+        support,
     }
+}
+
+fn part_bounds(parts: &[Part], width: i32, height: i32) -> (i32, i32, i32, i32) {
+    let (mut left, mut top, mut right, mut bottom) = (0, 0, width, height);
+    for part in parts {
+        let w = part.sprite.image.width() as f32;
+        let h = part.sprite.image.height() as f32;
+        let mut corners = [
+            Point::from_xy(0.0, 0.0),
+            Point::from_xy(w, 0.0),
+            Point::from_xy(0.0, h),
+            Point::from_xy(w, h),
+        ];
+        part.transform.map_points(&mut corners);
+        for corner in corners {
+            left = left.min(corner.x.floor() as i32);
+            top = top.min(corner.y.floor() as i32);
+            right = right.max(corner.x.ceil() as i32);
+            bottom = bottom.max(corner.y.ceil() as i32);
+        }
+    }
+    let pad = width.max(height);
+    (
+        left.max(-pad),
+        top.max(-pad),
+        right.min(width + pad),
+        bottom.min(height + pad),
+    )
 }
 
 pub fn rows(
@@ -279,10 +375,7 @@ fn clip_name(text: &str) -> String {
     out
 }
 
-fn draw_pet(pixmap: &mut Pixmap, origin_x: f32, scene: &Scene, pack: &Pack, scale: u32) {
-    if pack.canvas_w <= 0.0 || pack.canvas_h <= 0.0 {
-        return;
-    }
+fn pet_parts(origin_x: f32, scene: &Scene, pack: &Pack) -> (Vec<Part>, Option<Point>) {
     let anim = match scene.motion {
         Motion::Walk => "walk",
         Motion::Fall => "fall",
@@ -294,7 +387,11 @@ fn draw_pet(pixmap: &mut Pixmap, origin_x: f32, scene: &Scene, pack: &Pack, scal
     let pose = if scene.pose.is_empty() {
         pack.pose(anim, scene.cycle)
     } else {
-        pack.pose_with("idle", scene.cycle, Some(&scene.pose))
+        pack.pose_with(
+            if scene.hold_sitting { "sit" } else { "idle" },
+            scene.cycle,
+            Some(&scene.pose),
+        )
     };
     let pet_scale = scene.pet_scale.clamp(0.2, 1.0);
     let fit = (SPRITE_W / pack.canvas_w).min(SPRITE_H / pack.canvas_h) * pet_scale;
@@ -316,26 +413,59 @@ fn draw_pet(pixmap: &mut Pixmap, origin_x: f32, scene: &Scene, pack: &Pack, scal
             origin_x + FEET_X * pet_scale,
             ground + bob,
         );
-    if let Some(contact) = pose_contact(pack, &pose, scene.motion, view) {
+    let support_motion = match scene.motion {
+        Motion::Idle | Motion::Walk if scene.tilt.abs() > 0.001 => Motion::Down,
+        motion => motion,
+    };
+    if let Some(contact) = pose_contact(pack, &pose, support_motion, view) {
         view = view.post_translate(0.0, ground - contact);
     }
-    let view = view.post_scale(scale as f32, scale as f32);
+    let mirror = if scene.facing_left {
+        let width = scene_size(false, pet_scale).0 as f32;
+        Transform::from_row(-1.0, 0.0, 0.0, 1.0, 2.0 * origin_x + width, 0.0)
+    } else {
+        Transform::identity()
+    };
+    let view = view.post_concat(mirror);
     let mut order: Vec<usize> = (0..pack.bones.len()).collect();
     order.sort_by_key(|&index| {
         let bone = &pack.bones[index];
         let layer = match scene.motion {
-            Motion::Sit if bone.name.ends_with("hand") => 2,
+            Motion::Sit
+                if bone.name.ends_with("hand")
+                    && (pack.id != BUILTIN_ID || bone.name == "left-hand") =>
+            {
+                2
+            }
             Motion::Sit if pack.id != BUILTIN_ID && leg(&bone.name) => 1,
             _ => 0,
         };
         (layer, bone.z)
     });
-    for index in order {
-        paint_bone(pixmap, pack, &pose, view, index);
-    }
+    let mut parts: Vec<_> = order
+        .into_iter()
+        .filter_map(|index| {
+            let (sprite, local) = posed_sprite(pack, &pose, index)?;
+            let bone = &pack.bones[index];
+            Some(Part {
+                sprite: sprite.clone(),
+                transform: local.post_concat(view),
+                joint: Some(BonePoint {
+                    bone: index,
+                    local: Point::from_xy(sprite.x - bone.pivot_x, sprite.y - bone.pivot_y),
+                }),
+            })
+        })
+        .collect();
     if scene.motion == Motion::Sit {
-        draw_laptop(pixmap, origin_x, ground, pet_scale, scale, pack);
+        parts.extend(laptop_part(origin_x, ground, pet_scale, mirror, pack));
     }
+    let anchor = scene.anchor.map(|anchor| {
+        let mut position = anchor.in_pose(&pose);
+        view.map_point(&mut position);
+        position
+    });
+    (parts, anchor)
 }
 
 fn leg(name: &str) -> bool {
@@ -346,8 +476,8 @@ fn pose_contact(pack: &Pack, pose: &Pose, motion: Motion, view: Transform) -> Op
     let supports = |bone: &str| match motion {
         Motion::Idle | Motion::Walk => leg(bone),
         Motion::Sit => bone == "torso" || leg(bone),
-        Motion::Down => true,
-        Motion::Fall | Motion::Drag => false,
+        Motion::Down | Motion::Fall => true,
+        Motion::Drag => false,
     };
     pack.bones
         .iter()
@@ -384,65 +514,48 @@ fn posed_sprite<'a>(pack: &'a Pack, pose: &Pose, index: usize) -> Option<(&'a Sp
     Some((sprite, local))
 }
 
-fn paint_bone(pixmap: &mut Pixmap, pack: &Pack, pose: &Pose, view: Transform, index: usize) {
-    let Some((sprite, local)) = posed_sprite(pack, pose, index) else {
-        return;
-    };
-    pixmap.draw_pixmap(
-        0,
-        0,
-        sprite.image.as_ref().as_ref(),
-        &PixmapPaint::default(),
-        local.post_concat(view),
-        None,
-    );
-}
-
-fn draw_laptop(
-    pixmap: &mut Pixmap,
+fn laptop_part(
     origin_x: f32,
     ground: f32,
     pet_scale: f32,
-    scale: u32,
+    mirror: Transform,
     pack: &Pack,
-) {
-    let Some(sprite) = pack.sprite("it-1") else {
-        return;
-    };
+) -> Option<Part> {
+    let sprite = pack.sprite("it-1")?;
     if sprite.is_blank() {
-        return;
+        return None;
     }
     let sw = sprite.image.width() as f32;
     let sh = sprite.image.height() as f32;
-    if sw < 1.0 || sh < 1.0 {
-        return;
-    }
     let dw = 86.0 * pet_scale;
     let dh = dw * sh / sw;
     let x = origin_x + (FEET_X + 50.0) * pet_scale - dw * 0.5;
     let y = ground - dh;
-    let px = scale as f32;
-    let local = Transform::from_scale(dw / sw * px, dh / sh * px).post_translate(x * px, y * px);
-    pixmap.draw_pixmap(
-        0,
-        0,
-        sprite.image.as_ref().as_ref(),
-        &PixmapPaint::default(),
-        local,
-        None,
-    );
+    Some(Part {
+        sprite: sprite.clone(),
+        transform: Transform::from_scale(dw / sw, dh / sh)
+            .post_translate(x, y)
+            .post_concat(mirror),
+        joint: None,
+    })
 }
 
-fn draw_menu(pixmap: &mut Pixmap, scene: &Scene, scale: u32, pet_x: f32) -> Vec<Hit> {
+fn draw_menu(
+    pixmap: &mut Pixmap,
+    scene: &Scene,
+    scale: u32,
+    pet_x: f32,
+    shift: (i32, i32),
+) -> Vec<Hit> {
     let s = scale as f32;
     let n = scene.rows.len() as f32;
-    let top = 6.0;
+    let top = 6.0 - shift.1 as f32;
     let row_h = ((SPRITE_H - 12.0) / n).min(24.0);
     let x = if scene.menu_left {
         4.0
     } else {
         pet_x + SPRITE_W * scene.pet_scale.clamp(0.2, 1.0) + 4.0
-    };
+    } - shift.0 as f32;
     let w = MENU_W - 8.0;
     let h = row_h * n;
     let panel = if scene.dark {
@@ -591,16 +704,6 @@ fn blend(pixmap: &mut Pixmap, x: u32, y: u32, color: ColorU8, coverage: f32) {
     .unwrap_or(PremultipliedColorU8::from_rgba(0, 0, 0, 0).unwrap());
 }
 
-fn mirror_sprite(pixmap: &mut Pixmap, origin_x: f32, scale: u32, pet_scale: f32) {
-    let start = (origin_x * scale as f32).round() as usize;
-    let (pet_width, _) = scene_size(false, pet_scale);
-    let width = pixmap.width() as usize;
-    let end = start + (pet_width * scale) as usize;
-    for row in pixmap.pixels_mut().chunks_exact_mut(width) {
-        row[start..end].reverse();
-    }
-}
-
 fn rgba_to_bgra(data: &[u8]) -> Vec<u8> {
     let mut out = vec![0; data.len()];
     let (src_chunks, _) = data.as_chunks::<4>();
@@ -645,6 +748,8 @@ mod tests {
             dark: false,
             pet_scale: 1.0,
             pose: Vec::new(),
+            anchor: None,
+            hold_sitting: false,
             rows: Vec::new(),
         }
     }

@@ -33,7 +33,7 @@
 
 | Input | Action |
 | --- | --- |
-| Left button | Drag bear girl. A flick throws her, twice as hard. Letting go after she has stopped just drops her. A flight ends face-down and skids a short way. |
+| Left button | Grab a visible body part and drag. Bear girl hangs from the point you grabbed. A flick throws her, twice as hard. Letting go after she has stopped just drops her. A flight ends face-down and skids a short way. |
 | Right button | Open or close the menu. |
 | Menu rows | Choose the chibi, size, language, theme, or quit. |
 

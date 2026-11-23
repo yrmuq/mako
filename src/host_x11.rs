@@ -98,20 +98,23 @@ fn present(conn: &impl Connection, window: u32, gc: u32, app: &mut App) -> Resul
             .height(frame.height),
     )
     .map_err(x11)?;
-    // PutImage rejects a request larger than the server maximum. The pet frame stays under it.
-    conn.put_image(
-        ImageFormat::Z_PIXMAP,
-        window,
-        gc,
-        frame.width as u16,
-        frame.height as u16,
-        0,
-        0,
-        0,
-        32,
-        &frame.bgra,
-    )
-    .map_err(x11)?;
+    let stride = frame.width as usize * 4;
+    let rows = (conn.maximum_request_bytes().saturating_sub(64) / stride).max(1);
+    for (index, stripe) in frame.bgra.chunks(rows * stride).enumerate() {
+        conn.put_image(
+            ImageFormat::Z_PIXMAP,
+            window,
+            gc,
+            frame.width as u16,
+            (stripe.len() / stride) as u16,
+            0,
+            (index * rows) as i16,
+            0,
+            32,
+            stripe,
+        )
+        .map_err(x11)?;
+    }
     app.note_committed();
     Ok(())
 }
@@ -124,21 +127,16 @@ fn handle(app: &mut App, event: Event) {
                 3 => Pointer::RightDown,
                 _ => return,
             };
-            app.pointer(press.event_x as f32, press.event_y as f32, kind);
+            let (x, y) = app.pointer_from_screen(press.root_x as f32, press.root_y as f32);
+            app.pointer(x, y, kind);
         }
         Event::ButtonRelease(release) if release.detail == 1 => {
-            app.pointer(
-                release.event_x as f32,
-                release.event_y as f32,
-                Pointer::LeftUp,
-            );
+            let (x, y) = app.pointer_from_screen(release.root_x as f32, release.root_y as f32);
+            app.pointer(x, y, Pointer::LeftUp);
         }
         Event::MotionNotify(motion) => {
-            app.pointer(
-                motion.event_x as f32,
-                motion.event_y as f32,
-                Pointer::Motion,
-            );
+            let (x, y) = app.pointer_from_screen(motion.root_x as f32, motion.root_y as f32);
+            app.pointer(x, y, Pointer::Motion);
         }
         Event::KeyPress(_) => app.key_escape(),
         _ => {}

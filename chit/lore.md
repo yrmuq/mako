@@ -7,6 +7,7 @@
 - A chibi zip without `body` uses bear girl's skeleton, and one without `anima` uses bear girl's animations. A pack may replace only the drawings.
 - A chibi zip without a `heart` name is ignored. The menu cannot list a pack that has no name.
 - Bear girl walks and sits on the upper edge of the bottom taskbar. Use the same floor for both poses.
+- Dragging pins the clicked point on the topmost visible body part. Gravity moves the rest of the pose around the pin.
 
 ## External Compatibility Constraints
 
