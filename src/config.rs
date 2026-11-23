@@ -5,7 +5,11 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
+use crate::sim::SPRITE_H;
 use crate::Fault;
+
+const MIN_SCALE: f32 = 0.2;
+const MAX_SCALE: f32 = 2.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LanguagePref {
@@ -40,9 +44,9 @@ impl Default for Settings {
             theme: ThemePref::System,
             tiles: false,
             chibi: "bear-girl".to_string(),
-            scale: "1".to_string(),
-            width: 100,
-            height: 100,
+            scale: "0.5".to_string(),
+            width: 80,
+            height: 80,
             favorites: vec![crate::pack::BUILTIN_ID.into()],
         }
     }
@@ -53,7 +57,17 @@ impl Settings {
         let Ok(text) = fs::read_to_string(path()) else {
             return Self::default();
         };
-        let mut settings = Self::default();
+        Self::from_config(&text)
+    }
+
+    fn from_config(text: &str) -> Self {
+        // Keep the original sizing defaults for existing files with missing fields.
+        let mut settings = Self {
+            scale: "1".into(),
+            width: 100,
+            height: 100,
+            ..Self::default()
+        };
         let mut has_favorites = false;
         for line in text.lines() {
             let line = line.trim();
@@ -161,7 +175,7 @@ impl Settings {
             .ok()
             .filter(|value| value.is_finite())
             .unwrap_or(1.0)
-            .clamp(0.2, 2.0)
+            .clamp(MIN_SCALE, MAX_SCALE)
     }
 
     pub fn scales(&self) -> (f32, f32) {
@@ -170,6 +184,25 @@ impl Settings {
             scale * self.width as f32 / 100.0,
             scale * self.height as f32 / 100.0,
         )
+    }
+
+    pub fn size_px(&self) -> f32 {
+        crate::draw::scene_size(self.scales()).1 as f32
+    }
+
+    pub fn size_range_px(&self) -> (f32, f32) {
+        let height = self.height_at_unit_scale();
+        ((MIN_SCALE * height).round(), (MAX_SCALE * height).round())
+    }
+
+    pub fn set_size_px(&mut self, pixels: f32) {
+        self.scale = (pixels.round() / self.height_at_unit_scale())
+            .clamp(MIN_SCALE, MAX_SCALE)
+            .to_string();
+    }
+
+    fn height_at_unit_scale(&self) -> f32 {
+        SPRITE_H * self.height as f32 / 100.0
     }
 
     pub fn dark(&self) -> bool {
@@ -335,6 +368,38 @@ fn group_value<'a>(text: &'a str, header: &str, key: &str) -> Option<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_size_matches_the_previous_manual_scale_and_proportions() {
+        let settings = Settings::default();
+        let manual = Settings::from_config("scale = \"0.5\"\nwidth = 80\nheight = 80\n");
+        assert_eq!(settings.scales(), manual.scales());
+        assert_eq!(crate::draw::scene_size(settings.scales()), (115, 108));
+        assert_eq!(settings.size_px(), 108.0);
+    }
+
+    #[test]
+    fn saved_configs_keep_their_scale_and_partial_configs_keep_the_old_defaults() {
+        let settings = Settings::from_config("scale = \"0.75\"\nwidth = 90\n");
+        assert_eq!(settings.pet_scale(), 0.75);
+        assert_eq!((settings.width, settings.height), (90, 100));
+        assert_eq!(Settings::from_config("tiles = true").scales(), (1.0, 1.0));
+    }
+
+    #[test]
+    fn pixel_slider_round_trips_at_each_supported_proportion() {
+        for height in 25..=200 {
+            let mut settings = Settings {
+                height,
+                ..Settings::default()
+            };
+            let (min, max) = settings.size_range_px();
+            for pixels in min as u32..=max as u32 {
+                settings.set_size_px(pixels as f32);
+                assert_eq!(settings.size_px(), pixels as f32, "height {height}%");
+            }
+        }
+    }
 
     #[test]
     fn a_bottom_panel_raises_the_floor_inset() {

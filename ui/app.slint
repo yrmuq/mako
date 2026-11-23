@@ -410,7 +410,9 @@ export component SettingsWindow inherits Window {
     in-out property <int> language-index;
     in-out property <int> theme-index;
     in-out property <bool> tiles;
-    in-out property <float> size-value: 100;
+    in property <float> size-minimum;
+    in property <float> size-maximum;
+    in-out property <float> size-value;
     in-out property <int> width-value: 100;
     in-out property <int> height-value: 100;
     in property <string> version;
@@ -477,11 +479,11 @@ export component SettingsWindow inherits Window {
             SettingRow {
                 label: Translations.tr(11);
                 Slider {
-                    minimum: 20; maximum: 200; step: 1;
+                    minimum: root.size-minimum; maximum: root.size-maximum; step: 1;
                     value <=> root.size-value;
                     changed(value) => { root.size-selected(value); }
                 }
-                Text { text: "\{Math.round(root.size-value)}%"; width: 48px; vertical-alignment: center; color: Breeze.fg; }
+                Text { text: "\{Math.round(root.size-value)} px"; width: 56px; vertical-alignment: center; color: Breeze.fg; }
             }
         }
         if root.tab == 1: VerticalLayout {
@@ -493,7 +495,7 @@ export component SettingsWindow inherits Window {
                     for row[i] in root.rows: Rectangle {
                         height: 58px; border-radius: Breeze.radius; border-width: 1px;
                         border-color: root.drag-to == i ? Breeze.selection : Breeze.frame;
-                        background: root.drag-from == i ? Breeze.button-hover : Breeze.window;
+                        background: root.drag-from == i ? Breeze.button-hover : Breeze.button;
                         HorizontalLayout {
                             padding-left: 8px; padding-right: 7px;
                             Rectangle {

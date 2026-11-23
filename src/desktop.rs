@@ -17,6 +17,7 @@ use crate::about::LogoTaps;
 use crate::config::{LanguagePref, Settings, ThemePref};
 use crate::game::Command;
 use crate::i18n::{Catalog, ID_NAME, ID_QUIT};
+use crate::icons;
 use crate::pack::{self, Pack};
 use crate::updates::{self, Status};
 use crate::{Fault, Session};
@@ -134,6 +135,45 @@ impl PopupTransition {
     }
 }
 
+struct TrayIcons {
+    theme: icons::Theme,
+    configure: Option<icons::Icon>,
+    pin: Option<icons::Icon>,
+    add: Option<icons::Icon>,
+    remove: Option<icons::Icon>,
+}
+
+impl TrayIcons {
+    fn load(theme: icons::Theme) -> Self {
+        Self {
+            configure: theme.icon("configure"),
+            pin: theme.icon("window-pin"),
+            add: theme.icon("list-add"),
+            remove: theme.icon("list-remove"),
+            theme,
+        }
+    }
+
+    fn apply(&self, popup: &Popup) {
+        if let Some(icon) = &self.configure {
+            popup.set_configure_icon(icon.image.clone());
+            popup.set_tint_configure(icon.tint);
+        }
+        if let Some(icon) = &self.pin {
+            popup.set_pin_icon(icon.image.clone());
+            popup.set_tint_pin(icon.tint);
+        }
+        if let Some(icon) = &self.add {
+            popup.set_add_icon(icon.image.clone());
+            popup.set_tint_add(icon.tint);
+        }
+        if let Some(icon) = &self.remove {
+            popup.set_remove_icon(icon.image.clone());
+            popup.set_tint_remove(icon.tint);
+        }
+    }
+}
+
 struct Desktop {
     action_tx: Sender<Action>,
     commands: Sender<Command>,
@@ -143,6 +183,8 @@ struct Desktop {
     entries: Vec<Entry>,
     counts: HashMap<String, i32>,
     tray: Option<ksni::blocking::Handle<Tray>>,
+    tray_icons: TrayIcons,
+    next_icon_check: Instant,
     popup: Option<Popup>,
     popup_transition: Option<PopupTransition>,
     window: Option<SettingsWindow>,
@@ -321,13 +363,14 @@ impl Desktop {
                 }
                 self.schedule_save();
             }
-            Action::Scale(percent) => {
-                self.config.scale = (percent.clamp(20.0, 200.0) / 100.0).to_string();
+            Action::Scale(pixels) => {
+                self.config.set_size_px(pixels);
                 self.apply_dimensions();
             }
             Action::Proportions(width, height) => {
                 self.config.width = width.clamp(25, 200) as u32;
                 self.config.height = height.clamp(25, 200) as u32;
+                self.refresh_size_controls();
                 self.apply_dimensions();
             }
             Action::Logo => {
@@ -391,6 +434,13 @@ impl Desktop {
                 self.popup_transition = None;
             }
         }
+        if self.popup_transition.is_none() && Instant::now() >= self.next_icon_check {
+            self.next_icon_check = Instant::now() + Duration::from_secs(1);
+            let theme = icons::Theme::load();
+            if theme != self.tray_icons.theme {
+                self.tray_icons = TrayIcons::load(theme);
+            }
+        }
     }
 
     fn schedule_save(&mut self) {
@@ -448,23 +498,9 @@ impl Desktop {
         popup.set_pinned(self.pinned);
         popup.set_reveal(0.0);
         popup.set_tiles(self.config.tiles);
-        let theme = crate::icons::Theme::load();
-        if let Some(icon) = theme.icon("configure") {
-            popup.set_configure_icon(icon.image);
-            popup.set_tint_configure(icon.tint);
-        }
-        if let Some(icon) = theme.icon("window-pin") {
-            popup.set_pin_icon(icon.image);
-            popup.set_tint_pin(icon.tint);
-        }
-        if let Some(icon) = theme.icon("list-add") {
-            popup.set_add_icon(icon.image);
-            popup.set_tint_add(icon.tint);
-        }
-        if let Some(icon) = theme.icon("list-remove") {
-            popup.set_remove_icon(icon.image);
-            popup.set_tint_remove(icon.tint);
-        }
+        self.tray_icons.apply(&popup);
+        popup.set_rows(model(self.favorite_rows()));
+        style_popup(&popup, self.translations(), self.config.dark());
         let tx = self.action_tx.clone();
         popup.on_configure(move |chibis| {
             let _ = tx.send(Action::Configure(chibis));
@@ -512,20 +548,15 @@ impl Desktop {
             let _ = tx.send(Action::Dismiss);
             slint::CloseRequestResponse::KeepWindowShown
         });
-        self.popup = Some(popup.clone_strong());
-        self.refresh_rows();
-        self.refresh_style();
         self.shown = Instant::now();
-        if let Err(error) = popup.show() {
-            self.popup = None;
-            return Err(error);
-        }
+        popup.show()?;
         if matches!(self.session, Session::X11) {
             let point = self.tray_point;
             popup
                 .window()
                 .with_winit_window(|window| crate::place::x11(window, point));
         }
+        self.popup = Some(popup);
         self.animate_popup(false);
         Ok(())
     }
@@ -613,9 +644,9 @@ impl Desktop {
             ThemePref::Dark => 2,
         });
         window.set_tiles(self.config.tiles);
-        window.set_size_value(self.config.pet_scale() * 100.0);
         window.set_width_value(self.config.width as i32);
         window.set_height_value(self.config.height as i32);
+        self.refresh_size_controls();
         self.refresh_style();
         self.refresh_rows();
         self.refresh_status();
@@ -626,45 +657,61 @@ impl Desktop {
         Ok(())
     }
 
-    fn refresh_rows(&self) {
-        let row = |entry: &Entry| {
-            let id = &entry.pack.id;
-            ChibiRow {
-                id: id.into(),
-                name: if id == pack::BUILTIN_ID {
-                    self.catalog.text(ID_NAME).into()
-                } else {
-                    entry.pack.name.as_str().into()
-                },
-                face: entry.face.clone(),
-                count: self.counts.get(id).copied().unwrap_or(0),
-                added: self.config.favorites.contains(id),
-            }
-        };
-        let rows: Vec<_> = self
-            .config
-            .favorites
-            .iter()
-            .filter_map(|id| self.entries.iter().find(|entry| entry.pack.id == *id))
-            .map(row)
-            .collect();
-        if let Some(popup) = &self.popup {
-            popup.set_rows(model(rows.clone()));
-        }
+    fn refresh_size_controls(&self) {
         if let Some(window) = &self.window {
-            window.set_rows(model(rows));
-            window.set_installed(model(self.entries.iter().map(row).collect()));
+            let (min, max) = self.config.size_range_px();
+            window.set_size_minimum(min);
+            window.set_size_maximum(max);
+            window.set_size_value(self.config.size_px());
         }
     }
 
+    fn row(&self, entry: &Entry) -> ChibiRow {
+        let id = &entry.pack.id;
+        ChibiRow {
+            id: id.into(),
+            name: if id == pack::BUILTIN_ID {
+                self.catalog.text(ID_NAME).into()
+            } else {
+                entry.pack.name.as_str().into()
+            },
+            face: entry.face.clone(),
+            count: self.counts.get(id).copied().unwrap_or(0),
+            added: self.config.favorites.contains(id),
+        }
+    }
+
+    fn favorite_rows(&self) -> Vec<ChibiRow> {
+        self.config
+            .favorites
+            .iter()
+            .filter_map(|id| self.entries.iter().find(|entry| entry.pack.id == *id))
+            .map(|entry| self.row(entry))
+            .collect()
+    }
+
+    fn refresh_rows(&self) {
+        let rows = model(self.favorite_rows());
+        if let Some(popup) = &self.popup {
+            popup.set_rows(rows.clone());
+        }
+        if let Some(window) = &self.window {
+            window.set_rows(rows);
+            window.set_installed(model(
+                self.entries.iter().map(|entry| self.row(entry)).collect(),
+            ));
+        }
+    }
+
+    fn translations(&self) -> ModelRc<SharedString> {
+        model((0..=45).map(|id| self.catalog.text(id).into()).collect())
+    }
+
     fn refresh_style(&self) {
-        let strings: ModelRc<SharedString> =
-            model((0..=45).map(|id| self.catalog.text(id).into()).collect());
+        let strings = self.translations();
         let dark = self.config.dark();
         if let Some(popup) = &self.popup {
-            popup.global::<Translations>().set_strings(strings.clone());
-            style(&popup.global::<Breeze>(), dark);
-            popup.set_dark(dark);
+            style_popup(popup, strings.clone(), dark);
         }
         if let Some(window) = &self.window {
             window.global::<Translations>().set_strings(strings);
@@ -697,6 +744,12 @@ impl Desktop {
 
 fn model<T: Clone + 'static>(items: Vec<T>) -> ModelRc<T> {
     ModelRc::from(Rc::new(VecModel::from(items)))
+}
+
+fn style_popup(popup: &Popup, strings: ModelRc<SharedString>, dark: bool) {
+    popup.global::<Translations>().set_strings(strings);
+    style(&popup.global::<Breeze>(), dark);
+    popup.set_dark(dark);
 }
 
 fn style(breeze: &Breeze<'_>, dark: bool) {
@@ -790,6 +843,7 @@ pub(crate) fn run(session: Session, open_settings: bool) -> Result<(), Fault> {
     };
     let config = Settings::load();
     let catalog = Catalog::load(&config.code());
+    let tray_icons = TrayIcons::load(icons::Theme::load());
     let entries: Vec<_> = pack::installed().into_iter().map(Entry::new).collect();
     let first = entries
         .iter()
@@ -830,6 +884,8 @@ pub(crate) fn run(session: Session, open_settings: bool) -> Result<(), Fault> {
         entries,
         counts,
         tray,
+        tray_icons,
+        next_icon_check: Instant::now() + Duration::from_secs(1),
         popup: None,
         popup_transition: None,
         window: None,

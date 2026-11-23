@@ -453,12 +453,13 @@ mod tests {
     #[test]
     fn a_small_size_shrinks_the_frame() {
         let mut app = test_app(startup_room(800.0, 600.0));
-        app.settings.scale = "0.2".to_string();
+        let (minimum, _) = app.settings.size_range_px();
+        app.settings.set_size_px(minimum);
         app.fit_room();
         app.pet.y = app.room.floor;
         app.sync_geometry();
-        assert_eq!(app.logical_w, (SPRITE_W * 0.2).round() as u32);
-        assert_eq!(app.logical_h, (SPRITE_H * 0.2).round() as u32);
+        assert_eq!(app.logical_w, 46);
+        assert_eq!(app.logical_h, 43);
     }
 
     #[test]

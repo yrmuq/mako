@@ -32,7 +32,7 @@
 | Left button | Grab any visible body part. Flick to throw and tumble or throw down for a series of diminishing bounces. |
 | Tray icon | Open the quick panel. Use `+` or `−` to add or remove one copy of a chibi. |
 | Gear and pin | Open Settings or keep the quick panel open when it loses focus. |
-| General | Choose a language, theme, tray layout (List or Tiles) and overall scale from 20% to 200%. |
+| General | Choose a language, theme and tray layout (List or Tiles). The Size slider shows the chibi's base height in logical pixels, including its Dev height proportion. The default size is 115 × 108 px. |
 | Chibis | Drag rows to reorder chibis in the tray. Use the cross to remove a row, or Add to browse and import installed chibis. |
 | About | View the project details and check for updates. Click the logo five times to reveal Dev. |
 | Dev | Enter the width and height independently from 25% to 200% of the original proportions. |

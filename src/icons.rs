@@ -14,6 +14,7 @@ pub struct Icon {
     pub tint: bool,
 }
 
+#[derive(PartialEq, Eq)]
 pub struct Theme {
     name: String,
     roots: Vec<PathBuf>,
