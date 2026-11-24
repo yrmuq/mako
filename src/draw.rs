@@ -765,6 +765,24 @@ fn add_prop(scene: &Scene, parts: &mut Vec<Part>, centre_x: f32) {
 fn add_special(scene: &Scene, action: Special, parts: &mut Vec<Part>, pack: &Pack) {
     let hand = snowball_centre(parts, pack);
     let direction = if scene.facing_left { -1.0 } else { 1.0 };
+    if let Some(grip) = hand.filter(|_| action == Special::Parry) {
+        let bat = crate::props::baseball_bat();
+        let scale = scene.scales.0 * 137.0 / bat.image.width() as f32;
+        let phase = scene.cycle.rem_euclid(0.55);
+        let swing = ((phase - 0.12) / 0.22).clamp(0.0, 1.0);
+        let angle = -106.0 + 145.0 * swing;
+        parts.push(Part {
+            sprite: bat.clone(),
+            transform: Transform::from_translate(
+                -(bat.image.width() as f32) * 0.12,
+                -(bat.image.height() as f32) * 0.5,
+            )
+            .post_scale(scale * direction, scale)
+            .post_rotate(angle * direction)
+            .post_translate(grip.x, grip.y),
+            joint: None,
+        });
+    }
     if matches!(
         action,
         Special::Decorate | Special::TinselTree | Special::StarTree

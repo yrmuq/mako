@@ -117,7 +117,6 @@ pub struct Fragment {
 
 impl Fragment {
     pub fn scatter(out: &mut Vec<Self>, at: Point, push: Point, height: f32) {
-        out.clear();
         out.extend((0..9).map(|kind| {
             let lift = fastrand::f32() * height;
             Self {

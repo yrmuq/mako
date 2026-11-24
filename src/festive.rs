@@ -2,14 +2,17 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use std::ffi::CStr;
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
-use tiny_skia::Point;
+use tiny_skia::{Point, Rect};
 
+use crate::app::Pointer;
 use crate::game::Instance;
 use crate::props;
 use crate::season::{Date, OverlayImage};
 use crate::sim::{Activity, Special};
+use crate::snowman::{Fall, Grab, Motion};
 use crate::world::{World, SNOWMAN_SECONDS};
 
 const TREE_SECONDS: f32 = SNOWMAN_SECONDS * 2.0;
@@ -17,6 +20,7 @@ const MATURE: u8 = 5;
 const DECORATED: u8 = 4;
 const GIFTS: u8 = 0b111;
 const GIFT_OFFSETS: [f32; 3] = [-42.0, 38.0, 66.0];
+const TREE_MARGIN: f32 = 83.0;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub struct Tree {
@@ -60,6 +64,12 @@ impl Tree {
         } else {
             (self.watered / TREE_SECONDS * f32::from(MATURE)).floor() as u8
         }
+    }
+
+    fn can_water(self, date: Date, stage: u8, roll: u8) -> bool {
+        stage < MATURE
+            && Dates::season(date) == Some(self.year)
+            && roll < if self.calendar { 5 } else { 12 }
     }
 }
 
@@ -214,6 +224,7 @@ pub struct Festive {
     open_in: f32,
     gifts_visible: bool,
     flight: Option<Flight>,
+    motion: Motion,
     tree_at: Option<Point>,
     particles: Vec<Spark>,
     art: Art,
@@ -229,10 +240,132 @@ impl Festive {
             open_in: 9.0,
             gifts_visible: false,
             flight: None,
+            motion: Motion::Grounded,
             tree_at: None,
             particles: Vec::new(),
             art: Art::default(),
         }
+    }
+
+    pub fn grabbed_at(&self) -> Option<Point> {
+        match &self.motion {
+            Motion::Held { grab, .. } => Some(grab.cursor()),
+            _ => None,
+        }
+    }
+
+    pub fn release(&mut self, world: &mut World) {
+        if self.grabbed_at().is_some() {
+            let lift = self.motion.lift();
+            self.motion = if lift > 0.0 {
+                Motion::Falling(Fall::new(lift))
+            } else {
+                Motion::Grounded
+            };
+            world.save_now();
+        }
+    }
+
+    pub fn start_drag(&mut self, pets: &mut [Instance], point: Point, now: Instant) -> bool {
+        let Some(base) = self.tree_at else {
+            return false;
+        };
+        if !self.input_rects().any(|rect| {
+            (rect.left()..rect.right()).contains(&point.x)
+                && (rect.top()..rect.bottom()).contains(&point.y)
+        }) {
+            return false;
+        }
+        if let Some(work) = self
+            .job
+            .filter(|work| !matches!(work.job, Job::Candy | Job::Plant))
+        {
+            self.job = None;
+            let expected = if work.walking {
+                Activity::Approach
+            } else {
+                work.job.pose()
+            };
+            if let Some(pet) = pets
+                .iter_mut()
+                .find(|pet| pet.id == work.owner && pet.app.pet.activity == expected)
+            {
+                pet.app.pet.start(Activity::Idle);
+            }
+        }
+        self.motion = Motion::Held {
+            grab: Grab::new(point, base, now),
+            lift: self.motion.lift(),
+        };
+        true
+    }
+
+    pub fn drag(
+        &mut self,
+        world: &mut World,
+        point: Point,
+        now: Instant,
+        width: u32,
+        floor: f32,
+        kind: Pointer,
+    ) {
+        if !matches!(kind, Pointer::Motion | Pointer::LeftUp) {
+            return;
+        }
+        let visible_height = self
+            .art
+            .tree
+            .as_ref()
+            .and_then(|(_, image)| {
+                Some(
+                    (image.height as f32 - f32::from(image.ink.first()?.1)) / self.art.scale as f32,
+                )
+            })
+            .unwrap_or(0.0);
+        if let Motion::Held { grab, lift } = &mut self.motion {
+            let base = grab.move_to(point, now);
+            *lift = (floor - base.y).clamp(0.0, (floor - visible_height).max(0.0));
+            if let Some(tree) = world.tree_mut().as_mut().filter(|_| width > 0) {
+                let width = width as f32;
+                let margin = TREE_MARGIN.min(width * 0.5);
+                let x = base.x.clamp(margin, width - margin);
+                tree.position = x / width;
+                self.tree_at = Some(Point::from_xy(x, floor - *lift));
+                world.changed();
+            }
+        }
+        if matches!(kind, Pointer::LeftUp) {
+            self.release(world);
+        }
+    }
+
+    pub fn input_rects(&self) -> impl Iterator<Item = Rect> + '_ {
+        let carrying = self
+            .job
+            .is_some_and(|work| matches!(work.job, Job::Carry { .. }));
+        let scale = self.art.scale.max(1) as i32;
+        let sample = scale / 2;
+        self.tree_image()
+            .filter(move |_| self.flight.is_none() && !carrying)
+            .into_iter()
+            .flat_map(move |(x, y, image)| {
+                image.ink.iter().filter_map(move |&(left, row, span)| {
+                    let y = y + i32::from(row) - sample;
+                    if y.rem_euclid(scale) != 0 {
+                        return None;
+                    }
+                    let x = x + i32::from(left);
+                    let logical_x = |x: i32| (x + scale - 1 - sample).div_euclid(scale);
+                    let left = logical_x(x);
+                    let right = logical_x(x + i32::from(span));
+                    Rect::from_xywh(
+                        left as f32,
+                        y.div_euclid(scale) as f32,
+                        (right - left) as f32,
+                        1.0,
+                    )
+                })
+            })
     }
 
     pub fn tick(&mut self, pets: &mut [Instance], world: &mut World, info: FrameInfo) {
@@ -247,12 +380,18 @@ impl Festive {
             return;
         }
         let dt = elapsed.clamp(0.0, 0.05);
+        if let Motion::Falling(fall) = &mut self.motion {
+            if fall.step(dt).is_some() {
+                self.motion = Motion::Grounded;
+            }
+        }
         let holiday = self.dates.holiday(date);
         self.gifts_visible = self.dates.gifts_visible(date);
         let season = Dates::season(date);
         if let Some(tree) = world.tree() {
             if season.is_some_and(|year| year > tree.year) {
                 *world.tree_mut() = None;
+                self.motion = Motion::Grounded;
                 world.changed();
             } else if holiday && tree.gifts_started && tree.gifts != GIFTS {
                 self.refill_in -= dt;
@@ -267,10 +406,10 @@ impl Festive {
         self.open_in = (self.open_in - dt).max(0.0);
         self.tree_at = world
             .tree()
-            .map(|tree| Point::from_xy(tree.position * width as f32, floor));
+            .map(|tree| Point::from_xy(tree.position * width as f32, floor - self.motion.lift()));
         self.advance_job(pets, world, &info, dt);
         self.choose_in -= dt;
-        if self.job.is_none() && self.choose_in <= 0.0 {
+        if self.job.is_none() && self.choose_in <= 0.0 && matches!(self.motion, Motion::Grounded) {
             let urgent = holiday && world.tree().is_none_or(|tree| !tree.gifts_started);
             self.choose_in = if urgent {
                 0.6
@@ -335,10 +474,7 @@ impl Festive {
                 return;
             } else if self.gifts_visible && tree.gifts != 0 && self.open_in <= 0.0 {
                 Job::Gift(tree.gifts.trailing_zeros() as usize)
-            } else if (stage < MATURE || (tree.calendar && stage == MATURE && !Dates::untrim(date)))
-                && Dates::season(date) == Some(tree.year)
-                && fastrand::u8(0..100) < 12
-            {
+            } else if tree.can_water(date, stage, fastrand::u8(0..100)) {
                 Job::Water
             } else {
                 return;
@@ -545,26 +681,16 @@ impl Festive {
         }
     }
 
+    fn tree_image(&self) -> Option<(i32, i32, &OverlayImage)> {
+        let (point, (_, image)) = self.tree_at.zip(self.art.tree.as_ref())?;
+        Some(image_at(point, image, self.art.scale as f32))
+    }
+
     pub fn images(
         &self,
         tree: Option<Tree>,
-        width: u32,
-        floor: f32,
     ) -> impl Iterator<Item = (i32, i32, &OverlayImage)> + Clone {
         let scale = self.art.scale as f32;
-        let at = move |point: Point, image: &OverlayImage| {
-            (
-                (point.x * scale - image.width as f32 * 0.5).round() as i32,
-                (point.y * scale - image.height as f32).round() as i32,
-            )
-        };
-        let tree_img = self
-            .tree_at
-            .zip(self.art.tree.as_ref())
-            .map(move |(point, (_, image))| {
-                let (x, y) = at(point, image);
-                (x, y, image)
-            });
         let gifts = self
             .art
             .gifts
@@ -575,21 +701,29 @@ impl Festive {
                 if !self.gifts_visible || tree.gifts & (1 << i) == 0 {
                     return None;
                 }
-                let (x, y) = at(
-                    Point::from_xy(tree.position * width as f32 + GIFT_OFFSETS[i], floor),
+                let at = self.tree_at?;
+                Some(image_at(
+                    Point::from_xy(at.x + GIFT_OFFSETS[i], at.y),
                     image,
-                );
-                Some((x, y, image))
+                    scale,
+                ))
             });
-        tree_img
+        self.tree_image()
             .into_iter()
             .chain(gifts)
             .chain(self.particles.iter().filter_map(move |spark| {
                 let image = self.art.confetti.get(spark.kind)?;
-                let (x, y) = at(spark.at, image);
-                Some((x, y, image))
+                Some(image_at(spark.at, image, scale))
             }))
     }
+}
+
+fn image_at(point: Point, image: &OverlayImage, scale: f32) -> (i32, i32, &OverlayImage) {
+    (
+        (point.x * scale - image.width as f32 * 0.5).round() as i32,
+        (point.y * scale - image.height as f32).round() as i32,
+        image,
+    )
 }
 
 #[derive(Default)]
@@ -653,6 +787,9 @@ mod tests {
             assert_eq!(tree.stage(Date::new(1, 12, 2027), dates), 1);
             assert!(tree.stage(Date::new(end - 1, 12, 2027), dates) < MATURE);
             assert_eq!(tree.stage(Date::new(end, 12, 2027), dates), MATURE);
+            let early = Date::new(3, 12, 2027);
+            assert!(tree.can_water(early, tree.stage(early, dates), 4));
+            assert!(!tree.can_water(early, tree.stage(early, dates), 5));
             assert_eq!(
                 dates.decorations(Date::new(star - 1, 12, 2027)),
                 DECORATED - 1
@@ -666,6 +803,53 @@ mod tests {
         assert!(Dates::untrim(Date::new(14, 1, 2028)));
         assert_eq!(Dates::season(Date::new(29, 2, 2028)), Some(2028));
         assert_eq!(Dates::season(Date::new(1, 3, 2028)), None);
+    }
+
+    #[test]
+    fn dragging_a_potted_tree_moves_the_gifts_and_preserves_ground_position() {
+        let mut festive = Festive::new();
+        festive.dates = Dates::for_format(true);
+        let mut world = World::test("bear-girl");
+        let mut tree = Tree::new(0.5, 2028, true);
+        tree.decorations = DECORATED;
+        tree.gifts_started = true;
+        tree.gifts = GIFTS;
+        *world.tree_mut() = Some(tree);
+        let info = || FrameInfo {
+            date: Date::new(25, 12, 2027),
+            width: 1000,
+            floor: 650.0,
+            scale: 2,
+            elapsed: 0.05,
+        };
+        festive.tick(&mut [], &mut world, info());
+        let now = Instant::now();
+        assert!(!festive.start_drag(&mut [], Point::from_xy(440.0, 475.0), now));
+        let before: Vec<_> = festive
+            .images(world.tree())
+            .map(|(x, y, _)| (x, y))
+            .collect();
+        assert_eq!(before.len(), 4);
+        assert!(festive.start_drag(&mut [], Point::from_xy(500.0, 637.0), now));
+        let point = Point::from_xy(710.0, 525.0);
+        festive.drag(&mut world, point, now, 1000, 650.0, Pointer::Motion);
+        let moving: Vec<_> = festive
+            .images(world.tree())
+            .map(|(x, y, _)| (x, y))
+            .collect();
+        assert_eq!(
+            moving,
+            before
+                .iter()
+                .map(|&(x, y)| (x + 420, y - 224))
+                .collect::<Vec<_>>()
+        );
+        festive.drag(&mut world, point, now, 1000, 650.0, Pointer::LeftUp);
+        for _ in 0..20 {
+            festive.tick(&mut [], &mut world, info());
+        }
+        assert_eq!(festive.tree_at, Some(Point::from_xy(710.0, 650.0)));
+        assert_eq!(world.tree().unwrap().position, 0.71);
     }
 
     #[test]

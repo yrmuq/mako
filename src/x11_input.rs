@@ -107,30 +107,36 @@ impl Fullscreen {
         InputRegion::Restricted(rectangles)
     }
 
-    pub fn overlay_region(&self, mode: InputMode, bounds: Option<tiny_skia::Rect>) -> InputRegion {
-        let Some(bounds) = bounds else {
+    pub fn overlay_region(
+        &self,
+        mode: InputMode,
+        bounds: impl Iterator<Item = tiny_skia::Rect>,
+    ) -> InputRegion {
+        if mode == InputMode::Background {
             return InputRegion::Restricted(Vec::new());
-        };
-        let x = bounds.left().floor() as i32;
-        let y = bounds.top().floor() as i32;
-        let w = (bounds.right().ceil() as i32 - x) as u32;
-        let h = (bounds.bottom().ceil() as i32 - y) as u32;
-        let rects = match self.region(mode, x, y, w, h) {
-            InputRegion::Full => vec![Rectangle {
-                x: 0,
-                y: 0,
-                width: w as u16,
-                height: h as u16,
-            }],
-            InputRegion::Restricted(rects) => rects,
-        };
+        }
         InputRegion::Restricted(
-            rects
-                .into_iter()
-                .map(|rect| Rectangle {
-                    x: (i32::from(rect.x) + x) as i16,
-                    y: (i32::from(rect.y) + y) as i16,
-                    ..rect
+            bounds
+                .flat_map(|bounds| {
+                    let x = bounds.left().floor() as i32;
+                    let y = bounds.top().floor() as i32;
+                    let w = (bounds.right().ceil() as i32 - x) as u32;
+                    let h = (bounds.bottom().ceil() as i32 - y) as u32;
+                    match self.region(mode, x, y, w, h) {
+                        InputRegion::Full => vec![Rectangle {
+                            x: x as i16,
+                            y: y as i16,
+                            width: w as u16,
+                            height: h as u16,
+                        }],
+                        InputRegion::Restricted(mut rects) => {
+                            for rect in &mut rects {
+                                rect.x = (i32::from(rect.x) + x) as i16;
+                                rect.y = (i32::from(rect.y) + y) as i16;
+                            }
+                            rects
+                        }
+                    }
                 })
                 .collect(),
         )

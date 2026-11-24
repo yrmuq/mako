@@ -23,6 +23,7 @@ pub struct App {
     pub room: Room,
     pub sculpt_stage: SculptStage,
     pub cover: Option<Rect>,
+    pub snowball_owner: Option<u64>,
     settings: Settings,
     pack: Pack,
     rag: Ragdoll,
@@ -59,6 +60,7 @@ impl App {
             room,
             sculpt_stage: SculptStage::default(),
             cover: None,
+            snowball_owner: None,
             settings,
             pack,
             rag,
@@ -169,6 +171,9 @@ impl App {
                 self.rag.relax(dt);
             }
         }
+        if !matches!(self.pet.activity, Activity::Fall | Activity::Down) {
+            self.snowball_owner = None;
+        }
     }
 
     pub fn prepare(&mut self) {
@@ -193,6 +198,7 @@ impl App {
                 let Some(point) = draw::pick(&self.committed_parts, lx, ly) else {
                     return;
                 };
+                self.snowball_owner = None;
                 self.sync_rag();
                 self.rag.clear_plant();
                 if self.pet.activity == Activity::Rise || !self.rag.live {
@@ -374,11 +380,32 @@ impl App {
                 ))
     }
 
-    pub fn knock_back(&mut self, vx: f32, vy: f32) -> bool {
+    pub fn knock_back(&mut self, vx: f32, vy: f32, snowball_owner: Option<u64>) -> bool {
         if !self.can_be_struck() {
             return false;
         }
-        let degrees = self.pack.local_degrees(self.motion_name(), self.pet.phase);
+        self.apply_knockback(vx, vy, snowball_owner);
+        true
+    }
+
+    pub fn can_be_hit_by_snowball(&self) -> bool {
+        self.pet.activity == Activity::Down || self.can_be_struck()
+    }
+
+    pub fn hit_with_snowball(&mut self, vx: f32, vy: f32, owner: u64) -> bool {
+        if !self.can_be_hit_by_snowball() {
+            return false;
+        }
+        self.apply_knockback(vx, vy, Some(owner));
+        true
+    }
+
+    fn apply_knockback(&mut self, vx: f32, vy: f32, snowball_owner: Option<u64>) {
+        let degrees = if self.pet.activity == Activity::Down {
+            self.rag.degrees()
+        } else {
+            self.pack.local_degrees(self.motion_name(), self.pet.phase)
+        };
         let tilt = self.pet.tilt();
         self.rag.seed(&degrees);
         if self.pet.activity == Activity::ClimbWall {
@@ -387,7 +414,7 @@ impl App {
         self.rag
             .impact((vx * self.pet.face / 85.0).clamp(-12.0, 12.0));
         self.pet.knock_back(vx, vy);
-        true
+        self.snowball_owner = snowball_owner;
     }
 
     pub fn render(&mut self) -> Frame {
@@ -756,9 +783,9 @@ mod tests {
 
         for side in [Lying::Back, Lying::Front] {
             let mut app = test_app(startup_room(1200.0, 800.0));
-            assert!(app.knock_back(0.0, -260.0));
+            assert!(app.knock_back(0.0, -260.0, None));
             app.rag.set_turn(side.tilt());
-            assert!(!app.knock_back(720.0, -150.0));
+            assert!(!app.knock_back(720.0, -150.0, None));
             assert_eq!((app.pet.vx, app.pet.vy), (0.0, -260.0));
 
             let mut stages = [false; 2];
@@ -786,12 +813,12 @@ mod tests {
                     }
                 }
                 let velocity = (app.pet.vx, app.pet.vy);
-                assert!(!app.knock_back(720.0, -150.0));
+                assert!(!app.knock_back(720.0, -150.0, None));
                 assert_eq!((app.pet.vx, app.pet.vy), velocity);
             }
             assert_eq!(stages, [true, true]);
             assert_eq!(app.pet.activity, Activity::Idle);
-            assert!(app.knock_back(720.0, -150.0));
+            assert!(app.knock_back(720.0, -150.0, None));
         }
     }
 

@@ -12,12 +12,13 @@
 - A quick-list entry is independent of active clones. Minus removes one clone.
 - Pass pointer input through transparent chibi pixels on both display systems.
 - Dragging pins the clicked point on the topmost visible body part. Gravity moves the rest of the pose around the pin, and the floor stops the body at contact.
-- A knocked-down chibi can still strike others during flight or a skid and becomes vulnerable again once it has finished standing up.
+- A knocked-down chibi can still strike others during flight or a skid. Snowballs can hit a lying chibi again. Body-impact immunity lasts through recovery.
+- Keep the snowball thrower immune to knockback propagated from its own throw. A batted snowball belongs to the chibi that struck it with the bat.
 - Auto mode passes pointer input through the scene only on the monitor showing a fullscreen window. Other monitors remain interactive.
 - Both snowy seasons make the walls slippery. A chibi cannot reach the ceiling while the walls are slippery.
 - The precipitation preference affects falling particles. Keep the seasonal ground objects and interactions available when precipitation is disabled.
 - Restore the active chibi roster on the floor, including an empty roster. Carry ground snow objects and snowman progress between launches in the same snow season and discard them after February 28, even if mako was closed.
-- Count snowman progress only during active sculpting. All chibis share the same unfinished snowman.
+- Track each of the two shared snowmen separately. Only active sculpting advances its progress.
 - Choose the fir and gift dates from the system date format, independently of the UI language.
 - Keep the fir separate from the melting snow objects so a chibi can visibly discard it at the start of March.
 - The Dev date uses a separate temporary scene. Restore the ordinary scene when returning to the system date and keep its winter objects out of the test scene.

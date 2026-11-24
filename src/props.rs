@@ -746,3 +746,31 @@ pub fn snow_cannon() -> &'static Sprite {
         crop(image).expect("snow cannon artwork")
     })
 }
+
+pub fn baseball_bat() -> &'static Sprite {
+    static ART: OnceLock<Sprite> = OnceLock::new();
+    ART.get_or_init(|| {
+        let mut image = Pixmap::new(133, 34).expect("baseball bat dimensions");
+        let outline = |p: &mut PathBuilder| {
+            p.move_to(8.0, 13.0);
+            p.cubic_to(32.0, 13.0, 43.0, 12.0, 64.0, 9.0);
+            p.cubic_to(85.0, 5.0, 105.0, 4.0, 121.0, 4.0);
+            p.cubic_to(134.0, 3.0, 134.0, 28.0, 121.0, 28.0);
+            p.cubic_to(102.0, 29.0, 84.0, 27.0, 64.0, 24.0);
+            p.cubic_to(41.0, 20.0, 29.0, 21.0, 8.0, 21.0);
+            p.close();
+        };
+        paint(&mut image, [221, 166, 113, 255], None, outline);
+        paint(&mut image, [136, 82, 64, 255], Some(2.1), outline);
+        paint(&mut image, [251, 208, 143, 255], Some(2.2), |p| {
+            p.move_to(47.0, 15.0);
+            p.quad_to(84.0, 9.0, 119.0, 9.0);
+        });
+        paint(&mut image, [120, 73, 70, 255], Some(7.2), |p| {
+            p.move_to(8.0, 17.0);
+            p.line_to(30.0, 17.0);
+        });
+        oval(&mut image, (1.0, 10.0, 9.0, 14.0), [144, 92, 71, 255]);
+        crop(image).expect("baseball bat artwork")
+    })
+}

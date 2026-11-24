@@ -12,7 +12,7 @@ use crate::season::OverlayImage;
 use crate::sim::{Activity, Special};
 use crate::snowman::Fragment;
 use crate::world::{
-    Pile, SnowWall, Snowman, WinterObjects, World, MAX_SNOW_WALLS, SNOWMAN_SECONDS,
+    Pile, SnowWall, Snowman, WinterObjects, World, MAX_SNOWMEN, MAX_SNOW_WALLS, SNOWMAN_SECONDS,
 };
 
 pub const RELEASE_AT: f32 = 0.44;
@@ -23,7 +23,7 @@ const BALL_RADIUS: f32 = 5.5;
 const BALL_KNOCKBACK: f32 = 0.68 * 2.0;
 const WALL_HEIGHT: f32 = 84.0;
 const WALL_HALF_WIDTH: f32 = 50.0;
-const HIT_WINDOW: f64 = 180.0;
+const HIT_WINDOW: f64 = 60.0;
 
 #[derive(Clone, Copy)]
 enum Task {
@@ -42,8 +42,11 @@ enum Task {
         target: u64,
         released: bool,
     },
-    ApproachSnowman,
+    ApproachSnowman {
+        slot: usize,
+    },
     Sculpt {
+        slot: usize,
         remaining: f32,
     },
     ApproachWall {
@@ -64,7 +67,7 @@ impl Task {
     fn activity(self) -> Activity {
         match self {
             Self::ApproachPile { .. }
-            | Self::ApproachSnowman
+            | Self::ApproachSnowman { .. }
             | Self::ApproachWall { .. }
             | Self::Aim { .. } => Activity::Approach,
             Self::Pack { .. } => Activity::PackSnow,
@@ -74,8 +77,11 @@ impl Task {
         }
     }
 
-    fn building(self) -> bool {
-        matches!(self, Self::ApproachSnowman | Self::Sculpt { .. })
+    fn snowman_slot(self) -> Option<usize> {
+        match self {
+            Self::ApproachSnowman { slot } | Self::Sculpt { slot, .. } => Some(slot),
+            _ => None,
+        }
     }
 }
 
@@ -119,8 +125,8 @@ pub struct Interactions {
     conversations: Vec<Conversation>,
     balls: Vec<Snowball>,
     fragments: Vec<Fragment>,
-    pub snowman_held: bool,
-    snowman_cooldown: f32,
+    pub snowman_held: [bool; MAX_SNOWMEN],
+    snowman_cooldown: [f32; MAX_SNOWMEN],
     choose_in: f32,
     pile_in: f32,
 }
@@ -138,8 +144,8 @@ impl Interactions {
             conversations: Vec::new(),
             balls: Vec::new(),
             fragments: Vec::new(),
-            snowman_held: false,
-            snowman_cooldown: 0.0,
+            snowman_held: [false; MAX_SNOWMEN],
+            snowman_cooldown: [0.0; MAX_SNOWMEN],
             choose_in: 2.0,
             pile_in: 3.0,
         }
@@ -166,8 +172,8 @@ impl Interactions {
         self.time = 0.0;
         self.balls.clear();
         self.fragments.clear();
-        self.snowman_held = false;
-        self.snowman_cooldown = 0.0;
+        self.snowman_held.fill(false);
+        self.snowman_cooldown.fill(0.0);
         self.pile_in = 3.0;
     }
 
@@ -183,7 +189,9 @@ impl Interactions {
         let dt = elapsed.clamp(0.0, 0.05);
         self.time += f64::from(elapsed.max(0.0));
         self.talk(pets, elapsed);
-        self.snowman_cooldown = (self.snowman_cooldown - elapsed).max(0.0);
+        for cooldown in &mut self.snowman_cooldown {
+            *cooldown = (*cooldown - elapsed).max(0.0);
+        }
         self.fragments
             .retain_mut(|fragment| fragment.tick(dt, floor));
         if winter && width > 0 {
@@ -196,7 +204,10 @@ impl Interactions {
                 let id = pets[index].id;
                 if let Some(task) = self.tasks.remove(&id) {
                     if pets[index].app.pet.activity == task.activity() {
-                        if self.snowman_held && task.building() {
+                        if task
+                            .snowman_slot()
+                            .is_some_and(|slot| self.snowman_held[slot])
+                        {
                             self.tasks.insert(id, task);
                         } else if let Some(next) =
                             self.advance(task, index, pets, world, width as f32, dt, elapsed)
@@ -423,18 +434,9 @@ impl Interactions {
                     }
                 }
             }
-            14..38
-                if winter && width > 0.0 && !self.snowman_held && self.snowman_cooldown == 0.0 =>
-            {
-                if !self.tasks.values().any(|task| task.building())
-                    && world
-                        .winter()
-                        .snowman
-                        .is_none_or(|man| man.seconds < SNOWMAN_SECONDS)
-                {
-                    let index = resting[fastrand::usize(..resting.len())];
-                    self.start_building(&mut pets[index], world);
-                }
+            14..38 if winter && width > 0.0 => {
+                let index = resting[fastrand::usize(..resting.len())];
+                self.start_building(&mut pets[index], world);
             }
             38..57 if winter && pets.len() >= 2 && width > 0.0 => {
                 let i = resting[fastrand::usize(..resting.len())];
@@ -499,18 +501,40 @@ impl Interactions {
     }
 
     fn start_building(&mut self, pet: &mut Instance, world: &mut World) {
-        if world.winter().snowman.is_none() {
-            let Some(position) = structure_spot(world.winter(), world.tree(), 0.30, 0.70) else {
+        let ready = |slot: usize| {
+            !self.snowman_held[slot]
+                && self.snowman_cooldown[slot] <= 0.0
+                && !self
+                    .tasks
+                    .values()
+                    .any(|task| task.snowman_slot() == Some(slot))
+        };
+        let slot = if let Some((slot, _)) = world
+            .winter()
+            .snowmen()
+            .find(|&(slot, man)| man.seconds < SNOWMAN_SECONDS && ready(slot))
+        {
+            slot
+        } else {
+            let Some(slot) = (0..MAX_SNOWMEN)
+                .find(|&slot| world.winter().snowman(slot).is_none() && ready(slot))
+            else {
                 return;
             };
-            world.winter_mut().snowman = Some(Snowman {
+            let Some(position) = structure_spot(world.winter(), world.tree(), 0.30, 0.70)
+                .or_else(|| structure_spot(world.winter(), world.tree(), 0.19, 0.81))
+            else {
+                return;
+            };
+            *world.winter_mut().snowman_mut(slot) = Some(Snowman {
                 position,
                 seconds: 0.0,
             });
             world.save_now();
-        }
+            slot
+        };
         pet.app.pet.start(Activity::Approach);
-        self.tasks.insert(pet.id, Task::ApproachSnowman);
+        self.tasks.insert(pet.id, Task::ApproachSnowman { slot });
     }
 
     fn start_wall(&mut self, pet: &mut Instance, world: &mut World) {
@@ -549,34 +573,40 @@ impl Interactions {
         self.tasks.insert(pet.id, task);
     }
 
-    pub fn release_snowman(&mut self, pets: &mut [Instance], broken: bool) {
-        self.snowman_held = false;
+    pub fn release_snowman(&mut self, pets: &mut [Instance], slot: usize, broken: bool) {
+        self.snowman_held[slot] = false;
         for pet in pets {
-            if let Some(task) = self.tasks.get_mut(&pet.id).filter(|task| task.building()) {
+            if let Some(task) = self
+                .tasks
+                .get_mut(&pet.id)
+                .filter(|task| task.snowman_slot() == Some(slot))
+            {
                 if pet.app.pet.activity == task.activity() {
                     if broken {
                         pet.app.pet.start(Activity::Idle);
                     } else {
-                        *task = Task::ApproachSnowman;
+                        *task = Task::ApproachSnowman { slot };
                         pet.app.pet.start(task.activity());
                     }
                 }
             }
         }
         if broken {
-            self.tasks.retain(|_, task| !task.building());
+            self.tasks
+                .retain(|_, task| task.snowman_slot() != Some(slot));
         }
     }
 
     pub fn break_snowman(
         &mut self,
         pets: &mut [Instance],
+        slot: usize,
         at: Point,
         velocity: Point,
         height: f32,
     ) {
-        self.release_snowman(pets, true);
-        self.snowman_cooldown = 7.0;
+        self.release_snowman(pets, slot, true);
+        self.snowman_cooldown[slot] = 7.0;
         Fragment::scatter(&mut self.fragments, at, velocity, height);
         for pet in pets {
             pet.app.mourn();
@@ -621,7 +651,7 @@ impl Interactions {
                 let other = &pets.iter().find(|pet| pet.id == target)?.app;
                 Some((
                     other.pet.x,
-                    other.can_be_struck(),
+                    other.can_be_hit_by_snowball(),
                     other.pet.activity == Activity::ClimbWall,
                 ))
             }
@@ -725,8 +755,8 @@ impl Interactions {
                     released: true,
                 });
             }
-            Task::ApproachSnowman => {
-                let man = world.winter().snowman?;
+            Task::ApproachSnowman { slot } => {
+                let man = world.winter().snowman(slot)?;
                 let x = man.position * width;
                 let offset = (app.height() * 0.29).clamp(14.0, 54.0);
                 let side = if app.pet.x <= x { 1.0 } else { -1.0 };
@@ -736,11 +766,12 @@ impl Interactions {
                 app.pet.face = side;
                 app.sculpt_stage = SculptStage::for_step(snowman_step(man.seconds));
                 Task::Sculpt {
+                    slot,
                     remaining: 3.0 + 2.0 * fastrand::f32(),
                 }
             }
-            Task::Sculpt { remaining } => {
-                let man = world.winter_mut().snowman.as_mut()?;
+            Task::Sculpt { slot, remaining } => {
+                let man = world.winter_mut().snowman_mut(slot).as_mut()?;
                 let spent = elapsed.min(remaining).min(SNOWMAN_SECONDS - man.seconds);
                 man.seconds += spent;
                 app.sculpt_stage = SculptStage::for_step(snowman_step(man.seconds));
@@ -753,6 +784,7 @@ impl Interactions {
                     }
                 }
                 return (!finished).then_some(Task::Sculpt {
+                    slot,
                     remaining: remaining - spent,
                 });
             }
@@ -816,23 +848,32 @@ impl Interactions {
         if next_shot <= 0.0 {
             let target = (0..pets.len())
                 .map(|offset| (cursor + offset) % pets.len())
-                .find(|&index| index != shooter && pets[index].app.can_be_struck());
-            if let Some(target) = target {
-                let side = if pets[target].app.pet.x < pets[shooter].app.pet.x {
+                .find(|&index| index != shooter);
+            let side = target.map_or(pets[shooter].app.pet.face, |index| {
+                if pets[index].app.pet.x < pets[shooter].app.pet.x {
                     -1.0
                 } else {
                     1.0
-                };
-                pets[shooter].app.pet.face = side;
-                let mut origin = pets[shooter].app.snowball_position();
-                origin.x += side * pets[shooter].app.height() * 0.29;
-                if let Some(ball) =
-                    Snowball::towards(pets[shooter].id, origin, &pets[target].app, true)
-                {
-                    self.balls.push(ball);
                 }
-                cursor = (target + 1) % pets.len();
-            }
+            });
+            let source = &mut pets[shooter];
+            source.app.pet.face = side;
+            let mut origin = source.app.snowball_position();
+            origin.x += side * source.app.height() * 0.29;
+            let owner = source.id;
+            let ball = target
+                .and_then(|index| {
+                    cursor = (index + 1) % pets.len();
+                    Snowball::towards(owner, origin, &pets[index].app, true)
+                })
+                .unwrap_or(Snowball {
+                    owner,
+                    position: origin,
+                    vx: side * 940.0,
+                    vy: -100.0,
+                    counter: None,
+                });
+            self.balls.push(ball);
             next_shot += 0.24;
         }
         Some(Task::Cannon {
@@ -850,7 +891,7 @@ impl Interactions {
             .iter()
             .map(|pet| {
                 pet.app
-                    .can_be_struck()
+                    .can_be_hit_by_snowball()
                     .then(|| pet.app.collision_bounds())
                     .flatten()
             })
@@ -875,7 +916,7 @@ impl Interactions {
                 .iter()
                 .enumerate()
                 .filter_map(|(i, body)| {
-                    if pets[i].id == ball.owner || !pets[i].app.can_be_struck() {
+                    if pets[i].id == ball.owner || !pets[i].app.can_be_hit_by_snowball() {
                         return None;
                     }
                     if ball.counter == Some(pets[i].id)
@@ -923,10 +964,11 @@ impl Interactions {
                     }
                     return true;
                 }
-                if pets[index]
-                    .app
-                    .knock_back((ball.vx * BALL_KNOCKBACK).clamp(-1450.0, 1450.0), -310.0)
-                {
+                if pets[index].app.hit_with_snowball(
+                    (ball.vx * BALL_KNOCKBACK).clamp(-1450.0, 1450.0),
+                    -310.0,
+                    ball.owner,
+                ) {
                     let hits = snow_hits.entry(id).or_default();
                     hits.retain(|time| now - time <= HIT_WINDOW);
                     hits.push_back(now);
@@ -1075,8 +1117,8 @@ fn nearest_pile(objects: &WinterObjects, from: f32) -> Option<f32> {
 
 fn room_for_structure(objects: &WinterObjects, tree: Option<Tree>, x: f32) -> bool {
     objects
-        .snowman
-        .is_none_or(|man| (man.position - x).abs() > 0.085)
+        .snowmen()
+        .all(|(_, man)| (man.position - x).abs() > 0.085)
         && tree.is_none_or(|tree| (tree.position - x).abs() > 0.094)
         && objects
             .walls
@@ -1124,7 +1166,7 @@ pub struct WinterArt {
     scale: u32,
     piles: Vec<OverlayImage>,
     ball: Option<OverlayImage>,
-    man: Option<(u8, OverlayImage)>,
+    men: [Option<(u8, OverlayImage)>; MAX_SNOWMEN],
     fragments: Vec<OverlayImage>,
     walls: Vec<(u8, OverlayImage)>,
 }
@@ -1144,7 +1186,7 @@ impl WinterArt {
             self.fragments = (0..3)
                 .map(|kind| props::snow_chunk(kind, scale).into())
                 .collect();
-            self.man = None;
+            self.men = Default::default();
             self.walls.clear();
         }
         self.walls.truncate(objects.walls.len());
@@ -1160,18 +1202,26 @@ impl WinterArt {
                     .push((step, props::snow_wall(step, scale).into()));
             }
         }
-        if let Some(man) = objects.snowman {
-            let step = snowman_step(man.seconds);
-            if self.man.as_ref().is_none_or(|(old, _)| *old != step) {
-                self.man = Some((step, props::snowman(step, scale).into()));
+        for (slot, cached) in self.men.iter_mut().enumerate() {
+            if let Some(man) = objects.snowman(slot) {
+                let step = snowman_step(man.seconds);
+                if cached.as_ref().is_none_or(|(old, _)| *old != step) {
+                    *cached = Some((step, props::snowman(step, scale).into()));
+                }
+            } else {
+                *cached = None;
             }
-        } else {
-            self.man = None;
         }
     }
 
-    pub fn snowman_bounds(&self, man: Snowman, width: u32, floor: f32) -> Option<Rect> {
-        let (_, image) = self.man.as_ref()?;
+    pub fn snowman_bounds(
+        &self,
+        slot: usize,
+        man: Snowman,
+        width: u32,
+        floor: f32,
+    ) -> Option<Rect> {
+        let (_, image) = self.men[slot].as_ref()?;
         let scale = self.scale as f32;
         let centre = man.position * width as f32;
         let top = f32::from(image.ink.first()?.1) / scale;
@@ -1194,7 +1244,7 @@ impl WinterArt {
         objects: &'a WinterObjects,
         width: u32,
         floor: f32,
-        snowman_lift: f32,
+        snowman_lift: [f32; MAX_SNOWMEN],
     ) -> impl Iterator<Item = (i32, i32, &'a OverlayImage)> + Clone {
         let s = self.scale as f32;
         let at = move |position: f32, image: &'a OverlayImage| {
@@ -1213,10 +1263,10 @@ impl WinterArt {
                     .get(usize::from(pile.servings) - 1)
                     .map(|image| at(pile.position, image))
             })
-            .chain(objects.snowman.into_iter().filter_map(move |man| {
-                self.man.as_ref().map(|(_, image)| {
+            .chain(objects.snowmen().filter_map(move |(slot, man)| {
+                self.men[slot].as_ref().map(|(_, image)| {
                     let (x, y, image) = at(man.position, image);
-                    (x, y - (snowman_lift * s).round() as i32, image)
+                    (x, y - (snowman_lift[slot] * s).round() as i32, image)
                 })
             }))
             .chain(
@@ -1355,7 +1405,7 @@ mod tests {
     fn three_recent_hits_arm_a_cannon_after_recovery() {
         let mut pets = [pet(0, 300.0), pet(1, 421.0), pet(2, 510.0)];
         let mut interactions = Interactions::new();
-        for time in [1.0, 182.0, 188.0, 192.0] {
+        for time in [1.0, 62.0, 68.0, 72.0] {
             interactions.time = time;
             pets[1] = pet(1, 421.0);
             interactions.balls.push(Snowball {
@@ -1370,17 +1420,25 @@ mod tests {
             }
             assert!(interactions.balls.is_empty());
             assert_eq!(pets[1].app.pet.activity, Activity::Fall);
-            assert_eq!(interactions.owes_cannon.contains(&1), time == 192.0);
+            assert_eq!(interactions.owes_cannon.contains(&1), time == 72.0);
         }
         interactions.start_cannons(&mut pets);
         assert_eq!(pets[1].app.pet.activity, Activity::Fall);
         pets[1] = pet(1, 421.0);
         interactions.start_cannons(&mut pets);
         assert_eq!(pets[1].app.pet.activity, Activity::Special(Special::Cannon));
+        pets[0].app.pet.start(Activity::Down);
+        pets[2].app.pet.start(Activity::Down);
         interactions.cannon(1, &mut pets, 4.0, 0.0, 0);
         interactions.cannon(1, &mut pets, 4.0, 0.0, 2);
         assert_eq!(interactions.balls.len(), 2);
         assert!(interactions.balls[0].vx < 0.0 && interactions.balls[1].vx > 0.0);
+        for _ in 0..24 {
+            interactions.fly(&mut pets, &[], 1000.0, 650.0, 0.02);
+        }
+        assert_eq!(pets[0].app.pet.activity, Activity::Fall);
+        assert_eq!(pets[1].app.pet.activity, Activity::Special(Special::Cannon));
+        assert_eq!(pets[2].app.pet.activity, Activity::Fall);
     }
 
     #[test]
@@ -1461,7 +1519,10 @@ mod tests {
             let id = pets[index].id;
             interactions.start_building(&mut pets[index], &mut world);
             let original = world.winter().snowman.unwrap().seconds;
-            assert!(matches!(interactions.tasks[&id], Task::ApproachSnowman));
+            assert!(matches!(
+                interactions.tasks[&id],
+                Task::ApproachSnowman { slot: 0 }
+            ));
             for _ in 0..180 {
                 interactions.tick(&mut pets, &mut world, 1000, 650.0, 0.02, true);
                 if matches!(interactions.tasks.get(&id), Some(Task::Sculpt { .. })) {
@@ -1469,7 +1530,7 @@ mod tests {
                 }
             }
             assert_eq!(world.winter().snowman.unwrap().seconds, original);
-            let Task::Sculpt { remaining } = interactions.tasks[&id] else {
+            let Task::Sculpt { slot: 0, remaining } = interactions.tasks[&id] else {
                 panic!("the builder never reached the snowman")
             };
             assert!((3.0..=5.0).contains(&remaining));
@@ -1489,6 +1550,37 @@ mod tests {
             assert_eq!(world.winter().snowman.unwrap().seconds, original + 1.25);
         }
         assert_eq!(world.winter().snowman.unwrap().seconds, 451.5);
+    }
+
+    #[test]
+    fn two_chibis_can_work_on_different_snowmen() {
+        let mut world = World::test("bear-girl");
+        world.update_season(Some(2027));
+        *world.winter_mut().snowman_mut(0) = Some(Snowman {
+            position: 0.5,
+            seconds: 200.0,
+        });
+        let mut pets = [pet(0, 480.0), pet(1, 420.0)];
+        let mut interactions = Interactions::new();
+        interactions.start_building(&mut pets[0], &mut world);
+        interactions.start_building(&mut pets[1], &mut world);
+        assert!(matches!(
+            interactions.tasks[&0],
+            Task::ApproachSnowman { slot: 0 }
+        ));
+        assert!(matches!(
+            interactions.tasks[&1],
+            Task::ApproachSnowman { slot: 1 }
+        ));
+        let second = world.winter().snowman(1).unwrap();
+        assert!((second.position - 0.5).abs() > 0.085);
+        assert_eq!(second.seconds, 0.0);
+        interactions.release_snowman(&mut pets, 0, true);
+        assert!(!interactions.tasks.contains_key(&0));
+        assert!(matches!(
+            interactions.tasks[&1],
+            Task::ApproachSnowman { slot: 1 }
+        ));
     }
 
     #[test]

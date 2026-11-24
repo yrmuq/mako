@@ -98,7 +98,7 @@ pub fn run(settings: Settings, startup: Startup, commands: Receiver<Command>) ->
                 snow = Some(window);
             }
             if let Some(window) = &mut snow {
-                let input = fullscreen.overlay_region(mode, game.snowman_bounds());
+                let input = fullscreen.overlay_region(mode, game.prop_input_bounds());
                 if window.input != input {
                     input.apply(&conn, window.id).map_err(input_error)?;
                     window.input = input;

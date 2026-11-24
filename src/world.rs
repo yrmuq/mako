@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::{festive::Tree, pack};
 
 pub const SNOWMAN_SECONDS: f32 = 600.0;
+pub const MAX_SNOWMEN: usize = 2;
 const SAVE_INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -19,8 +20,31 @@ pub struct WinterObjects {
     year: Option<i32>,
     pub piles: Vec<Pile>,
     pub snowman: Option<Snowman>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    second_snowman: Option<Snowman>,
     #[serde(default)]
     pub walls: Vec<SnowWall>,
+}
+
+impl WinterObjects {
+    pub fn snowman(&self, slot: usize) -> Option<Snowman> {
+        [self.snowman, self.second_snowman][slot]
+    }
+
+    pub fn snowman_mut(&mut self, slot: usize) -> &mut Option<Snowman> {
+        match slot {
+            0 => &mut self.snowman,
+            1 => &mut self.second_snowman,
+            _ => unreachable!("snowman slot {slot}"),
+        }
+    }
+
+    pub fn snowmen(&self) -> impl Iterator<Item = (usize, Snowman)> + Clone {
+        [self.snowman, self.second_snowman]
+            .into_iter()
+            .enumerate()
+            .filter_map(|(slot, man)| man.map(|man| (slot, man)))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -80,9 +104,13 @@ impl Save {
         saved.winter.piles.retain(|pile| {
             (0.0..=1.0).contains(&pile.position) && (1..=5).contains(&pile.servings)
         });
-        saved.winter.snowman = saved.winter.snowman.filter(|man| {
-            (0.0..=1.0).contains(&man.position) && (0.0..=SNOWMAN_SECONDS).contains(&man.seconds)
-        });
+        for slot in 0..MAX_SNOWMEN {
+            let man = saved.winter.snowman_mut(slot);
+            *man = man.filter(|man| {
+                (0.0..=1.0).contains(&man.position)
+                    && (0.0..=SNOWMAN_SECONDS).contains(&man.seconds)
+            });
+        }
         saved.winter.walls.retain(|wall| {
             (0.0..=1.0).contains(&wall.position) && (0.0..=SNOWMAN_SECONDS).contains(&wall.seconds)
         });
@@ -319,6 +347,10 @@ mod tests {
                 position: 0.78,
                 seconds: 124.0,
             });
+            *world.winter_mut().snowman_mut(1) = Some(Snowman {
+                position: 0.61,
+                seconds: 356.0,
+            });
             world.winter_mut().walls.push(SnowWall {
                 position: 0.2,
                 seconds: 347.0,
@@ -333,6 +365,8 @@ mod tests {
             assert_eq!(world.winter().piles[0].position, 0.35);
             let saved = world.winter().snowman.unwrap();
             assert_eq!((saved.position, saved.seconds), (0.78, 124.0));
+            let saved = world.winter().snowman(1).unwrap();
+            assert_eq!((saved.position, saved.seconds), (0.61, 356.0));
             assert_eq!(world.winter().walls[0].seconds, 347.0);
             assert_eq!(world.tree().unwrap().position, 0.50);
             assert!(world.update_season(Some(2028)));
@@ -343,6 +377,7 @@ mod tests {
         assert!(world.chibis().is_empty());
         assert!(world.winter().piles.is_empty());
         assert!(world.winter().snowman.is_none());
+        assert!(world.winter().snowman(1).is_none());
         assert!(world.winter().walls.is_empty());
         assert!(world.tree().is_some());
     }

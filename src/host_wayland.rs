@@ -257,7 +257,7 @@ impl Host {
         let region = Region::new(&self.compositor)
             .expect("MAKO-WL-0003: Could not limit pointer input to the pet");
         if accepts_input {
-            if let Some(bounds) = self.game.snowman_bounds() {
+            for bounds in self.game.prop_input_bounds() {
                 let x = bounds.left().floor() as i32;
                 let y = bounds.top().floor() as i32;
                 region.add(

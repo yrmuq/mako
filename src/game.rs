@@ -15,7 +15,7 @@ use crate::pack::Pack;
 use crate::season::{OverlayImage, Snow};
 use crate::sim::Room;
 use crate::snowman::{Fall, Grab, Motion as SnowmanMotion};
-use crate::world::World;
+use crate::world::{World, MAX_SNOWMEN};
 
 pub enum Command {
     Add(Pack),
@@ -49,12 +49,13 @@ struct CollisionBody {
     bounds: Option<Rect>,
     velocity: Option<Point>,
     vulnerable: bool,
+    snowball_owner: Option<u64>,
 }
 
 struct OrdinaryScene {
     pets: Vec<Instance>,
     interactions: Interactions,
-    snowman: SnowmanMotion,
+    snowmen: [SnowmanMotion; MAX_SNOWMEN],
     festive: Festive,
 }
 
@@ -73,7 +74,7 @@ pub struct Game {
     scale: u32,
     next_id: u64,
     held: Option<u64>,
-    snowman_motion: SnowmanMotion,
+    snowman_motion: [SnowmanMotion; MAX_SNOWMEN],
     ordinary: Option<OrdinaryScene>,
     contacts: HashSet<(u64, u64)>,
     pub exit: bool,
@@ -102,7 +103,7 @@ impl Game {
             scale: 1,
             next_id: 0,
             held: None,
-            snowman_motion: SnowmanMotion::Grounded,
+            snowman_motion: Default::default(),
             ordinary: None,
             contacts: HashSet::new(),
             exit: false,
@@ -195,7 +196,7 @@ impl Game {
                 self.ordinary = Some(OrdinaryScene {
                     pets,
                     interactions: std::mem::replace(&mut self.interactions, Interactions::new()),
-                    snowman: std::mem::take(&mut self.snowman_motion),
+                    snowmen: std::mem::take(&mut self.snowman_motion),
                     festive: std::mem::replace(&mut self.festive, Festive::new()),
                 });
             } else {
@@ -203,7 +204,7 @@ impl Game {
                 let scene = self.ordinary.take().expect("parked ordinary scene");
                 self.pets = scene.pets;
                 self.interactions = scene.interactions;
-                self.snowman_motion = scene.snowman;
+                self.snowman_motion = scene.snowmen;
                 self.festive = scene.festive;
                 for pet in &mut self.pets {
                     pet.app.set_bottom(self.bottom);
@@ -244,10 +245,19 @@ impl Game {
     }
 
     pub fn cancel_grab(&mut self, input_at: impl Fn(f32, f32) -> bool) {
-        if let SnowmanMotion::Held { grab, .. } = &self.snowman_motion {
-            let cursor = grab.cursor();
-            if !input_at(cursor.x, cursor.y) {
-                self.release_snowman(None);
+        if self
+            .festive
+            .grabbed_at()
+            .is_some_and(|point| !input_at(point.x, point.y))
+        {
+            self.festive.release(&mut self.world);
+        }
+        for slot in 0..MAX_SNOWMEN {
+            if let SnowmanMotion::Held { grab, .. } = &self.snowman_motion[slot] {
+                let cursor = grab.cursor();
+                if !input_at(cursor.x, cursor.y) {
+                    self.release_snowman(slot, None);
+                }
             }
         }
         if let Some(pet) = self.pets.iter_mut().find(|pet| self.held == Some(pet.id)) {
@@ -267,7 +277,7 @@ impl Game {
         let floor = (self.room.floor - self.bottom).max(0.0) as u32;
         self.snow.tick(dt, width, floor, self.scale, &self.settings);
         if self.world.update_season(self.snow.winter_year()) {
-            self.snowman_motion = SnowmanMotion::Grounded;
+            self.snowman_motion = Default::default();
             self.interactions.clear_winter(&mut self.pets);
         }
         if self.snow.active() {
@@ -283,52 +293,65 @@ impl Game {
                 self.world.winter(),
                 self.width,
                 floor,
-                self.snowman_motion.lift(),
+                std::array::from_fn(|slot| self.snowman_motion[slot].lift()),
             ))
             .chain(self.interactions.ball_images(&self.winter_art))
             .chain(self.interactions.fragment_images(&self.winter_art))
-            .chain(self.festive.images(self.world.tree(), self.width, floor))
+            .chain(self.festive.images(self.world.tree()))
     }
 
-    pub fn snowman_bounds(&self) -> Option<Rect> {
+    pub fn prop_input_bounds(&self) -> impl Iterator<Item = Rect> + '_ {
+        (0..MAX_SNOWMEN)
+            .filter_map(|slot| self.snowman_bounds(slot))
+            .chain(self.festive.input_rects())
+    }
+
+    fn snowman_bounds(&self, slot: usize) -> Option<Rect> {
         self.winter_art.snowman_bounds(
-            self.world.winter().snowman?,
+            slot,
+            self.world.winter().snowman(slot)?,
             self.width,
-            (self.room.floor - self.bottom).max(0.0) - self.snowman_motion.lift(),
+            (self.room.floor - self.bottom).max(0.0) - self.snowman_motion[slot].lift(),
         )
     }
 
-    fn release_snowman(&mut self, velocity: Option<Point>) {
-        let lift = self.snowman_motion.lift();
+    fn release_snowman(&mut self, slot: usize, velocity: Option<Point>) {
+        let lift = self.snowman_motion[slot].lift();
         if velocity.is_none() && lift > 0.0 {
-            self.snowman_motion = SnowmanMotion::Falling(Fall::new(lift));
+            self.snowman_motion[slot] = SnowmanMotion::Falling(Fall::new(lift));
         } else {
-            self.finish_snowman_drop(velocity);
+            self.finish_snowman_drop(slot, velocity);
         }
     }
 
-    fn finish_snowman_drop(&mut self, velocity: Option<Point>) {
-        let lift = self.snowman_motion.lift();
-        self.snowman_motion = SnowmanMotion::Grounded;
+    fn finish_snowman_drop(&mut self, slot: usize, velocity: Option<Point>) {
+        let lift = self.snowman_motion[slot].lift();
+        self.snowman_motion[slot] = SnowmanMotion::Grounded;
         if let Some(velocity) = velocity {
-            let height = self.snowman_bounds().map_or(8.0, |bounds| bounds.height());
-            if let Some(man) = self.world.winter_mut().snowman.take() {
+            let height = self
+                .snowman_bounds(slot)
+                .map_or(8.0, |bounds| bounds.height());
+            if let Some(man) = self.world.winter_mut().snowman_mut(slot).take() {
                 let floor = (self.room.floor - self.bottom).max(0.0);
                 let at = Point::from_xy(man.position * self.width as f32, floor - lift);
                 self.interactions
-                    .break_snowman(&mut self.pets, at, velocity, height);
+                    .break_snowman(&mut self.pets, slot, at, velocity, height);
             }
         } else {
-            self.interactions.release_snowman(&mut self.pets, false);
+            self.interactions
+                .release_snowman(&mut self.pets, slot, false);
         }
         self.world.save_now();
     }
 
     pub fn tick(&mut self, dt: f32) {
-        if let SnowmanMotion::Falling(fall) = &mut self.snowman_motion {
-            if let Some(impact) = fall.step(dt) {
-                let velocity = (impact >= Fall::BREAK_SPEED).then(|| Point::from_xy(0.0, impact));
-                self.finish_snowman_drop(velocity);
+        for slot in 0..MAX_SNOWMEN {
+            if let SnowmanMotion::Falling(fall) = &mut self.snowman_motion[slot] {
+                if let Some(impact) = fall.step(dt) {
+                    let velocity =
+                        (impact >= Fall::BREAK_SPEED).then(|| Point::from_xy(0.0, impact));
+                    self.finish_snowman_drop(slot, velocity);
+                }
             }
         }
         let check_collisions =
@@ -345,6 +368,7 @@ impl Game {
                         bounds: pet.app.collision_bounds(),
                         velocity,
                         vulnerable: pet.app.can_be_struck(),
+                        snowball_owner: pet.app.snowball_owner,
                     }
                 })
                 .collect::<Vec<_>>()
@@ -411,7 +435,10 @@ impl Game {
                 if left_end.intersect(&right_end).is_some() {
                     contacts.insert(pair);
                 }
-                if before[target].vulnerable && !self.contacts.contains(&pair) {
+                if before[target].vulnerable
+                    && before[source].snowball_owner != Some(self.pets[target].id)
+                    && !self.contacts.contains(&pair)
+                {
                     if let Some(time) = swept_contact(left_start, left_end, right_start, right_end)
                     {
                         hits.push((time, source, target, velocity));
@@ -440,7 +467,10 @@ impl Game {
                 (velocity.x * 0.54 * power).clamp(-1800.0, 1800.0)
             };
             let vy = -(170.0 + speed * 0.26).min(840.0);
-            if self.pets[target].app.knock_back(vx, vy) {
+            if self.pets[target]
+                .app
+                .knock_back(vx, vy, before[source].snowball_owner)
+            {
                 self.pets[source].app.pet.vx *= 0.84;
                 remaining[source] *= 0.84;
             }
@@ -451,24 +481,35 @@ impl Game {
     pub fn pointer(&mut self, screen_x: f32, screen_y: f32, kind: Pointer) {
         let now = Instant::now();
         let point = Point::from_xy(screen_x, screen_y);
-        if matches!(&self.snowman_motion, SnowmanMotion::Held { .. }) {
-            let floor = (self.room.floor - self.bottom).max(0.0);
-            let height = self.snowman_bounds().map_or(0.0, |bounds| bounds.height());
-            let SnowmanMotion::Held { grab, lift } = &mut self.snowman_motion else {
+        let floor = (self.room.floor - self.bottom).max(0.0);
+        if self.festive.grabbed_at().is_some() {
+            self.festive
+                .drag(&mut self.world, point, now, self.width, floor, kind);
+            return;
+        }
+        if let Some(slot) = self
+            .snowman_motion
+            .iter()
+            .position(|motion| matches!(motion, SnowmanMotion::Held { .. }))
+        {
+            let height = self
+                .snowman_bounds(slot)
+                .map_or(0.0, |bounds| bounds.height());
+            let SnowmanMotion::Held { grab, lift } = &mut self.snowman_motion[slot] else {
                 unreachable!("checked held motion")
             };
             if matches!(kind, Pointer::Motion | Pointer::LeftUp) {
                 let base = grab.move_to(point, now);
                 let width = self.width as f32;
                 *lift = (floor - base.y).clamp(0.0, (floor - height).max(0.0));
-                if let Some(man) = self.world.winter_mut().snowman.as_mut() {
+                if let Some(man) = self.world.winter_mut().snowman_mut(slot).as_mut() {
                     let margin = (39.0 / width).min(0.5);
                     man.position = (base.x / width).clamp(margin, 1.0 - margin);
                     self.world.changed();
                 }
                 if matches!(kind, Pointer::LeftUp) {
                     let velocity = grab.throw(now);
-                    self.release_snowman(velocity);
+                    self.release_snowman(slot, velocity);
                 }
             }
             return;
@@ -489,25 +530,28 @@ impl Game {
                 Pointer::Motion => {}
             }
             pet.app.pointer(x, y, kind);
-        } else if self.held.is_none()
-            && matches!(kind, Pointer::LeftDown)
-            && self.width > 0
-            && self.snowman_bounds().is_some_and(|bounds| {
-                screen_x >= bounds.left()
-                    && screen_x < bounds.right()
-                    && screen_y >= bounds.top()
-                    && screen_y < bounds.bottom()
-            })
-        {
-            if let Some(man) = self.world.winter().snowman {
-                let lift = self.snowman_motion.lift();
-                let floor = (self.room.floor - self.bottom).max(0.0);
+        } else if self.held.is_none() && matches!(kind, Pointer::LeftDown) && self.width > 0 {
+            if self.festive.start_drag(&mut self.pets, point, now) {
+                return;
+            }
+            if let Some((slot, man)) = (0..MAX_SNOWMEN).rev().find_map(|slot| {
+                let bounds = self.snowman_bounds(slot)?;
+                ((bounds.left()..bounds.right()).contains(&screen_x)
+                    && (bounds.top()..bounds.bottom()).contains(&screen_y))
+                .then(|| {
+                    (
+                        slot,
+                        self.world.winter().snowman(slot).expect("drawn snowman"),
+                    )
+                })
+            }) {
+                let lift = self.snowman_motion[slot].lift();
                 let base = Point::from_xy(man.position * self.width as f32, floor - lift);
-                self.snowman_motion = SnowmanMotion::Held {
+                self.snowman_motion[slot] = SnowmanMotion::Held {
                     grab: Grab::new(point, base, now),
                     lift,
                 };
-                self.interactions.snowman_held = true;
+                self.interactions.snowman_held[slot] = true;
             }
         }
     }
@@ -601,7 +645,7 @@ mod tests {
         }
         let thrower = &mut game.pets[0].app;
         thrower.pet.y -= 15.0;
-        thrower.knock_back(3600.0, -80.0);
+        thrower.knock_back(3600.0, -80.0, None);
         let above = &mut game.pets[3].app;
         above.pet.y -= 210.0;
         above.pet.release(&above.room, 0.0, 0.0);
@@ -638,7 +682,7 @@ mod tests {
             pet.app.pet.x = x;
         }
         game.pets[0].app.pet.y -= 12.0;
-        game.pets[0].app.knock_back(1200.0, -80.0);
+        game.pets[0].app.knock_back(1200.0, -80.0, None);
         game.tick(0.04);
         assert_eq!(game.pets[1].app.pet.activity, Activity::Fall);
         assert_eq!(game.pets[2].app.pet.activity, Activity::Idle);
@@ -648,6 +692,74 @@ mod tests {
         game.tick(0.05);
         assert_eq!(game.pets[2].app.pet.activity, Activity::Fall);
         assert!(game.pets[2].app.pet.vx > 0.0);
+    }
+
+    #[test]
+    fn snowball_knockback_spares_the_thrower_and_still_spreads_to_other_chibis() {
+        use crate::sim::Activity;
+
+        let (_tx, rx) = std::sync::mpsc::channel();
+        let mut game = Game::new(
+            crate::startup_room(1400.0, 800.0),
+            Settings {
+                scale: "0.2".into(),
+                ..Settings::default()
+            },
+            Startup::test(Pack::builtin()),
+            rx,
+        );
+        game.add(Pack::builtin());
+        game.add(Pack::builtin());
+        let shooter = game.pets[0].id;
+        for (pet, x) in game.pets.iter_mut().zip([250.0, 200.0, 315.0]) {
+            pet.app.pet.x = x;
+        }
+        let victim = &mut game.pets[1].app;
+        victim.pet.y -= 15.0;
+        assert!(victim.hit_with_snowball(3600.0, -80.0, shooter));
+        game.tick(0.05);
+        assert!(game.pets[0].app.pet.activity.routine());
+        assert_eq!(game.pets[2].app.pet.activity, Activity::Fall);
+        assert_eq!(game.pets[2].app.snowball_owner, Some(shooter));
+    }
+
+    #[test]
+    fn moving_and_breaking_one_snowman_spares_the_other() {
+        use crate::season::Date;
+        use crate::world::Snowman;
+
+        let (_tx, rx) = std::sync::mpsc::channel();
+        let mut game = Game::new(
+            crate::startup_room(1200.0, 800.0),
+            Settings::default(),
+            Startup::test(Pack::builtin()),
+            rx,
+        );
+        game.snow.set_date(Some(Date::new(15, 1, 2041)));
+        game.tick_snow(0.0, 1200);
+        for (slot, (position, seconds)) in [(0.27, 218.0), (0.74, 498.0)].into_iter().enumerate() {
+            *game.world.winter_mut().snowman_mut(slot) = Some(Snowman { position, seconds });
+        }
+        game.tick_snow(0.0, 1200);
+        let bounds = game.snowman_bounds(1).unwrap();
+        let x = (bounds.left() + bounds.right()) * 0.5;
+        let y = bounds.bottom() - 3.0;
+        game.pointer(x, y, Pointer::LeftDown);
+        game.pointer(x + 65.0, y - 27.0, Pointer::Motion);
+        assert_eq!(game.snowman_motion[0].lift(), 0.0);
+        assert_eq!(game.snowman_motion[1].lift(), 27.0);
+        game.cancel_grab(|_, _| false);
+        for _ in 0..16 {
+            game.tick(0.02);
+        }
+        assert!(matches!(game.snowman_motion[1], SnowmanMotion::Grounded));
+        let moved = game.world.winter().snowman(1).unwrap();
+        assert!((moved.position - (0.74 + 65.0 / 1200.0)).abs() < 1.0e-4);
+        assert_eq!(moved.seconds, 498.0);
+        game.finish_snowman_drop(1, Some(Point::from_xy(900.0, 0.0)));
+        assert!(game.world.winter().snowman(1).is_none());
+        let kept = game.world.winter().snowman(0).unwrap();
+        assert_eq!((kept.position, kept.seconds), (0.27, 218.0));
     }
 
     #[test]
