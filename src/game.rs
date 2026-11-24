@@ -273,14 +273,12 @@ impl Game {
         let floor = (self.room.floor - self.bottom).max(0.0);
         self.snow
             .images()
-            .chain(
-                self.winter_art.images(
-                    self.world.winter(),
-                    self.width,
-                    floor,
-                    self.snowman_motion.lift(),
-                ),
-            )
+            .chain(self.winter_art.images(
+                self.world.winter(),
+                self.width,
+                floor,
+                self.snowman_motion.lift(),
+            ))
             .chain(self.interactions.ball_images(&self.winter_art))
             .chain(self.interactions.fragment_images(&self.winter_art))
     }
@@ -322,8 +320,7 @@ impl Game {
     pub fn tick(&mut self, dt: f32) {
         if let SnowmanMotion::Falling(fall) = &mut self.snowman_motion {
             if let Some(impact) = fall.step(dt) {
-                let velocity = (impact >= Fall::BREAK_SPEED)
-                    .then(|| Point::from_xy(0.0, impact));
+                let velocity = (impact >= Fall::BREAK_SPEED).then(|| Point::from_xy(0.0, impact));
                 self.finish_snowman_drop(velocity);
             }
         }

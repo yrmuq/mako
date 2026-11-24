@@ -80,7 +80,10 @@ impl Fullscreen {
         }
         let whole = Area::new(x, y, frame.width, frame.height);
         let overlap = mode == InputMode::Auto
-            && self.areas.iter().any(|blocked| blocked.intersect(whole).is_some());
+            && self
+                .areas
+                .iter()
+                .any(|blocked| blocked.intersect(whole).is_some());
         let mut rectangles = Vec::new();
         for rect in frame.input_rects(1) {
             let part = Area::new(x + rect.x(), y + rect.y(), rect.width(), rect.height());

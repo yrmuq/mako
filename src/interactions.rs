@@ -150,8 +150,7 @@ impl Interactions {
 
     fn retaliate(&mut self, pets: &mut [Instance], objects: &WinterObjects, width: f32) {
         self.retaliations.retain(|victim, thrower| {
-            pets.iter().any(|pet| pet.id == *victim)
-                && pets.iter().any(|pet| pet.id == *thrower)
+            pets.iter().any(|pet| pet.id == *victim) && pets.iter().any(|pet| pet.id == *thrower)
         });
         for pet in pets {
             let Some(&target) = self.retaliations.get(&pet.id) else {
@@ -419,7 +418,10 @@ impl Interactions {
                     }
                 }
             }
-            Task::Aim { target: id, remaining } => {
+            Task::Aim {
+                target: id,
+                remaining,
+            } => {
                 let (target_x, vulnerable) = target?;
                 let gap = target_x - app.pet.x;
                 if remaining <= 0.0 {
@@ -541,9 +543,7 @@ impl Interactions {
                 })
                 .min_by(|a, b| a.1.total_cmp(&b.1));
             if let Some((index, _)) = target {
-                if pets[index].app.knock_back(ball.vx * 0.68, -310.0)
-                    && fastrand::bool()
-                {
+                if pets[index].app.knock_back(ball.vx * 0.68, -310.0) && fastrand::bool() {
                     retaliations.insert(pets[index].id, ball.owner);
                 }
                 return false;
@@ -686,14 +686,12 @@ impl WinterArt {
                     .get(usize::from(pile.servings) - 1)
                     .map(|image| at(pile.position, image))
             })
-            .chain(
-                objects.snowman.into_iter().filter_map(move |man| {
-                    self.man.as_ref().map(|(_, image)| {
-                        let (x, y, image) = at(man.position, image);
-                        (x, y - (snowman_lift * s).round() as i32, image)
-                    })
-                }),
-            )
+            .chain(objects.snowman.into_iter().filter_map(move |man| {
+                self.man.as_ref().map(|(_, image)| {
+                    let (x, y, image) = at(man.position, image);
+                    (x, y - (snowman_lift * s).round() as i32, image)
+                })
+            }))
     }
 }
 

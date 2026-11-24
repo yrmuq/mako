@@ -63,7 +63,10 @@ impl Grab {
 pub enum Motion {
     #[default]
     Grounded,
-    Held { grab: Grab, lift: f32 },
+    Held {
+        grab: Grab,
+        lift: f32,
+    },
     Falling(Fall),
 }
 
@@ -172,7 +175,11 @@ mod tests {
     #[test]
     fn gentle_drag_and_a_paused_flick_keep_the_snowman() {
         let t = Instant::now();
-        let mut grab = Grab::new(Point::from_xy(110.0, 450.0), Point::from_xy(100.0, 470.0), t);
+        let mut grab = Grab::new(
+            Point::from_xy(110.0, 450.0),
+            Point::from_xy(100.0, 470.0),
+            t,
+        );
         assert_eq!(
             grab.move_to(Point::from_xy(127.0, 445.0), t + Duration::from_millis(100)),
             Point::from_xy(117.0, 465.0)

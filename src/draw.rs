@@ -826,7 +826,10 @@ mod tests {
         for scale in [1, 2] {
             let rects = frame.input_rects(scale);
             assert_eq!(rects.len(), 2);
-            assert_eq!(rects[0], IntRect::from_xywh(2 / scale as i32, 0, 2 / scale, 4 / scale).unwrap());
+            assert_eq!(
+                rects[0],
+                IntRect::from_xywh(2 / scale as i32, 0, 2 / scale, 4 / scale).unwrap()
+            );
             assert_eq!(rects[1].x(), 6 / scale as i32);
         }
     }
