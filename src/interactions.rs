@@ -17,7 +17,7 @@ const PACK_FOR: f32 = 0.87;
 const THROW_FOR: f32 = 0.76;
 const BALL_GRAVITY: f32 = 750.0;
 const BALL_RADIUS: f32 = 5.5;
-const BALL_KNOCKBACK: f32 = 0.68 * 1.5;
+const BALL_KNOCKBACK: f32 = 0.68 * 2.0;
 
 #[derive(Clone, Copy)]
 enum Task {
@@ -761,7 +761,7 @@ mod tests {
         assert!(interactions.balls.is_empty());
         assert_eq!(pets[0].app.pet.activity, Activity::Idle);
         assert_eq!(pets[1].app.pet.activity, Activity::Fall);
-        assert!((pets[1].app.pet.vx - 710.0 * 1.02).abs() < 0.01);
+        assert!((pets[1].app.pet.vx - 710.0 * 1.36).abs() < 0.01);
         assert_eq!(pets[1].app.pet.vy, -310.0);
         assert_eq!(pets[2].app.pet.activity, Activity::Idle);
     }

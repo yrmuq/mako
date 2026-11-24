@@ -624,8 +624,6 @@ fn plant_sculpting_feet(pack: &Pack, pose: &mut Pose) {
 fn align_floor_contacts(parts: &mut [Part], pack: &Pack, floor: f32, scene: &Scene) {
     let sculpting = matches!(scene.motion, Motion::Sculpt(_));
     let amount = if sculpting { 1.0 } else { scene.grounded };
-    let direction = if scene.facing_left { -1.0 } else { 1.0 };
-    let stagger = floor * 0.13 * scene.tilt.sin() * amount * direction;
     let mut contacts = [f32::NEG_INFINITY; 6];
     for part in parts.iter() {
         if let Some(joint) = part.joint {
@@ -638,16 +636,15 @@ fn align_floor_contacts(parts: &mut [Part], pack: &Pack, floor: f32, scene: &Sce
     for part in parts {
         if let Some(joint) = part.joint {
             let group = floor_group(pack, joint.bone);
-            let edge = contacts[group];
+            // Ground the lying legs together so their spacing follows the skeleton.
+            let edge = if !sculpting && group >= 4 {
+                contacts[4].max(contacts[5])
+            } else {
+                contacts[group]
+            };
             if edge.is_finite() && (!sculpting || group >= 4) {
                 let offset = (floor - edge).clamp(0.0, floor * 0.24) * amount;
-                // Stagger the paws along the floor so the far paw extends past the near one.
-                let x = match group {
-                    4 => stagger * 0.35,
-                    5 => -stagger * 0.65,
-                    _ => 0.0,
-                };
-                part.transform = part.transform.post_translate(x, offset);
+                part.transform = part.transform.post_translate(0.0, offset);
             }
         }
     }
@@ -1133,7 +1130,7 @@ mod tests {
                     scene.facing_left = facing_left;
                     let frame = render(&scene, &pack, 1);
                     let mut visible = [0; 6];
-                    for y in frame.height.saturating_sub(20)..frame.height {
+                    for y in 0..frame.height {
                         for x in 0..frame.width {
                             if let Some(joint) = pick(&frame.parts, x as f32 + 0.5, y as f32 + 0.5)
                             {
@@ -1142,10 +1139,26 @@ mod tests {
                         }
                     }
                     assert!(
-                        visible[4] > 10 && visible[5] > 10,
+                        visible[4] > 35 && visible[5] > 35,
                         "{} {side:?} with facing_left={facing_left}: {visible:?}",
                         pack.id
                     );
+                    let mut ungrounded = scene.clone();
+                    ungrounded.grounded = 0.0;
+                    let legs = |parts: &[Part]| {
+                        [4, 5].map(|group| {
+                            let transform = parts
+                                .iter()
+                                .find(|part| floor_group(&pack, part.joint.unwrap().bone) == group)
+                                .unwrap()
+                                .transform;
+                            (transform.tx, transform.ty)
+                        })
+                    };
+                    let [left, right] = legs(&frame.parts);
+                    let [raw_left, raw_right] = legs(&pet_parts(&ungrounded, &pack).0);
+                    assert!(((left.0 - right.0) - (raw_left.0 - raw_right.0)).abs() < 0.01);
+                    assert!(((left.1 - right.1) - (raw_left.1 - raw_right.1)).abs() < 0.01);
                 }
             }
         }

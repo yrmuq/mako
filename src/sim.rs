@@ -22,6 +22,9 @@ pub const HAND_REACH: f32 = 0.4;
 pub const HAND_RELEASE: f32 = 0.3;
 const BOUNCE_RESTITUTION: f32 = 0.62;
 const MIN_REBOUND_SPEED: f32 = 120.0;
+const SOFT_RESTITUTION: f32 = 0.42;
+const MIN_SOFT_REBOUND: f32 = 90.0;
+const MAX_SOFT_REBOUND: f32 = 270.0;
 pub const GRAVITY: f32 = 2400.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -80,6 +83,7 @@ pub struct Pet {
     pub phase: f32,
     pub rise_for: f32,
     landing: Landing,
+    soft_bounced: bool,
     walk_cycle: f32,
     walk_for: f32,
     down_for: f32,
@@ -99,6 +103,7 @@ impl Pet {
             phase: 0.0,
             rise_for: REFERENCE_RISE,
             landing: Landing::Drop,
+            soft_bounced: false,
             walk_cycle,
             walk_for: 4.0 * walk_cycle,
             down_for: 2.6,
@@ -227,6 +232,7 @@ impl Pet {
         self.time = 0.0;
         self.phase = 0.0;
         match activity {
+            Activity::Fall => self.soft_bounced = false,
             Activity::Down => self.down_for = 1.5 + 1.5 * fastrand::f32(),
             Activity::Rise => self.rise_for = 1.0 + fastrand::f32(),
             _ => {}
@@ -259,19 +265,30 @@ impl Pet {
         }
         if self.y >= room.floor {
             self.y = room.floor;
-            if self.landing == Landing::Bounce {
+            if !self.soft_bounced {
+                let hard_throw = self.landing == Landing::Bounce;
                 let distance = (room.floor - start_y).max(0.0);
                 let impact_speed = (start_vy * start_vy + 2.0 * GRAVITY * distance).sqrt();
-                let height_limit = room.floor * 0.45;
-                let rebound =
-                    (impact_speed * BOUNCE_RESTITUTION).min((2.0 * GRAVITY * height_limit).sqrt());
-                if rebound >= MIN_REBOUND_SPEED {
+                let (rebound, minimum) = if hard_throw {
+                    let speed_limit = (2.0 * GRAVITY * room.floor * 0.45).sqrt();
+                    (
+                        (impact_speed * BOUNCE_RESTITUTION).min(speed_limit),
+                        MIN_REBOUND_SPEED,
+                    )
+                } else {
+                    (
+                        (impact_speed * SOFT_RESTITUTION).min(MAX_SOFT_REBOUND),
+                        MIN_SOFT_REBOUND,
+                    )
+                };
+                if rebound >= minimum {
                     // Use the remainder of this tick for upward motion after the impact.
                     let impact_time = (impact_speed - start_vy) / GRAVITY;
                     let remaining = (dt - impact_time).clamp(0.0, dt);
                     self.vy = -rebound + GRAVITY * remaining;
                     self.y -= remaining * (rebound - 0.5 * GRAVITY * remaining);
                     self.vx *= 0.8;
+                    self.soft_bounced = !hard_throw;
                     return;
                 }
             }
@@ -282,9 +299,6 @@ impl Pet {
                 self.vy = 0.0;
                 self.landing = Landing::Drop;
                 self.start(Activity::Down);
-            } else if self.vy > 500.0 {
-                self.vy = -self.vy * 0.28;
-                self.vx *= 0.6;
             } else if self.vx.abs() > 36.0 && self.vy < 160.0 {
                 // A sideways release along the floor slides instead of stopping dead.
                 self.vy = 0.0;
@@ -562,6 +576,43 @@ mod tests {
         assert!(!saw_down);
         assert!((pet.y - room.floor).abs() < 0.1);
         assert_ne!(pet.activity, Activity::Fall);
+    }
+
+    #[test]
+    fn a_drop_and_a_knockback_bounce_once_before_landing() {
+        let room = room();
+        for fps in [30.0, 60.0, 144.0] {
+            for knocked_back in [false, true] {
+                let mut pet = Pet::on_floor(&room, None);
+                let landing = if knocked_back {
+                    pet.knock_back(900.0, -310.0);
+                    Activity::Down
+                } else {
+                    pet.y -= 160.0;
+                    pet.release(&room, 0.0, 0.0);
+                    Activity::Idle
+                };
+                let mut rebounds = 0;
+                let mut height: f32 = 0.0;
+                for _ in 0..(fps * 2.0) as usize {
+                    let falling = pet.vy > 0.0;
+                    pet.step(&room, 1.0 / fps, false);
+                    assert!(pet.y <= room.floor);
+                    if falling && pet.vy < 0.0 {
+                        rebounds += 1;
+                    }
+                    if rebounds > 0 {
+                        height = height.max(room.floor - pet.y);
+                    }
+                    if pet.activity != Activity::Fall {
+                        break;
+                    }
+                }
+                assert_eq!(pet.activity, landing);
+                assert_eq!(rebounds, 1, "{fps} fps, knocked_back={knocked_back}");
+                assert!((2.0..=16.0).contains(&height), "{height}");
+            }
+        }
     }
 
     #[test]
