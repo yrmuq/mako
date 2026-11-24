@@ -220,6 +220,29 @@ pub fn pile(servings: u8, scale: u32) -> Pixmap {
 }
 
 pub const SNOWMAN_STEPS: u8 = 20;
+const SNOWMAN_BASE_END: f32 = 0.39;
+const SNOWMAN_MIDDLE_END: f32 = 0.71;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SculptStage {
+    #[default]
+    Base,
+    Middle,
+    Top,
+}
+
+impl SculptStage {
+    pub fn for_step(step: u8) -> Self {
+        let progress = f32::from(step) / f32::from(SNOWMAN_STEPS);
+        if progress > SNOWMAN_MIDDLE_END {
+            Self::Top
+        } else if progress > SNOWMAN_BASE_END {
+            Self::Middle
+        } else {
+            Self::Base
+        }
+    }
+}
 
 pub fn snow_chunk(kind: usize, scale: u32) -> Pixmap {
     let size = 8 + kind as u32 * 3;
@@ -260,14 +283,17 @@ pub fn snowman(step: u8, scale: u32) -> Pixmap {
             ),
         );
     };
-    let base = 10.0 + 48.0 * (progress / 0.39).min(1.0);
+    let base = 10.0 + 48.0 * (progress / SNOWMAN_BASE_END).min(1.0);
     ball(39.0, 126.0, base, base * 0.85);
-    if progress > 0.39 {
-        let middle = 8.0 + 36.0 * ((progress - 0.39) / 0.32).min(1.0);
+    if progress > SNOWMAN_BASE_END {
+        let middle = 8.0
+            + 36.0
+                * ((progress - SNOWMAN_BASE_END) / (SNOWMAN_MIDDLE_END - SNOWMAN_BASE_END))
+                    .min(1.0);
         ball(39.0, 88.0, middle, middle * 0.90);
     }
-    if progress > 0.71 {
-        let head = 7.0 + 25.0 * ((progress - 0.71) / 0.22).min(1.0);
+    if progress > SNOWMAN_MIDDLE_END {
+        let head = 7.0 + 25.0 * ((progress - SNOWMAN_MIDDLE_END) / 0.22).min(1.0);
         ball(39.0, 56.0, head, head * 0.94);
     }
     if progress >= 0.90 {

@@ -6,6 +6,7 @@ use tiny_skia::{Point, Rect};
 use crate::config::Settings;
 use crate::draw::{self, Frame, Motion, Part, Scene};
 use crate::pack::{BonePoint, Pack};
+use crate::props::SculptStage;
 use crate::rag::Ragdoll;
 use crate::sim::{
     Activity, Pet, Room, FEET_X, FEET_Y, GRAVITY, HAND_REACH, HAND_RELEASE, REFERENCE_RISE,
@@ -20,6 +21,7 @@ struct Grip {
 pub struct App {
     pub pet: Pet,
     pub room: Room,
+    pub sculpt_stage: SculptStage,
     settings: Settings,
     pack: Pack,
     rag: Ragdoll,
@@ -53,6 +55,7 @@ impl App {
         let mut app = Self {
             pet,
             room,
+            sculpt_stage: SculptStage::default(),
             settings,
             pack,
             rag,
@@ -313,7 +316,7 @@ impl App {
             Activity::Listen => Motion::Listen,
             Activity::PackSnow => Motion::PackSnow,
             Activity::ThrowSnow => Motion::ThrowSnow,
-            Activity::Sculpt => Motion::Sculpt,
+            Activity::Sculpt => Motion::Sculpt(self.sculpt_stage),
         }
     }
 

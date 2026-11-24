@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use tiny_skia::{Point, Rect};
 
 use crate::game::{swept_contact, Instance};
-use crate::props;
+use crate::props::{self, SculptStage};
 use crate::season::OverlayImage;
 use crate::sim::Activity;
 use crate::snowman::Fragment;
@@ -17,6 +17,7 @@ const PACK_FOR: f32 = 0.87;
 const THROW_FOR: f32 = 0.76;
 const BALL_GRAVITY: f32 = 750.0;
 const BALL_RADIUS: f32 = 5.5;
+const BALL_KNOCKBACK: f32 = 0.68 * 1.5;
 
 #[derive(Clone, Copy)]
 enum Task {
@@ -486,6 +487,7 @@ impl Interactions {
                     return Some(task);
                 }
                 app.pet.face = side;
+                app.sculpt_stage = SculptStage::for_step(snowman_step(man.seconds));
                 Task::Sculpt {
                     remaining: 3.0 + 2.0 * fastrand::f32(),
                 }
@@ -494,6 +496,7 @@ impl Interactions {
                 let man = world.winter_mut().snowman.as_mut()?;
                 let spent = elapsed.min(remaining).min(SNOWMAN_SECONDS - man.seconds);
                 man.seconds += spent;
+                app.sculpt_stage = SculptStage::for_step(snowman_step(man.seconds));
                 let finished = man.seconds >= SNOWMAN_SECONDS || spent >= remaining;
                 if spent > 0.0 {
                     if finished {
@@ -543,7 +546,8 @@ impl Interactions {
                 })
                 .min_by(|a, b| a.1.total_cmp(&b.1));
             if let Some((index, _)) = target {
-                if pets[index].app.knock_back(ball.vx * 0.68, -310.0) && fastrand::bool() {
+                if pets[index].app.knock_back(ball.vx * BALL_KNOCKBACK, -310.0) && fastrand::bool()
+                {
                     retaliations.insert(pets[index].id, ball.owner);
                 }
                 return false;
@@ -620,6 +624,10 @@ pub struct WinterArt {
     fragments: Vec<OverlayImage>,
 }
 
+fn snowman_step(seconds: f32) -> u8 {
+    (seconds * f32::from(props::SNOWMAN_STEPS) / SNOWMAN_SECONDS) as u8
+}
+
 impl WinterArt {
     pub fn update(&mut self, objects: &WinterObjects, scale: u32) {
         if self.scale != scale {
@@ -634,7 +642,7 @@ impl WinterArt {
             self.man = None;
         }
         if let Some(man) = objects.snowman {
-            let step = (man.seconds * f32::from(props::SNOWMAN_STEPS) / SNOWMAN_SECONDS) as u8;
+            let step = snowman_step(man.seconds);
             if self.man.as_ref().is_none_or(|(old, _)| *old != step) {
                 self.man = Some((step, props::snowman(step, scale).into()));
             }
@@ -753,7 +761,8 @@ mod tests {
         assert!(interactions.balls.is_empty());
         assert_eq!(pets[0].app.pet.activity, Activity::Idle);
         assert_eq!(pets[1].app.pet.activity, Activity::Fall);
-        assert!(pets[1].app.pet.vx > 0.0 && pets[1].app.pet.vy < 0.0);
+        assert!((pets[1].app.pet.vx - 710.0 * 1.02).abs() < 0.01);
+        assert_eq!(pets[1].app.pet.vy, -310.0);
         assert_eq!(pets[2].app.pet.activity, Activity::Idle);
     }
 
@@ -803,7 +812,7 @@ mod tests {
         world.update_season(Some(2027));
         world.winter_mut().snowman = Some(Snowman {
             position: 0.50,
-            seconds: 591.0,
+            seconds: 449.0,
         });
         let mut pets = [pet(0, 464.0), pet(1, 534.0)];
         let mut interactions = Interactions::new();
@@ -824,13 +833,22 @@ mod tests {
                 panic!("the builder never reached the snowman")
             };
             assert!((3.0..=5.0).contains(&remaining));
+            assert_eq!(
+                pets[index].app.sculpt_stage,
+                if index == 0 {
+                    SculptStage::Middle
+                } else {
+                    SculptStage::Top
+                }
+            );
             interactions.tick(&mut pets, &mut world, 1000, 650.0, 1.25, true);
             assert_eq!(world.winter().snowman.unwrap().seconds, original + 1.25);
+            assert_eq!(pets[index].app.sculpt_stage, SculptStage::Top);
             pets[index].app.pet.start(Activity::Fall);
             interactions.tick(&mut pets, &mut world, 1000, 650.0, 0.5, true);
             assert_eq!(world.winter().snowman.unwrap().seconds, original + 1.25);
         }
-        assert_eq!(world.winter().snowman.unwrap().seconds, 593.5);
+        assert_eq!(world.winter().snowman.unwrap().seconds, 451.5);
     }
 
     #[test]

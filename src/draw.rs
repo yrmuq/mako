@@ -8,6 +8,7 @@ use tiny_skia::PremultipliedColorU8;
 use tiny_skia::{IntRect, Pixmap, PixmapPaint, Point, Rect, Transform};
 
 use crate::pack::{is_builtin, BonePoint, Face, Pack, Pose, Sprite};
+use crate::props::SculptStage;
 #[cfg(test)]
 use crate::sim::FEET_Y;
 use crate::sim::{FEET_X, SPRITE_H, SPRITE_W, WALL_STROKE};
@@ -31,7 +32,7 @@ pub enum Motion {
     Listen,
     PackSnow,
     ThrowSnow,
-    Sculpt,
+    Sculpt(SculptStage),
 }
 
 impl Motion {
@@ -49,7 +50,9 @@ impl Motion {
             Self::Listen => "listen",
             Self::PackSnow => "pack-snow",
             Self::ThrowSnow => "throw-snow",
-            Self::Sculpt => "sculpt",
+            Self::Sculpt(SculptStage::Base) => "sculpt",
+            Self::Sculpt(SculptStage::Middle) => "sculpt-middle",
+            Self::Sculpt(SculptStage::Top) => "sculpt-top",
         }
     }
 }
@@ -322,8 +325,10 @@ fn frame_bounds(scene: &Scene, parts: &[Part]) -> (i32, i32, i32, i32) {
         }
         _ => {}
     }
-    let dynamic_pose = matches!(scene.motion, Motion::Drag | Motion::Fall | Motion::Down)
-        || !scene.pose.is_empty();
+    let dynamic_pose = matches!(
+        scene.motion,
+        Motion::Drag | Motion::Fall | Motion::Down | Motion::Sculpt(_)
+    ) || !scene.pose.is_empty();
     if dynamic_pose {
         let bounds = surface_bounds();
         if scene.motion == Motion::Drag {
@@ -380,7 +385,10 @@ fn pet_parts(scene: &Scene, pack: &Pack) -> (Vec<Part>, Option<Point>) {
     } else {
         scene.cycle
     };
-    let pose = pack.pose_for(anim, cycle, degrees, face);
+    let mut pose = pack.pose_for(anim, cycle, degrees, face);
+    if matches!(scene.motion, Motion::Sculpt(_)) {
+        plant_sculpting_feet(pack, &mut pose);
+    }
     let (scale_x, scale_y) = scene.scales;
     let fit = (SPRITE_W / pack.canvas_w).min(SPRITE_H / pack.canvas_h);
     let (fit_x, fit_y) = (fit * scale_x, fit * scale_y);
@@ -500,8 +508,8 @@ fn pet_parts(scene: &Scene, pack: &Pack) -> (Vec<Part>, Option<Point>) {
             })
         })
         .collect();
-    if scene.grounded > 0.0 {
-        align_floor_contacts(&mut parts, pack, ground, scene.grounded);
+    if scene.grounded > 0.0 || matches!(scene.motion, Motion::Sculpt(_)) {
+        align_floor_contacts(&mut parts, pack, ground, scene);
     }
     if scene.sad {
         if let Some(eyes) = parts.iter().find(|part| {
@@ -587,7 +595,37 @@ fn floor_group(pack: &Pack, mut index: usize) -> usize {
     }
 }
 
-fn align_floor_contacts(parts: &mut [Part], pack: &Pack, floor: f32, amount: f32) {
+fn plant_sculpting_feet(pack: &Pack, pose: &mut Pose) {
+    let hip = |name| pack.bones.iter().position(|bone| bone.name == name);
+    let (Some(left), Some(right)) = (hip("left-leg"), hip("right-leg")) else {
+        return;
+    };
+    let standing = pack.pose("idle", 0.0);
+    let delta_x = (standing.placed[left].x + standing.placed[right].x
+        - pose.placed[left].x
+        - pose.placed[right].x)
+        * 0.5;
+    let delta_y = (standing.placed[left].y + standing.placed[right].y
+        - pose.placed[left].y
+        - pose.placed[right].y)
+        * 0.5;
+    // Bend the torso around the hips while the leg chains stay in the standing pose.
+    for (index, part) in pose.placed.iter_mut().enumerate() {
+        if floor_group(pack, index) >= 4 {
+            *part = standing.placed[index];
+        } else {
+            part.x += delta_x;
+            part.y += delta_y;
+        }
+    }
+    pose.bob = 0.0;
+}
+
+fn align_floor_contacts(parts: &mut [Part], pack: &Pack, floor: f32, scene: &Scene) {
+    let sculpting = matches!(scene.motion, Motion::Sculpt(_));
+    let amount = if sculpting { 1.0 } else { scene.grounded };
+    let direction = if scene.facing_left { -1.0 } else { 1.0 };
+    let stagger = floor * 0.13 * scene.tilt.sin() * amount * direction;
     let mut contacts = [f32::NEG_INFINITY; 6];
     for part in parts.iter() {
         if let Some(joint) = part.joint {
@@ -599,10 +637,17 @@ fn align_floor_contacts(parts: &mut [Part], pack: &Pack, floor: f32, amount: f32
     }
     for part in parts {
         if let Some(joint) = part.joint {
-            let edge = contacts[floor_group(pack, joint.bone)];
-            if edge.is_finite() {
+            let group = floor_group(pack, joint.bone);
+            let edge = contacts[group];
+            if edge.is_finite() && (!sculpting || group >= 4) {
                 let offset = (floor - edge).clamp(0.0, floor * 0.24) * amount;
-                part.transform = part.transform.post_translate(0.0, offset);
+                // Stagger the paws along the floor so the far paw extends past the near one.
+                let x = match group {
+                    4 => stagger * 0.35,
+                    5 => -stagger * 0.65,
+                    _ => 0.0,
+                };
+                part.transform = part.transform.post_translate(x, offset);
             }
         }
     }
@@ -709,7 +754,7 @@ fn pose_contact(pack: &Pack, pose: &Pose, motion: Motion, view: Transform) -> Op
         | Motion::Listen
         | Motion::PackSnow
         | Motion::ThrowSnow
-        | Motion::Sculpt => leg(bone),
+        | Motion::Sculpt(_) => leg(bone),
         Motion::Sit => bone == "torso" || leg(bone),
         Motion::Down
         | Motion::Rise
@@ -1069,6 +1114,81 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn both_legs_are_visible_when_lying_on_either_side() {
+        use crate::rag::Lying;
+
+        for pack in crate::pack::installed().into_iter().take(2) {
+            let mut scene = still();
+            scene.motion = Motion::Down;
+            scene.grounded = 1.0;
+            scene.scales = (0.5, 0.5);
+            for side in [Lying::Front, Lying::Back] {
+                scene.tilt = side.tilt();
+                scene.pose = pack.rise_degrees(side.rise_animation(), 0.0);
+                for facing_left in [false, true] {
+                    scene.facing_left = facing_left;
+                    let frame = render(&scene, &pack, 1);
+                    let mut visible = [0; 6];
+                    for y in frame.height.saturating_sub(20)..frame.height {
+                        for x in 0..frame.width {
+                            if let Some(joint) = pick(&frame.parts, x as f32 + 0.5, y as f32 + 0.5)
+                            {
+                                visible[floor_group(&pack, joint.bone)] += 1;
+                            }
+                        }
+                    }
+                    assert!(
+                        visible[4] > 10 && visible[5] > 10,
+                        "{} {side:?} with facing_left={facing_left}: {visible:?}",
+                        pack.id
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sculpture_changes_hand_height_with_both_feet_planted() {
+        for pack in crate::pack::installed().into_iter().take(2) {
+            let mut scene = still();
+            let floor = scene_size(scene.scales).1 as f32;
+            let mut standing_feet = None;
+            let mut hand_edges = Vec::new();
+            for stage in [SculptStage::Base, SculptStage::Middle, SculptStage::Top] {
+                scene.motion = Motion::Sculpt(stage);
+                let mut lowest_hand = f32::NEG_INFINITY;
+                for phase in [0.0, 0.22, 0.44, 0.7] {
+                    scene.cycle = phase;
+                    let (parts, _) = pet_parts(&scene, &pack);
+                    let mut contacts = [f32::NEG_INFINITY; 6];
+                    let mut feet = Vec::new();
+                    for part in &parts {
+                        let group = floor_group(&pack, part.joint.unwrap().bone);
+                        let Some(edge) = part.sprite.lower_edge(part.transform) else {
+                            continue;
+                        };
+                        contacts[group] = contacts[group].max(edge);
+                        if group >= 4 {
+                            feet.push(part.transform.tx);
+                        }
+                    }
+                    for edge in &contacts[4..] {
+                        assert!((edge - floor).abs() < 0.01, "{} {stage:?}", pack.id);
+                    }
+                    assert_eq!(&feet, standing_feet.get_or_insert_with(|| feet.clone()));
+                    lowest_hand = lowest_hand.max(contacts[2].max(contacts[3]));
+                }
+                hand_edges.push(lowest_hand);
+            }
+            assert!(
+                hand_edges.windows(2).all(|edges| edges[0] > edges[1] + 5.0),
+                "{} {hand_edges:?}",
+                pack.id
+            );
         }
     }
 

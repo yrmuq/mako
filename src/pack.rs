@@ -279,7 +279,14 @@ impl Pack {
         }
         if matches!(
             anim_name,
-            "climb" | "talk" | "listen" | "pack-snow" | "throw-snow" | "sculpt"
+            "climb"
+                | "talk"
+                | "listen"
+                | "pack-snow"
+                | "throw-snow"
+                | "sculpt"
+                | "sculpt-middle"
+                | "sculpt-top"
         ) && self.animation_length(anim_name).is_none()
         {
             if let Some(anim) = builtin_pack()
