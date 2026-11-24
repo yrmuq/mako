@@ -91,7 +91,16 @@ impl App {
         self.fit_room();
         if matches!(
             self.pet.activity,
-            Activity::Idle | Activity::Walk | Activity::Sit | Activity::Rise
+            Activity::Idle
+                | Activity::Walk
+                | Activity::Sit
+                | Activity::Rise
+                | Activity::Approach
+                | Activity::Talk
+                | Activity::Listen
+                | Activity::PackSnow
+                | Activity::ThrowSnow
+                | Activity::Sculpt
         ) {
             self.pet.y = self.room.floor;
             self.pet.x = self.pet.x.clamp(self.room.left, self.room.right);
@@ -131,7 +140,7 @@ impl App {
             self.pet.step(&self.room, dt, slippery);
             if self.pet.activity == Activity::Fall {
                 if let Some((tilt, phase)) = wall_pose {
-                    let degrees = self.pack.local_degrees(self.climb_animation(), phase);
+                    let degrees = self.pack.local_degrees("climb", phase);
                     self.rag.seed(&degrees);
                     self.rag.set_turn(tilt);
                     self.rag.live = true;
@@ -270,21 +279,7 @@ impl App {
         Scene {
             cycle: self.motion_phase(),
             blink: (self.clock >= self.blink_at).then_some(self.clock - self.blink_at),
-            motion: match self.pet.activity {
-                Activity::Walk => Motion::Walk,
-                Activity::Fall => Motion::Fall,
-                Activity::Drag => Motion::Drag,
-                Activity::Down => Motion::Down,
-                Activity::Rise => Motion::Rise,
-                Activity::Sit => Motion::Sit,
-                Activity::Idle => Motion::Idle,
-                Activity::ClimbWall => Motion::ClimbWall,
-                Activity::SlideWall => Motion::SlideWall,
-                Activity::ClimbCeiling => Motion::ClimbCeiling,
-                Activity::Parachute => Motion::Parachute,
-                Activity::Hand => Motion::Hand,
-                Activity::HandRelease => Motion::HandRelease,
-            },
+            motion: self.motion(),
             tilt,
             facing_left: self.pet.face < 0.0,
             scales: self.settings.scales(),
@@ -296,6 +291,29 @@ impl App {
                 Activity::HandRelease => 1.0 - smoothstep(self.pet.time / HAND_RELEASE),
                 _ => 0.0,
             },
+        }
+    }
+
+    fn motion(&self) -> Motion {
+        match self.pet.activity {
+            Activity::Walk | Activity::Approach => Motion::Walk,
+            Activity::Fall => Motion::Fall,
+            Activity::Drag => Motion::Drag,
+            Activity::Down => Motion::Down,
+            Activity::Rise => Motion::Rise,
+            Activity::Sit => Motion::Sit,
+            Activity::Idle => Motion::Idle,
+            Activity::ClimbWall => Motion::ClimbWall,
+            Activity::SlideWall => Motion::SlideWall,
+            Activity::ClimbCeiling => Motion::ClimbCeiling,
+            Activity::Parachute => Motion::Parachute,
+            Activity::Hand => Motion::Hand,
+            Activity::HandRelease => Motion::HandRelease,
+            Activity::Talk => Motion::Talk,
+            Activity::Listen => Motion::Listen,
+            Activity::PackSnow => Motion::PackSnow,
+            Activity::ThrowSnow => Motion::ThrowSnow,
+            Activity::Sculpt => Motion::Sculpt,
         }
     }
 
@@ -331,10 +349,16 @@ impl App {
 
     pub fn can_be_struck(&self) -> bool {
         !self.rag.live
-            && matches!(
-                self.pet.activity,
-                Activity::Idle | Activity::Walk | Activity::Sit
-            )
+            && (self.pet.activity.routine()
+                || matches!(
+                    self.pet.activity,
+                    Activity::Approach
+                        | Activity::Talk
+                        | Activity::Listen
+                        | Activity::PackSnow
+                        | Activity::ThrowSnow
+                        | Activity::Sculpt
+                ))
     }
 
     pub fn knock_back(&mut self, vx: f32, vy: f32) -> bool {
@@ -412,26 +436,23 @@ impl App {
     }
 
     fn motion_name(&self) -> &'static str {
-        match self.pet.activity {
-            Activity::Walk => "walk",
-            Activity::Fall => "fall",
-            Activity::Drag => "drag",
-            Activity::ClimbWall | Activity::ClimbCeiling | Activity::SlideWall => {
-                self.climb_animation()
-            }
-            Activity::Parachute if self.pack.animation_length("parachute").is_some() => "parachute",
-            Activity::Parachute | Activity::Hand => "drag",
-            Activity::Sit => "sit",
-            Activity::Idle | Activity::Down | Activity::Rise | Activity::HandRelease => "idle",
-        }
+        self.motion().animation(&self.pack)
     }
 
-    fn climb_animation(&self) -> &'static str {
-        if self.pack.animation_length("climb").is_some() {
-            "climb"
-        } else {
-            "walk"
-        }
+    pub fn height(&self) -> f32 {
+        self.feet_y()
+    }
+
+    pub fn snowball_position(&self) -> Point {
+        draw::held_snowball(&self.scene(), &self.pack).map_or_else(
+            || Point::from_xy(self.pet.x, self.pet.y - self.feet_y() * 0.45),
+            |hand| {
+                Point::from_xy(
+                    self.pet.x - self.feet_x() + hand.x,
+                    self.pet.y - self.feet_y() + hand.y,
+                )
+            },
+        )
     }
 
     fn motion_phase(&self) -> f32 {

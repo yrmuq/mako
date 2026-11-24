@@ -11,6 +11,7 @@ mod host_wayland;
 mod host_x11;
 mod i18n;
 mod icons;
+mod interactions;
 mod pack;
 mod place;
 mod props;
@@ -18,6 +19,7 @@ mod rag;
 mod season;
 mod sim;
 mod updates;
+mod world;
 mod x11_input;
 
 use std::env;

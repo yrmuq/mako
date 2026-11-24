@@ -4,6 +4,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::time::{Duration, Instant};
 
@@ -15,7 +16,7 @@ use slint::{
 
 use crate::about::LogoTaps;
 use crate::config::{InputMode, LanguagePref, Settings, ThemePref};
-use crate::game::Command;
+use crate::game::{Command, Startup};
 use crate::i18n::{Catalog, ID_NAME, ID_QUIT};
 use crate::icons;
 use crate::pack::{self, Pack};
@@ -31,6 +32,31 @@ thread_local! {
 const POPUP: &str = "mako-popup";
 const POPUP_DURATION: Duration = Duration::from_millis(180);
 const ICON: &[u8] = include_bytes!("../assets/icon.png");
+static TERMINATING: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn request_shutdown(_signal: libc::c_int) {
+    TERMINATING.store(true, Ordering::Relaxed);
+}
+
+fn watch_shutdown() -> Result<(), Fault> {
+    // The handler leaves scene I/O to the regular event-loop shutdown.
+    unsafe {
+        let mut action: libc::sigaction = std::mem::zeroed();
+        action.sa_sigaction = request_shutdown as *const () as libc::sighandler_t;
+        action.sa_flags = libc::SA_RESTART;
+        libc::sigemptyset(&mut action.sa_mask);
+        if libc::sigaction(libc::SIGTERM, &action, std::ptr::null_mut()) != 0 {
+            return Err(Fault::new(
+                "MAKO-UI-0005",
+                format!(
+                    "Could not register the shutdown handler: {}",
+                    std::io::Error::last_os_error()
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
 
 enum Action {
     Toggle(i32, i32),
@@ -48,6 +74,7 @@ enum Action {
     Language(i32),
     Theme(i32),
     InputMode(i32),
+    Precipitation(bool),
     Snow(i32, i32),
     Tiles(bool),
     Scale(f32),
@@ -363,6 +390,10 @@ impl Desktop {
                 };
                 self.apply_settings();
             }
+            Action::Precipitation(enabled) => {
+                self.config.precipitation = enabled;
+                self.apply_settings();
+            }
             Action::Snow(size, speed) => {
                 self.config.snow_size = size.clamp(25, 200) as u32;
                 self.config.snow_speed = speed.clamp(25, 200) as u32;
@@ -603,6 +634,11 @@ impl Desktop {
             connect!(on_language_selected, Action::Language(index), index);
             connect!(on_theme_selected, Action::Theme(index), index);
             connect!(on_input_mode_selected, Action::InputMode(index), index);
+            connect!(
+                on_precipitation_selected,
+                Action::Precipitation(enabled),
+                enabled
+            );
             connect!(on_snow_selected, Action::Snow(size, speed), size, speed);
             connect!(on_tiles_selected, Action::Tiles(value), value);
             connect!(on_size_selected, Action::Scale(value), value);
@@ -665,6 +701,7 @@ impl Desktop {
             InputMode::Background => 1,
             InputMode::Auto => 2,
         });
+        window.set_precipitation(self.config.precipitation);
         window.set_snow_size(self.config.snow_size as f32);
         window.set_snow_speed(self.config.snow_speed as f32);
         window.set_tiles(self.config.tiles);
@@ -728,7 +765,7 @@ impl Desktop {
     }
 
     fn translations(&self) -> ModelRc<SharedString> {
-        model((0..=51).map(|id| self.catalog.text(id).into()).collect())
+        model((0..=52).map(|id| self.catalog.text(id).into()).collect())
     }
 
     fn refresh_style(&self) {
@@ -839,6 +876,7 @@ fn tray_icon() -> Vec<ksni::Icon> {
 
 pub(crate) fn run(session: Session, open_settings: bool) -> Result<(), Fault> {
     use winit::platform::{wayland::EventLoopBuilderExtWayland, x11::EventLoopBuilderExtX11};
+    watch_shutdown()?;
     let mut event_loop = winit::event_loop::EventLoop::with_user_event();
     match session {
         Session::Wayland => {
@@ -875,6 +913,17 @@ pub(crate) fn run(session: Session, open_settings: bool) -> Result<(), Fault> {
         .find(|entry| entry.pack.id == config.chibi)
         .map(|entry| entry.pack.clone())
         .unwrap_or_else(Pack::builtin);
+    let world = crate::world::World::load(&first.id);
+    let packs: Vec<_> = world
+        .chibis()
+        .iter()
+        .filter_map(|id| {
+            entries
+                .iter()
+                .find(|entry| entry.pack.id == *id)
+                .map(|entry| entry.pack.clone())
+        })
+        .collect();
     let (tx, rx) = mpsc::channel();
     let (commands, game_rx) = mpsc::channel();
     let tray = Tray {
@@ -890,15 +939,19 @@ pub(crate) fn run(session: Session, open_settings: bool) -> Result<(), Fault> {
         }
     };
     let show = open_settings || tray.is_none();
-    let counts = HashMap::from([(first.id.clone(), 1)]);
+    let mut counts = HashMap::new();
+    for pack in &packs {
+        *counts.entry(pack.id.clone()).or_default() += 1;
+    }
+    let startup = Startup { packs, world };
     let game_config = config.clone();
     let game_tx = tx.clone();
     let host = std::thread::spawn(move || {
         let result = match session {
             Session::Wayland => {
-                crate::host_wayland::run(game_config, first, game_rx, fullscreen_rx)
+                crate::host_wayland::run(game_config, startup, game_rx, fullscreen_rx)
             }
-            Session::X11 => crate::host_x11::run(game_config, first, game_rx),
+            Session::X11 => crate::host_x11::run(game_config, startup, game_rx),
         };
         let _ = game_tx.send(Action::HostFinished(result));
     });
@@ -937,6 +990,9 @@ pub(crate) fn run(session: Session, open_settings: bool) -> Result<(), Fault> {
                 let mut state = state.borrow_mut();
                 while let Ok(action) = rx.try_recv() {
                     state.handle(action);
+                }
+                if TERMINATING.load(Ordering::Relaxed) {
+                    state.handle(Action::Quit);
                 }
                 state.tick();
             }

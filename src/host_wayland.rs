@@ -23,8 +23,7 @@ use wayland_client::{Connection, QueueHandle};
 
 use crate::app::{startup_room, Pointer};
 use crate::config::Settings;
-use crate::game::{Command, Game};
-use crate::pack::Pack;
+use crate::game::{Command, Game, Startup};
 use crate::place::FullscreenOutput;
 use crate::Fault;
 use std::sync::mpsc::Receiver;
@@ -33,7 +32,7 @@ const BTN_LEFT: u32 = 0x110;
 
 pub fn run(
     settings: Settings,
-    first: Pack,
+    startup: Startup,
     commands: Receiver<Command>,
     fullscreen_updates: Receiver<Vec<FullscreenOutput>>,
 ) -> Result<(), Fault> {
@@ -93,7 +92,7 @@ pub fn run(
         needs_full_damage: true,
         layer,
         compositor,
-        game: Game::new(startup_room(1920.0, 1080.0), settings, first, commands),
+        game: Game::new(startup_room(1920.0, 1080.0), settings, startup, commands),
         pointer: None,
         configured: false,
         last_time: 0,
@@ -262,22 +261,22 @@ impl Host {
             .canvas(&mut self.pool)
             .expect("MAKO-WL-0003: Could not draw a frame");
         canvas.fill(0);
-        for (x, y, flake) in self.game.snow.images() {
+        for (x, y, image) in self.game.overlay_images() {
             blit(
                 canvas,
                 buf_w as u32,
                 buf_h as u32,
-                &flake.bgra,
-                flake.size,
-                flake.size,
+                &image.bgra,
+                image.width,
+                image.height,
                 x,
                 y,
             );
             next.push(PxRect {
                 x,
                 y,
-                w: flake.size as i32,
-                h: flake.size as i32,
+                w: image.width as i32,
+                h: image.height as i32,
             });
         }
         for pet in &mut self.game.pets {
@@ -317,7 +316,7 @@ impl Host {
             surface.damage_buffer(damage.x, damage.y, damage.w, damage.h);
         }
         self.needs_full_damage = false;
-        self.frame_requested = !next.is_empty();
+        self.frame_requested = !next.is_empty() || self.game.snow.active();
         if self.frame_requested {
             surface.frame(qh, surface.clone());
         }
@@ -392,7 +391,7 @@ impl CompositorHandler for Host {
         if let Some((width, _)) = self.screen {
             self.game.tick_snow(dt, width);
         }
-        self.game.tick(dt.clamp(0.0, 0.05));
+        self.game.tick(dt);
         self.present(qh);
     }
 

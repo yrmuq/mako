@@ -10,7 +10,7 @@ use tiny_skia::{Pixmap, PixmapPaint, Point, Rect, Transform};
 use crate::pack::{BonePoint, Face, Pack, Pose, Sprite, BUILTIN_ID};
 #[cfg(test)]
 use crate::sim::FEET_Y;
-use crate::sim::{FEET_X, SPRITE_H, SPRITE_W};
+use crate::sim::{FEET_X, SPRITE_H, SPRITE_W, WALL_STROKE};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Motion {
@@ -27,6 +27,31 @@ pub enum Motion {
     Parachute,
     Hand,
     HandRelease,
+    Talk,
+    Listen,
+    PackSnow,
+    ThrowSnow,
+    Sculpt,
+}
+
+impl Motion {
+    pub fn animation(self, pack: &Pack) -> &'static str {
+        match self {
+            Self::Walk => "walk",
+            Self::Fall => "fall",
+            Self::Drag => "drag",
+            Self::Down | Self::Rise | Self::Idle | Self::HandRelease => "idle",
+            Self::Sit => "sit",
+            Self::ClimbWall | Self::ClimbCeiling | Self::SlideWall => "climb",
+            Self::Parachute if pack.animation_length("parachute").is_some() => "parachute",
+            Self::Parachute | Self::Hand => "drag",
+            Self::Talk => "talk",
+            Self::Listen => "listen",
+            Self::PackSnow => "pack-snow",
+            Self::ThrowSnow => "throw-snow",
+            Self::Sculpt => "sculpt",
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -235,7 +260,9 @@ fn frame_bounds(scene: &Scene, parts: &[Part]) -> (i32, i32, i32, i32) {
             let (left, _, right, bottom) = surface_bounds();
             return (left, 0, right, bottom);
         }
-        Motion::Parachute | Motion::Hand | Motion::HandRelease => return surface_bounds(),
+        Motion::Parachute | Motion::Hand | Motion::HandRelease | Motion::ThrowSnow => {
+            return surface_bounds();
+        }
         _ => {}
     }
     let dynamic_pose = matches!(scene.motion, Motion::Drag | Motion::Fall | Motion::Down)
@@ -281,24 +308,7 @@ fn part_bounds(parts: &[Part], width: i32, height: i32, pad: i32) -> (i32, i32, 
 }
 
 fn pet_parts(scene: &Scene, pack: &Pack) -> (Vec<Part>, Option<Point>) {
-    let anim = match scene.motion {
-        Motion::Walk => "walk",
-        Motion::Fall => "fall",
-        Motion::Drag => "drag",
-        Motion::Down | Motion::Rise => "idle",
-        Motion::Sit => "sit",
-        Motion::Idle => "idle",
-        Motion::ClimbWall | Motion::ClimbCeiling | Motion::SlideWall => {
-            if pack.animation_length("climb").is_some() {
-                "climb"
-            } else {
-                "walk"
-            }
-        }
-        Motion::Parachute if pack.animation_length("parachute").is_some() => "parachute",
-        Motion::Parachute | Motion::Hand => "drag",
-        Motion::HandRelease => "idle",
-    };
+    let anim = scene.motion.animation(pack);
     let face = match scene.motion {
         Motion::Fall | Motion::Drag | Motion::SlideWall => Face::Shock,
         _ => scene.blink.map_or(Face::Neutral, Face::Blink),
@@ -354,6 +364,8 @@ fn pet_parts(scene: &Scene, pack: &Pack) -> (Vec<Part>, Option<Point>) {
     } else {
         Transform::identity()
     };
+    let wall_grips = (scene.motion == Motion::ClimbWall)
+        .then(|| wall_grips(pack, &pose, view, width, scene.cycle, scale_x));
     let view = view.post_concat(mirror);
     let mut order: Vec<usize> = (0..pack.bones.len()).collect();
     order.sort_by_key(|&index| {
@@ -373,11 +385,42 @@ fn pet_parts(scene: &Scene, pack: &Pack) -> (Vec<Part>, Option<Point>) {
     let mut parts: Vec<_> = order
         .into_iter()
         .filter_map(|index| {
-            let (sprite, local) = posed_sprite(pack, &pose, index)?;
+            let (sprite, mut local) = posed_sprite(pack, &pose, index)?;
             let bone = &pack.bones[index];
+            if scene.motion == Motion::Talk
+                && bone.name == "mouth"
+                && pack.sprite("mouth-talk").is_none()
+            {
+                let time = cycle.rem_euclid(0.88);
+                if (0.08..0.24).contains(&time)
+                    || (0.34..0.49).contains(&time)
+                    || (0.58..0.75).contains(&time)
+                {
+                    local = Transform::from_scale(1.0, 1.85)
+                        .post_translate(0.0, -(sprite.image.height() as f32) * 0.19)
+                        .post_concat(local);
+                }
+            }
+            let mut transform = local.post_concat(view);
+            if let Some(grips) = &wall_grips {
+                if let Some((_, stretch, pivot)) = grips
+                    .iter()
+                    .flatten()
+                    .find(|(root, _, _)| index == *root || bone.parent == Some(*root))
+                {
+                    let pivot = if scene.facing_left {
+                        width - pivot
+                    } else {
+                        *pivot
+                    };
+                    transform = transform
+                        .post_scale(*stretch, 1.0)
+                        .post_translate(pivot * (1.0 - stretch), 0.0);
+                }
+            }
             Some(Part {
                 sprite: sprite.clone(),
-                transform: local.post_concat(view),
+                transform,
                 joint: Some(BonePoint {
                     bone: index,
                     local: Point::from_xy(sprite.x - bone.pivot_x, sprite.y - bone.pivot_y),
@@ -391,12 +434,91 @@ fn pet_parts(scene: &Scene, pack: &Pack) -> (Vec<Part>, Option<Point>) {
     if scene.effect_amount > 0.0 {
         add_prop(scene, &mut parts, centre_x);
     }
+    if (scene.motion == Motion::PackSnow && scene.cycle > 0.25)
+        || (scene.motion == Motion::ThrowSnow && scene.cycle < crate::interactions::RELEASE_AT)
+    {
+        if let Some(centre) = snowball_centre(&parts, pack) {
+            let sprite = crate::props::snowball().clone();
+            let size = (28.0 * scale_x.min(scale_y)).max(4.0);
+            let scale = size / sprite.image.width() as f32;
+            parts.push(Part {
+                sprite,
+                transform: Transform::from_scale(scale, scale)
+                    .post_translate(centre.x - size * 0.5, centre.y - size * 0.5),
+                joint: None,
+            });
+        }
+    }
     let anchor = scene.anchor.map(|anchor| {
         let mut position = anchor.in_pose(&pose);
         view.map_point(&mut position);
         position
     });
     (parts, anchor)
+}
+
+pub fn held_snowball(scene: &Scene, pack: &Pack) -> Option<Point> {
+    let (parts, _) = pet_parts(scene, pack);
+    snowball_centre(&parts, pack)
+}
+
+fn snowball_centre(parts: &[Part], pack: &Pack) -> Option<Point> {
+    let hand = parts.iter().find(|part| {
+        part.joint
+            .is_some_and(|joint| pack.bones[joint.bone].name == "left-hand")
+    })?;
+    let mut centre = Point::from_xy(
+        hand.sprite.image.width() as f32 * 0.5,
+        hand.sprite.image.height() as f32 * 0.9,
+    );
+    hand.transform.map_point(&mut centre);
+    Some(centre)
+}
+
+fn wall_grips(
+    pack: &Pack,
+    pose: &Pose,
+    view: Transform,
+    wall: f32,
+    time: f32,
+    scale: f32,
+) -> [Option<(usize, f32, f32)>; 4] {
+    let stroke = time / WALL_STROKE;
+    let left_leads = (stroke.floor() as u32).is_multiple_of(2);
+    let reach = (stroke.fract() / 0.22).clamp(0.0, 1.0);
+    let contact = reach * reach * (3.0 - 2.0 * reach);
+    let as_y = Transform::from_row(0.0, 1.0, 1.0, 0.0, 0.0, 0.0);
+    std::array::from_fn(|i| {
+        let (root, tip) = [
+            ("left-hand", "left-hand"),
+            ("right-hand", "right-hand"),
+            ("left-leg", "left-foot"),
+            ("right-leg", "right-foot"),
+        ][i];
+        let limb = pack.bones.iter().position(|bone| bone.name == root)?;
+        let (sprite, local) = pack
+            .bones
+            .iter()
+            .position(|bone| bone.name == tip)
+            .and_then(|tip| posed_sprite(pack, pose, tip))
+            .or_else(|| posed_sprite(pack, pose, limb))?;
+        let contact_x = sprite.lower_edge(local.post_concat(view).post_concat(as_y))?;
+        let mut pivot = Point::from_xy(pose.placed[limb].x, pose.placed[limb].y);
+        view.map_point(&mut pivot);
+        let lead = matches!(i, 0 | 3) == left_leads;
+        let gap = if lead {
+            26.0 * (1.0 - contact)
+        } else {
+            26.0 * contact
+        };
+        let end = wall + 0.5 - gap * scale;
+        let reach = contact_x - pivot.x;
+        if reach <= 2.0 * scale {
+            return None;
+        }
+        let stretch = ((end - pivot.x) / reach).clamp(0.4, 2.7);
+        Some((limb, stretch, pivot.x))
+    })
 }
 
 fn add_prop(scene: &Scene, parts: &mut Vec<Part>, centre_x: f32) {
@@ -447,7 +569,14 @@ fn leg(name: &str) -> bool {
 
 fn pose_contact(pack: &Pack, pose: &Pose, motion: Motion, view: Transform) -> Option<f32> {
     let supports = |bone: &str| match motion {
-        Motion::Idle | Motion::Walk | Motion::HandRelease => leg(bone),
+        Motion::Idle
+        | Motion::Walk
+        | Motion::HandRelease
+        | Motion::Talk
+        | Motion::Listen
+        | Motion::PackSnow
+        | Motion::ThrowSnow
+        | Motion::Sculpt => leg(bone),
         Motion::Sit => bone == "torso" || leg(bone),
         Motion::Down
         | Motion::Rise
@@ -559,7 +688,7 @@ mod tests {
             let mut scene = still();
             scene.motion = motion;
             scene.tilt = match motion {
-                Motion::ClimbWall => -std::f32::consts::FRAC_PI_2,
+                Motion::ClimbWall => -0.19,
                 Motion::ClimbCeiling => std::f32::consts::PI,
                 _ => 0.0,
             };

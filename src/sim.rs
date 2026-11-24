@@ -13,6 +13,8 @@ const SIT_FOR: f32 = 7.0;
 pub const REFERENCE_RISE: f32 = 1.5;
 const WALK_SPEED: f32 = 78.0;
 const CLIMB_SPEED: f32 = 115.0;
+pub const WALL_STROKE: f32 = 0.48;
+const WALL_SPEED: f32 = 72.0;
 const SLIDE_SPEED: f32 = 235.0;
 const PARACHUTE_SPEED: f32 = 125.0;
 const HAND_SPEED: f32 = 375.0;
@@ -37,6 +39,18 @@ pub enum Activity {
     Parachute,
     Hand,
     HandRelease,
+    Approach,
+    Talk,
+    Listen,
+    PackSnow,
+    ThrowSnow,
+    Sculpt,
+}
+
+impl Activity {
+    pub fn routine(self) -> bool {
+        matches!(self, Self::Idle | Self::Walk | Self::Sit)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -119,6 +133,16 @@ impl Pet {
                     self.start(Activity::Idle);
                 }
             }
+            Activity::Approach
+            | Activity::Talk
+            | Activity::Listen
+            | Activity::PackSnow
+            | Activity::ThrowSnow
+            | Activity::Sculpt => {
+                self.y = room.floor;
+                self.vx = 0.0;
+                self.vy = 0.0;
+            }
             Activity::Idle => {
                 self.vx = 0.0;
                 self.vy = 0.0;
@@ -188,7 +212,8 @@ impl Pet {
         match self.activity {
             Activity::Fall => (self.vx / 800.0).clamp(-0.35, 0.35),
             Activity::Drag => (self.vx / 1200.0).clamp(-0.25, 0.25),
-            Activity::ClimbWall | Activity::SlideWall => -std::f32::consts::FRAC_PI_2,
+            Activity::ClimbWall => -0.19,
+            Activity::SlideWall => -0.32,
             Activity::ClimbCeiling => std::f32::consts::PI,
             Activity::Hand if self.time < HAND_REACH => {
                 std::f32::consts::PI * (1.0 - self.time / HAND_REACH)
@@ -197,7 +222,7 @@ impl Pet {
         }
     }
 
-    fn start(&mut self, activity: Activity) {
+    pub fn start(&mut self, activity: Activity) {
         self.activity = activity;
         self.time = 0.0;
         self.phase = 0.0;
@@ -206,6 +231,17 @@ impl Pet {
             Activity::Rise => self.rise_for = 1.0 + fastrand::f32(),
             _ => {}
         }
+    }
+
+    pub fn approach(&mut self, room: &Room, x: f32, dt: f32) -> bool {
+        let goal = x.clamp(room.left, room.right);
+        let distance = goal - self.x;
+        if distance.abs() > 0.01 {
+            self.face = distance.signum();
+        }
+        let travel = WALK_SPEED * dt;
+        self.x += distance.clamp(-travel, travel);
+        distance.abs() <= travel
     }
 
     fn fall(&mut self, room: &Room, dt: f32) {
@@ -320,7 +356,7 @@ impl Pet {
     }
 
     fn reach_wall(&mut self, room: &Room, roll: u8) -> bool {
-        if roll < 20 && room.floor - room.ceiling > 40.0 {
+        if roll < 10 && room.floor - room.ceiling > 40.0 {
             self.vx = 0.0;
             self.vy = 0.0;
             self.start(Activity::ClimbWall);
@@ -342,7 +378,13 @@ impl Pet {
         } else {
             room.ceiling
         };
-        self.y = (self.y - CLIMB_SPEED * dt).max(limit);
+        let advance = |time: f32| {
+            let strokes = time.max(0.0) / WALL_STROKE;
+            let pull = ((strokes.fract() - 0.22) / 0.78).clamp(0.0, 1.0);
+            WALL_SPEED * WALL_STROKE * (strokes.floor() + pull * pull * (3.0 - 2.0 * pull))
+        };
+        let distance = advance(self.time) - advance(self.time - dt);
+        self.y = (self.y - distance).max(limit);
         if self.y <= limit {
             self.leave_wall(slippery, fastrand::u8(0..100));
         }
@@ -434,7 +476,7 @@ mod tests {
         pet.x = room.right;
         pet.face = 1.0;
         pet.become_for_test(Activity::Walk);
-        assert!(!pet.reach_wall(&room, 20));
+        assert!(!pet.reach_wall(&room, 10));
         assert_eq!(pet.face, -1.0);
         assert!((pet.x - room.right).abs() < 0.1);
     }
@@ -624,8 +666,10 @@ mod tests {
             let mut pet = Pet::on_floor(&room, None);
             pet.x = room.left;
             pet.face = -1.0;
-            assert!(pet.reach_wall(&room, 19));
-            pet.climb_wall(&room, 0.05, slippery);
+            assert!(pet.reach_wall(&room, 9));
+            for _ in 0..6 {
+                pet.step(&room, 0.05, slippery);
+            }
             assert!(pet.y < room.floor);
             pet.y = if slippery { 150.0 } else { room.ceiling };
             pet.leave_wall(slippery, roll);

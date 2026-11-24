@@ -216,13 +216,13 @@ impl Pack {
                 *slot = *value;
             }
             bob = 0.0;
-            if self.id == BUILTIN_ID {
-                for (leg, foot, thigh, shin) in KNEES {
-                    let foot_index = self.names[foot];
-                    if angle[foot_index].abs() > 0.1 {
-                        image[self.names[leg]] = thigh.into();
-                        image[foot_index] = shin.into();
-                    }
+        }
+        if self.id == BUILTIN_ID && (degrees.is_some() || anim_name == "climb") {
+            for (leg, foot, thigh, shin) in KNEES {
+                let foot_index = self.names[foot];
+                if angle[foot_index].abs() > 0.1 {
+                    image[self.names[leg]] = thigh.into();
+                    image[foot_index] = shin.into();
                 }
             }
         }
@@ -270,6 +270,19 @@ impl Pack {
                 &mut image,
                 &mut bob,
             );
+        }
+        if matches!(
+            anim_name,
+            "climb" | "talk" | "listen" | "pack-snow" | "throw-snow" | "sculpt"
+        ) && self.animation_length(anim_name).is_none()
+        {
+            if let Some(anim) = builtin_pack()
+                .anims
+                .iter()
+                .find(|anim| anim.name == anim_name)
+            {
+                apply_rotations(anim, local_time(time, anim.length), &self.names, &mut angle);
+            }
         }
         (angle, image, bob)
     }
@@ -463,6 +476,7 @@ fn load_builtin() -> Result<Pack, Fault> {
     for (name, bytes) in BUILTIN_IMAGES {
         images.insert((*name).to_string(), crop(decode(bytes)?)?);
     }
+    images.insert("mouth-talk".into(), crate::props::talk_mouth());
     let mut pack = assemble(
         BUILTIN_ID,
         include_str!("../assets/bear-girl/heart"),

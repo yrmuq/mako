@@ -47,6 +47,7 @@ pub struct Settings {
     pub language: LanguagePref,
     pub theme: ThemePref,
     pub input_mode: InputMode,
+    pub precipitation: bool,
     pub snow_size: u32,
     pub snow_speed: u32,
     pub tiles: bool,
@@ -63,6 +64,7 @@ impl Default for Settings {
             language: LanguagePref::System,
             theme: ThemePref::System,
             input_mode: InputMode::Main,
+            precipitation: true,
             snow_size: 100,
             snow_speed: 100,
             tiles: false,
@@ -122,6 +124,7 @@ impl Settings {
                 }
                 "snow_size" => settings.snow_size = proportion(value),
                 "snow_speed" => settings.snow_speed = proportion(value),
+                "precipitation" => settings.precipitation = value != "false",
                 "tiles" => settings.tiles = value == "true",
                 "chibi" if crate::pack::safe_id(value) => settings.chibi = value.to_string(),
                 "scale" => settings.scale = value.to_owned(),
@@ -160,7 +163,7 @@ impl Settings {
             )
         })?;
         let body = format!(
-            "language = \"{}\"\ntheme = \"{}\"\ninput_mode = \"{}\"\ntiles = {}\nchibi = \"{}\"\nscale = \"{}\"\nwidth = {}\nheight = {}\nfavorites = \"{}\"\nsnow_size = {}\nsnow_speed = {}\n",
+            "language = \"{}\"\ntheme = \"{}\"\ninput_mode = \"{}\"\ntiles = {}\nchibi = \"{}\"\nscale = \"{}\"\nwidth = {}\nheight = {}\nfavorites = \"{}\"\nprecipitation = {}\nsnow_size = {}\nsnow_speed = {}\n",
             match self.language {
                 LanguagePref::System => "system",
                 LanguagePref::En => "en",
@@ -182,6 +185,7 @@ impl Settings {
             self.width,
             self.height,
             self.favorites.join(","),
+            self.precipitation,
             self.snow_size,
             self.snow_speed,
         );

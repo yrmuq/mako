@@ -7,6 +7,23 @@ use tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, Stroke, Transform};
 
 use crate::pack::{crop, Sprite};
 
+pub fn talk_mouth() -> Sprite {
+    let mut image = Pixmap::new(576, 864).expect("mouth artwork dimensions");
+    paint(&mut image, [78, 37, 45, 255], None, |p| {
+        p.move_to(339.0, 372.0);
+        p.quad_to(349.0, 367.5, 360.0, 372.0);
+        p.cubic_to(359.0, 388.0, 340.0, 388.0, 339.0, 372.0);
+        p.close();
+    });
+    paint(&mut image, [219, 122, 130, 255], None, |p| {
+        p.move_to(343.0, 379.0);
+        p.quad_to(349.5, 376.0, 356.0, 379.0);
+        p.quad_to(349.5, 385.0, 343.0, 379.0);
+        p.close();
+    });
+    crop(image).expect("mouth artwork")
+}
+
 pub fn parachute() -> &'static Sprite {
     static SPRITE: OnceLock<Sprite> = OnceLock::new();
     SPRITE.get_or_init(|| {
@@ -106,4 +123,173 @@ fn paint(
             None,
         );
     }
+}
+
+pub fn snowball() -> &'static Sprite {
+    static SPRITE: OnceLock<Sprite> = OnceLock::new();
+    SPRITE.get_or_init(|| crop(ball_image(1)).expect("snowball artwork"))
+}
+
+pub fn ball_image(scale: u32) -> Pixmap {
+    let mut image = Pixmap::new(12 * scale, 12 * scale).expect("snowball dimensions");
+    let s = scale as f32;
+    snow_oval(&mut image, (0.4 * s, 0.4 * s, 11.2 * s, 11.2 * s));
+    image
+}
+
+pub fn pile(servings: u8, scale: u32) -> Pixmap {
+    let width = 27 + u32::from(servings) * 5;
+    let height = 8 + u32::from(servings) * 3;
+    let mut image = Pixmap::new(width * scale, height * scale).expect("snow pile dimensions");
+    let (w, h, s) = (width as f32, height as f32, scale as f32);
+    let mut path = PathBuilder::new();
+    path.move_to(s, (h - 1.0) * s);
+    path.cubic_to(
+        w * 0.14 * s,
+        h * 0.8 * s,
+        w * 0.15 * s,
+        h * 0.33 * s,
+        w * 0.38 * s,
+        h * 0.33 * s,
+    );
+    path.cubic_to(
+        w * 0.48 * s,
+        -h * 0.13 * s,
+        w * 0.69 * s,
+        h * 0.04 * s,
+        w * 0.78 * s,
+        h * 0.42 * s,
+    );
+    path.quad_to(w * 0.89 * s, h * 0.43 * s, (w - 1.0) * s, (h - 1.0) * s);
+    path.close();
+    let path = path.finish().unwrap();
+    let paint = Paint {
+        shader: tiny_skia::LinearGradient::new(
+            tiny_skia::Point::from_xy(0.0, 0.0),
+            tiny_skia::Point::from_xy(0.0, h * s),
+            vec![
+                tiny_skia::GradientStop::new(0.0, tiny_skia::Color::from_rgba8(251, 253, 255, 255)),
+                tiny_skia::GradientStop::new(1.0, tiny_skia::Color::from_rgba8(144, 185, 212, 255)),
+            ],
+            tiny_skia::SpreadMode::Pad,
+            Transform::identity(),
+        )
+        .unwrap(),
+        ..Paint::default()
+    };
+    image.fill_path(
+        &path,
+        &paint,
+        FillRule::Winding,
+        Transform::identity(),
+        None,
+    );
+    image
+}
+
+pub const SNOWMAN_STEPS: u8 = 20;
+
+pub fn snowman(step: u8, scale: u32) -> Pixmap {
+    let mut image = Pixmap::new(78 * scale, 126 * scale).expect("snowman dimensions");
+    let progress = f32::from(step) / f32::from(SNOWMAN_STEPS);
+    let s = scale as f32;
+    let mut ball = |x: f32, bottom: f32, width: f32, height: f32| {
+        snow_oval(
+            &mut image,
+            (
+                (x - width * 0.5) * s,
+                (bottom - height) * s,
+                width * s,
+                height * s,
+            ),
+        );
+    };
+    let base = 10.0 + 48.0 * (progress / 0.39).min(1.0);
+    ball(39.0, 126.0, base, base * 0.85);
+    if progress > 0.39 {
+        let middle = 8.0 + 36.0 * ((progress - 0.39) / 0.32).min(1.0);
+        ball(39.0, 88.0, middle, middle * 0.90);
+    }
+    if progress > 0.71 {
+        let head = 7.0 + 25.0 * ((progress - 0.71) / 0.22).min(1.0);
+        ball(39.0, 56.0, head, head * 0.94);
+    }
+    if progress >= 0.90 {
+        paint(&mut image, [103, 78, 57, 255], Some(2.5 * s), |p| {
+            p.move_to(22.0 * s, 72.0 * s);
+            p.line_to(4.0 * s, 58.0 * s);
+            p.move_to(56.0 * s, 72.0 * s);
+            p.line_to(73.0 * s, 55.0 * s);
+            p.move_to(65.0 * s, 63.0 * s);
+            p.line_to(65.0 * s, 53.0 * s);
+        });
+    }
+    if step == SNOWMAN_STEPS {
+        let charcoal = [61, 73, 89, 255];
+        paint(&mut image, [202, 80, 112, 255], Some(6.0 * s), |p| {
+            p.move_to(28.0 * s, 57.0 * s);
+            p.quad_to(40.0 * s, 62.0 * s, 51.0 * s, 56.0 * s);
+            p.line_to(53.0 * s, 68.0 * s);
+        });
+        paint(&mut image, charcoal, Some(4.0 * s), |p| {
+            for (x, y) in [
+                (34.0, 40.0),
+                (44.0, 40.0),
+                (39.0, 68.0),
+                (39.0, 78.0),
+                (39.0, 89.0),
+            ] {
+                p.move_to(x * s, y * s);
+                p.line_to((x + 0.45) * s, y * s);
+            }
+            p.move_to(22.0 * s, 30.0 * s);
+            p.line_to(56.0 * s, 30.0 * s);
+        });
+        paint(&mut image, charcoal, None, |p| {
+            p.move_to(28.0 * s, 29.0 * s);
+            p.line_to(30.0 * s, 16.0 * s);
+            p.line_to(49.0 * s, 16.0 * s);
+            p.line_to(50.0 * s, 29.0 * s);
+            p.close();
+        });
+        paint(&mut image, [232, 137, 73, 255], None, |p| {
+            p.move_to(39.0 * s, 43.0 * s);
+            p.line_to(51.0 * s, 46.0 * s);
+            p.line_to(39.0 * s, 49.0 * s);
+            p.close();
+        });
+    }
+    image
+}
+
+fn snow_oval(image: &mut Pixmap, (x, y, w, h): (f32, f32, f32, f32)) {
+    let bounds = tiny_skia::Rect::from_xywh(x, y, w, h).expect("snowball oval");
+    let mut path = PathBuilder::new();
+    path.push_oval(bounds);
+    let path = path.finish().unwrap();
+    let paint = Paint {
+        shader: tiny_skia::LinearGradient::new(
+            tiny_skia::Point::from_xy(x, y + h * 0.12),
+            tiny_skia::Point::from_xy(x + w * 0.65, y + h),
+            vec![
+                tiny_skia::GradientStop::new(0.0, tiny_skia::Color::from_rgba8(253, 254, 255, 255)),
+                tiny_skia::GradientStop::new(
+                    0.55,
+                    tiny_skia::Color::from_rgba8(226, 242, 253, 255),
+                ),
+                tiny_skia::GradientStop::new(1.0, tiny_skia::Color::from_rgba8(150, 186, 214, 255)),
+            ],
+            tiny_skia::SpreadMode::Pad,
+            Transform::identity(),
+        )
+        .unwrap(),
+        ..Paint::default()
+    };
+    image.fill_path(
+        &path,
+        &paint,
+        FillRule::Winding,
+        Transform::identity(),
+        None,
+    );
 }

@@ -3,8 +3,10 @@
 - `src/sim.rs` — pet activity, floor and screen edges. No display code.
 - `src/pack.rs` — chibi archive (`heart`, `body`, `anima`, `creature`, `pocket`). Bear girl is the builtin pack and the fallback skeleton and animations.
 - `src/draw.rs` — draws the skeleton, builds face thumbnails and picks body parts using their rendered transforms.
-- `src/props.rs` — parachute and hand artwork for ceiling exits.
+- `src/props.rs` — ceiling exit artwork, the talking mouth and snow object artwork.
 - `src/season.rs` — local-date seasons and snowfall.
+- `src/interactions.rs` — conversations, snowball physics, snowman work and ground snow rendering.
+- `src/world.rs` — atomic scene save, active chibi roster and persistent snow objects.
 - `src/rag.rs` — suspended and free ragdoll motion, joint limits and landing pose.
 - `src/i18n.rs` — `languages/*.ini` catalogs and system-language detection.
 - `src/config.rs` — XDG preferences for appearance and tray order.

@@ -8,9 +8,11 @@ use tiny_skia::{Point, Rect};
 
 use crate::app::{App, Pointer};
 use crate::config::{InputMode, Settings};
+use crate::interactions::{Interactions, WinterArt};
 use crate::pack::Pack;
-use crate::season::Snow;
+use crate::season::{OverlayImage, Snow};
 use crate::sim::Room;
+use crate::world::World;
 
 pub enum Command {
     Add(Pack),
@@ -23,6 +25,22 @@ pub struct Instance {
     pub app: App,
 }
 
+pub struct Startup {
+    pub packs: Vec<Pack>,
+    pub world: World,
+}
+
+#[cfg(test)]
+impl Startup {
+    pub fn test(pack: Pack) -> Self {
+        let world = World::test(&pack.id);
+        Self {
+            packs: vec![pack],
+            world,
+        }
+    }
+}
+
 struct CollisionBody {
     bounds: Option<Rect>,
     velocity: Option<Point>,
@@ -32,6 +50,10 @@ struct CollisionBody {
 pub struct Game {
     pub pets: Vec<Instance>,
     pub snow: Snow,
+    world: World,
+    interactions: Interactions,
+    winter_art: WinterArt,
+    width: u32,
     room: Room,
     settings: Settings,
     commands: Receiver<Command>,
@@ -44,10 +66,20 @@ pub struct Game {
 }
 
 impl Game {
-    pub fn new(room: Room, settings: Settings, first: Pack, commands: Receiver<Command>) -> Self {
+    pub fn new(
+        room: Room,
+        settings: Settings,
+        startup: Startup,
+        commands: Receiver<Command>,
+    ) -> Self {
+        let snow = Snow::new();
         let mut game = Self {
             pets: Vec::new(),
-            snow: Snow::new(),
+            snow,
+            world: startup.world,
+            interactions: Interactions::new(),
+            winter_art: WinterArt::default(),
+            width: 0,
             room,
             settings,
             commands,
@@ -58,7 +90,10 @@ impl Game {
             contacts: HashSet::new(),
             exit: false,
         };
-        game.add(first);
+        game.world.update_season(game.snow.winter_year());
+        for pack in startup.packs {
+            game.add(pack);
+        }
         game
     }
 
@@ -84,13 +119,17 @@ impl Game {
         let mut changed = false;
         loop {
             match self.commands.try_recv() {
-                Ok(Command::Add(pack)) => self.add(pack),
+                Ok(Command::Add(pack)) => {
+                    self.world.add(pack.id.clone());
+                    self.add(pack);
+                }
                 Ok(Command::Remove(id)) => {
                     if let Some(index) = self.pets.iter().rposition(|pet| pet.app.pack_id() == id) {
                         if self.held == Some(self.pets[index].id) {
                             self.held = None;
                         }
                         self.pets.remove(index);
+                        self.world.remove(&id);
                     }
                 }
                 Ok(Command::Appearance(settings)) => {
@@ -99,7 +138,10 @@ impl Game {
                         pet.app.apply_settings(self.settings.clone());
                     }
                 }
-                Err(std::sync::mpsc::TryRecvError::Empty) => return changed,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    self.world.checkpoint();
+                    return changed;
+                }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     self.exit = true;
                     return changed;
@@ -147,8 +189,26 @@ impl Game {
     }
 
     pub fn tick_snow(&mut self, dt: f32, width: u32) {
+        self.width = width;
         let floor = (self.room.floor - self.bottom).max(0.0) as u32;
         self.snow.tick(dt, width, floor, self.scale, &self.settings);
+        if self.world.update_season(self.snow.winter_year()) {
+            self.interactions.clear_winter(&mut self.pets);
+        }
+        if self.snow.active() {
+            self.winter_art.update(self.world.winter(), self.scale);
+        }
+    }
+
+    pub fn overlay_images(&self) -> impl Iterator<Item = (i32, i32, &OverlayImage)> + Clone {
+        let floor = (self.room.floor - self.bottom).max(0.0);
+        self.snow
+            .images()
+            .chain(
+                self.winter_art
+                    .images(self.world.winter(), self.width, floor),
+            )
+            .chain(self.interactions.ball_images(&self.winter_art))
     }
 
     pub fn tick(&mut self, dt: f32) {
@@ -177,6 +237,18 @@ impl Game {
             self.resolve_collisions(&before);
         } else {
             self.contacts.clear();
+        }
+        let floor = (self.room.floor - self.bottom).max(0.0);
+        self.interactions.tick(
+            &mut self.pets,
+            &mut self.world,
+            self.width,
+            floor,
+            dt,
+            self.snow.active(),
+        );
+        if self.snow.active() && self.width != 0 {
+            self.winter_art.update(self.world.winter(), self.scale);
         }
     }
 
@@ -268,7 +340,7 @@ impl Game {
 }
 
 // Track when all four overlapping-edge constraints hold during the same tick.
-fn swept_contact(a: Rect, next_a: Rect, b: Rect, next_b: Rect) -> Option<f32> {
+pub(crate) fn swept_contact(a: Rect, next_a: Rect, b: Rect, next_b: Rect) -> Option<f32> {
     let mut enter = 0.0_f32;
     let mut exit = 1.0_f32;
     for (start, end) in [
@@ -305,7 +377,7 @@ mod tests {
         let mut game = Game::new(
             crate::startup_room(1400.0, 800.0),
             settings,
-            Pack::builtin(),
+            Startup::test(Pack::builtin()),
             rx,
         );
         for _ in 0..3 {
@@ -344,7 +416,7 @@ mod tests {
         let mut game = Game::new(
             crate::startup_room(1400.0, 800.0),
             settings,
-            Pack::builtin(),
+            Startup::test(Pack::builtin()),
             rx,
         );
         game.add(Pack::builtin());
@@ -371,7 +443,7 @@ mod tests {
         let mut game = Game::new(
             crate::startup_room(1400.0, 800.0),
             Settings::default(),
-            Pack::builtin(),
+            Startup::test(Pack::builtin()),
             rx,
         );
         game.add(Pack::builtin());
@@ -427,7 +499,7 @@ mod tests {
         let mut game = Game::new(
             crate::startup_room(1000.0, 700.0),
             Settings::default(),
-            first,
+            Startup::test(first),
             rx,
         );
         tx.send(Command::Add(Pack::builtin())).unwrap();

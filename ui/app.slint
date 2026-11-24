@@ -1,7 +1,7 @@
 // Copyright (C) 2026 yrmuq
 // SPDX-License-Identifier: GPL-3.0-only
 
-import { Button, ComboBox, Palette, ScrollView, Slider, SpinBox } from "std-widgets.slint";
+import { Button, CheckBox, ComboBox, Palette, ScrollView, Slider, SpinBox } from "std-widgets.slint";
 
 export global Translations {
     in-out property <[string]> strings;
@@ -410,6 +410,7 @@ export component SettingsWindow inherits Window {
     in-out property <int> language-index;
     in-out property <int> theme-index;
     in-out property <int> input-mode-index;
+    in-out property <bool> precipitation: true;
     in-out property <float> snow-size: 100;
     in-out property <float> snow-speed: 100;
     in-out property <bool> tiles;
@@ -433,6 +434,7 @@ export component SettingsWindow inherits Window {
     callback language-selected(int);
     callback theme-selected(int);
     callback input-mode-selected(int);
+    callback precipitation-selected(bool);
     callback snow-selected(int, int);
     callback tiles-selected(bool);
     callback size-selected(float);
@@ -479,6 +481,13 @@ export component SettingsWindow inherits Window {
                     model: [Translations.tr(47), Translations.tr(48), Translations.tr(49)];
                     current-index <=> root.input-mode-index;
                     selected => { root.input-mode-selected(self.current-index); }
+                }
+            }
+            SettingRow {
+                label: Translations.tr(52);
+                CheckBox {
+                    checked <=> root.precipitation;
+                    toggled => { root.precipitation-selected(self.checked); }
                 }
             }
             SettingRow {

@@ -18,9 +18,8 @@ use x11rb::wrapper::ConnectionExt as _;
 
 use crate::app::{startup_room, App, Pointer};
 use crate::config::Settings;
-use crate::game::{Command, Game};
-use crate::pack::Pack;
-use crate::season::Snow;
+use crate::game::{Command, Game, Startup};
+use crate::season::OverlayImage;
 use crate::x11_input::{Atoms, Fullscreen, InputRegion};
 use crate::Fault;
 
@@ -30,13 +29,13 @@ struct PetWindow {
     input: InputRegion,
 }
 
-struct SnowWindow {
+struct OverlayWindow {
     id: u32,
     gc: u32,
-    shown: Vec<(i16, i16, u16)>,
+    shown: Vec<Rectangle>,
 }
 
-pub fn run(settings: Settings, first: Pack, commands: Receiver<Command>) -> Result<(), Fault> {
+pub fn run(settings: Settings, startup: Startup, commands: Receiver<Command>) -> Result<(), Fault> {
     let (conn, screen_number) = x11rb::connect(None).map_err(|error| {
         Fault::new(
             "MAKO-X11-0001",
@@ -55,7 +54,7 @@ pub fn run(settings: Settings, first: Pack, commands: Receiver<Command>) -> Resu
             screen.height_in_pixels as f32,
         )
     });
-    let mut game = Game::new(room, settings, first, commands);
+    let mut game = Game::new(room, settings, startup, commands);
     let mut fullscreen = Fullscreen::new(Atoms::new(&conn).map_err(x11)?.reply().map_err(x11)?);
     let mut windows: HashMap<u64, PetWindow> = HashMap::new();
     let mut snow = None;
@@ -83,9 +82,9 @@ pub fn run(settings: Settings, first: Pack, commands: Receiver<Command>) -> Resu
         game.tick_snow(dt, u32::from(screen.width_in_pixels));
         game.tick(dt);
         last = now;
-        if game.snow.active() {
+        if game.overlay_images().next().is_some() {
             if snow.is_none() {
-                let window = SnowWindow::create(&conn, screen, visual, depth, colormap)?;
+                let window = OverlayWindow::create(&conn, screen, visual, depth, colormap)?;
                 if let Some(sibling) = game.pets.iter().find_map(|pet| windows.get(&pet.id)) {
                     conn.configure_window(
                         window.id,
@@ -98,7 +97,7 @@ pub fn run(settings: Settings, first: Pack, commands: Receiver<Command>) -> Resu
                 snow = Some(window);
             }
             if let Some(window) = &mut snow {
-                window.present(&conn, &game.snow)?;
+                window.present(&conn, game.overlay_images())?;
             }
         } else if let Some(window) = snow.take() {
             conn.free_gc(window.gc).map_err(x11)?;
@@ -235,7 +234,7 @@ fn handle(game: &mut Game, fullscreen: &Fullscreen, event: Event) {
     }
 }
 
-impl SnowWindow {
+impl OverlayWindow {
     fn create(
         conn: &impl Connection,
         screen: &Screen,
@@ -277,41 +276,28 @@ impl SnowWindow {
         })
     }
 
-    fn present(&mut self, conn: &impl Connection, snow: &Snow) -> Result<(), Fault> {
-        for (x, y, size) in self.shown.drain(..) {
-            conn.clear_area(false, self.id, x, y, size, size)
+    fn present<'a>(
+        &mut self,
+        conn: &impl Connection,
+        images: impl Iterator<Item = (i32, i32, &'a OverlayImage)> + Clone,
+    ) -> Result<(), Fault> {
+        for rect in self.shown.drain(..) {
+            conn.clear_area(false, self.id, rect.x, rect.y, rect.width, rect.height)
                 .map_err(x11)?;
         }
-        let visible = snow
-            .images()
-            .filter(|(_, y, flake)| *y > -(flake.size as i32));
-        // Constrain the ARGB overlay to snow pixels even when X11 compositing is off.
-        let mut ink = Vec::new();
-        for (x, y, flake) in visible.clone() {
-            let size = flake.size as usize;
-            for (row, pixels) in flake.bgra.chunks_exact(size * 4).enumerate() {
-                let mut start = None;
-                for (column, alpha) in pixels
-                    .iter()
-                    .skip(3)
-                    .step_by(4)
-                    .copied()
-                    .chain(std::iter::once(0))
-                    .enumerate()
-                {
-                    if alpha != 0 {
-                        start.get_or_insert(column);
-                    } else if let Some(from) = start.take() {
-                        ink.push(Rectangle {
-                            x: (x + from as i32) as i16,
-                            y: (y + row as i32) as i16,
-                            width: (column - from) as u16,
-                            height: 1,
-                        });
-                    }
-                }
-            }
-        }
+        let visible = images.filter(|(_, y, image)| *y > -(image.height as i32));
+        // Shape visible ink on displays where X11 compositing is disabled.
+        let ink: Vec<_> = visible
+            .clone()
+            .flat_map(|(x, y, image)| {
+                image.ink.iter().map(move |&(left, top, width)| Rectangle {
+                    x: x as i16 + left,
+                    y: y as i16 + top,
+                    width,
+                    height: 1,
+                })
+            })
+            .collect();
         conn.shape_rectangles(
             SO::SET,
             SK::BOUNDING,
@@ -322,22 +308,27 @@ impl SnowWindow {
             &ink,
         )
         .map_err(x11)?;
-        for (x, y, flake) in visible {
-            let size = flake.size as u16;
+        for (x, y, image) in visible {
+            let rect = Rectangle {
+                x: x as i16,
+                y: y as i16,
+                width: image.width as u16,
+                height: image.height as u16,
+            };
             conn.put_image(
                 ImageFormat::Z_PIXMAP,
                 self.id,
                 self.gc,
-                size,
-                size,
-                x as i16,
-                y as i16,
+                rect.width,
+                rect.height,
+                rect.x,
+                rect.y,
                 0,
                 32,
-                &flake.bgra,
+                &image.bgra,
             )
             .map_err(x11)?;
-            self.shown.push((x as i16, y as i16, size));
+            self.shown.push(rect);
         }
         Ok(())
     }

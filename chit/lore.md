@@ -14,6 +14,9 @@
 - A knocked-down chibi can still strike others during flight or a skid and becomes vulnerable again once it has finished standing up.
 - Auto mode passes pointer input through the scene only on the monitor showing a fullscreen window. Other monitors remain interactive.
 - Both snowy seasons make the walls slippery. A chibi cannot reach the ceiling while the walls are slippery.
+- The precipitation preference affects falling particles. Keep the seasonal ground objects and interactions available when precipitation is disabled.
+- Restore the active chibi roster on the floor, including an empty roster. Carry ground snow objects and snowman progress between launches in the same snow season and discard them after February 28, even if mako was closed.
+- Count snowman progress only during active sculpting. All chibis share the same unfinished snowman.
 
 ## External Compatibility Constraints
 
