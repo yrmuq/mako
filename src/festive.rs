@@ -126,7 +126,7 @@ fn month_first(format: &[u8]) -> bool {
         let field = bytes.find(|byte| !matches!(byte, b'E' | b'O' | b'-' | b'_' | b'0'));
         match field {
             Some(b'm' | b'b' | b'B' | b'h' | b'D') => return true,
-            Some(b'd' | b'e' | b'F') => return false,
+            Some(b'd' | b'e' | b'F' | b'Y' | b'y' | b'C' | b'G' | b'g') => return false,
             _ => {}
         }
     }
@@ -635,6 +635,7 @@ mod tests {
     fn the_tree_and_its_decorations_follow_the_local_calendar() {
         assert!(month_first(b"%m/%d/%Y"));
         assert!(!month_first(b"%Od.%Om.%Y"));
+        assert!(!month_first(b"%Y-%m-%d"));
         for (dates, end, star, gift) in [
             (Dates::for_format(true), 10, 18, 25),
             (Dates::for_format(false), 15, 24, 31),
