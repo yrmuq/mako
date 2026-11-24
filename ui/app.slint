@@ -409,6 +409,9 @@ export component SettingsWindow inherits Window {
     in-out property <bool> dev-open;
     in-out property <int> language-index;
     in-out property <int> theme-index;
+    in-out property <int> input-mode-index;
+    in-out property <float> snow-size: 100;
+    in-out property <float> snow-speed: 100;
     in-out property <bool> tiles;
     in property <float> size-minimum;
     in property <float> size-maximum;
@@ -429,6 +432,8 @@ export component SettingsWindow inherits Window {
     private property <int> drag-to: -1;
     callback language-selected(int);
     callback theme-selected(int);
+    callback input-mode-selected(int);
+    callback snow-selected(int, int);
     callback tiles-selected(bool);
     callback size-selected(float);
     callback proportions-selected(int, int);
@@ -466,6 +471,14 @@ export component SettingsWindow inherits Window {
                     model: [Translations.tr(4), Translations.tr(7), Translations.tr(8)];
                     current-index <=> root.theme-index;
                     selected => { root.theme-selected(self.current-index); }
+                }
+            }
+            SettingRow {
+                label: Translations.tr(46);
+                ComboBox {
+                    model: [Translations.tr(47), Translations.tr(48), Translations.tr(49)];
+                    current-index <=> root.input-mode-index;
+                    selected => { root.input-mode-selected(self.current-index); }
                 }
             }
             SettingRow {
@@ -615,6 +628,24 @@ export component SettingsWindow inherits Window {
                     minimum: 25; maximum: 200; value <=> root.height-value;
                     edited(value) => { root.proportions-selected(root.width-value, value); }
                 }
+            }
+            SettingRow {
+                label: Translations.tr(50);
+                Slider {
+                    minimum: 25; maximum: 200; step: 1;
+                    value <=> root.snow-size;
+                    changed(value) => { root.snow-selected(Math.round(value), Math.round(root.snow-speed)); }
+                }
+                Text { text: "\{Math.round(root.snow-size)}%"; width: 56px; vertical-alignment: center; color: Breeze.fg; }
+            }
+            SettingRow {
+                label: Translations.tr(51);
+                Slider {
+                    minimum: 25; maximum: 200; step: 1;
+                    value <=> root.snow-speed;
+                    changed(value) => { root.snow-selected(Math.round(root.snow-size), Math.round(value)); }
+                }
+                Text { text: "\{Math.round(root.snow-speed)}%"; width: 56px; vertical-alignment: center; color: Breeze.fg; }
             }
         }
     }

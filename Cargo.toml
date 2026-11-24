@@ -13,13 +13,14 @@ ksni = { version = "0.3", default-features = false, features = ["async-io", "blo
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"] }
 slint = { version = "1.18", default-features = false, features = ["std", "compat-1-18", "backend-winit", "renderer-femtovg", "unstable-winit-030", "accessibility"] }
 rustix = { version = "1", features = ["event"] }
+libc = "0.2"
 zbus = "5"
 tempfile = "3"
 png = "0.17.16"
 smithay-client-toolkit = { version = "=0.19.2", default-features = false }
 tiny-skia = "0.11.4"
 wayland-client = "=0.31.11"
-x11rb = "=0.13.2"
+x11rb = { version = "=0.13.2", features = ["shape", "randr", "extra-traits"] }
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
 
 ureq = { version = "3", default-features = false, features = ["rustls", "platform-verifier"] }

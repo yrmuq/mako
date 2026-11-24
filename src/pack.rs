@@ -1070,7 +1070,7 @@ fn decode(bytes: &[u8]) -> Result<Pixmap, Fault> {
     Ok(pixmap)
 }
 
-fn crop(pixmap: Pixmap) -> Result<Sprite, Fault> {
+pub(crate) fn crop(pixmap: Pixmap) -> Result<Sprite, Fault> {
     let width = pixmap.width();
     let height = pixmap.height();
     let pixels = pixmap.pixels();

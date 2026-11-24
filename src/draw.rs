@@ -21,6 +21,12 @@ pub enum Motion {
     Down,
     Rise,
     Sit,
+    ClimbWall,
+    SlideWall,
+    ClimbCeiling,
+    Parachute,
+    Hand,
+    HandRelease,
 }
 
 #[derive(Clone, Debug)]
@@ -33,6 +39,7 @@ pub struct Scene {
     pub scales: (f32, f32),
     pub pose: Vec<f32>,
     pub anchor: Option<BonePoint>,
+    pub effect_amount: f32,
 }
 
 pub struct Frame {
@@ -209,10 +216,32 @@ pub fn render(scene: &Scene, pack: &Pack, scale: u32) -> Frame {
 
 fn frame_bounds(scene: &Scene, parts: &[Part]) -> (i32, i32, i32, i32) {
     let (logical_w, logical_h) = scene_size(scene.scales);
+    let extra_pad = matches!(
+        scene.motion,
+        Motion::Parachute | Motion::Hand | Motion::HandRelease
+    );
+    let pad = logical_w.max(logical_h) as i32 * if extra_pad { 2 } else { 1 };
+    let surface_bounds = || part_bounds(parts, logical_w as i32, logical_h as i32, pad);
+    match scene.motion {
+        Motion::ClimbWall | Motion::SlideWall => {
+            let (left, top, right, bottom) = surface_bounds();
+            return if scene.facing_left {
+                (0, top, right, bottom)
+            } else {
+                (left, top, logical_w as i32, bottom)
+            };
+        }
+        Motion::ClimbCeiling => {
+            let (left, _, right, bottom) = surface_bounds();
+            return (left, 0, right, bottom);
+        }
+        Motion::Parachute | Motion::Hand | Motion::HandRelease => return surface_bounds(),
+        _ => {}
+    }
     let dynamic_pose = matches!(scene.motion, Motion::Drag | Motion::Fall | Motion::Down)
         || !scene.pose.is_empty();
     if dynamic_pose {
-        let bounds = part_bounds(parts, logical_w as i32, logical_h as i32);
+        let bounds = surface_bounds();
         if scene.motion == Motion::Drag {
             bounds
         } else {
@@ -224,7 +253,7 @@ fn frame_bounds(scene: &Scene, parts: &[Part]) -> (i32, i32, i32, i32) {
     }
 }
 
-fn part_bounds(parts: &[Part], width: i32, height: i32) -> (i32, i32, i32, i32) {
+fn part_bounds(parts: &[Part], width: i32, height: i32, pad: i32) -> (i32, i32, i32, i32) {
     let (mut left, mut top, mut right, mut bottom) = (0, 0, width, height);
     for part in parts {
         let w = part.sprite.image.width() as f32;
@@ -243,7 +272,6 @@ fn part_bounds(parts: &[Part], width: i32, height: i32) -> (i32, i32, i32, i32) 
             bottom = bottom.max(corner.y.ceil() as i32);
         }
     }
-    let pad = width.max(height);
     (
         left.max(-pad),
         top.max(-pad),
@@ -260,9 +288,19 @@ fn pet_parts(scene: &Scene, pack: &Pack) -> (Vec<Part>, Option<Point>) {
         Motion::Down | Motion::Rise => "idle",
         Motion::Sit => "sit",
         Motion::Idle => "idle",
+        Motion::ClimbWall | Motion::ClimbCeiling | Motion::SlideWall => {
+            if pack.animation_length("climb").is_some() {
+                "climb"
+            } else {
+                "walk"
+            }
+        }
+        Motion::Parachute if pack.animation_length("parachute").is_some() => "parachute",
+        Motion::Parachute | Motion::Hand => "drag",
+        Motion::HandRelease => "idle",
     };
     let face = match scene.motion {
-        Motion::Fall | Motion::Drag => Face::Shock,
+        Motion::Fall | Motion::Drag | Motion::SlideWall => Face::Shock,
         _ => scene.blink.map_or(Face::Neutral, Face::Blink),
     };
     let degrees = (!scene.pose.is_empty()).then_some(scene.pose.as_slice());
@@ -290,11 +328,28 @@ fn pet_parts(scene: &Scene, pack: &Pack) -> (Vec<Part>, Option<Point>) {
         }
         motion => motion,
     };
-    if let Some(contact) = pose_contact(pack, &pose, support_motion, view) {
-        view = view.post_translate(0.0, ground - contact);
+    let width = scene_size(scene.scales).0 as f32;
+    match scene.motion {
+        Motion::ClimbWall | Motion::SlideWall => {
+            let as_y = Transform::from_row(0.0, 1.0, 1.0, 0.0, 0.0, 0.0);
+            if let Some(contact) = pose_contact(pack, &pose, Motion::Fall, view.post_concat(as_y)) {
+                // Subpixel overlap keeps the antialiased edge against the wall.
+                view = view.post_translate(width - contact + 0.5, 0.0);
+            }
+        }
+        Motion::ClimbCeiling => {
+            let flip = Transform::from_scale(1.0, -1.0);
+            if let Some(contact) = pose_contact(pack, &pose, Motion::Fall, view.post_concat(flip)) {
+                view = view.post_translate(0.0, contact - 0.5);
+            }
+        }
+        _ => {
+            if let Some(contact) = pose_contact(pack, &pose, support_motion, view) {
+                view = view.post_translate(0.0, ground - contact);
+            }
+        }
     }
     let mirror = if scene.facing_left {
-        let width = scene_size(scene.scales).0 as f32;
         Transform::from_row(-1.0, 0.0, 0.0, 1.0, width, 0.0)
     } else {
         Transform::identity()
@@ -333,6 +388,9 @@ fn pet_parts(scene: &Scene, pack: &Pack) -> (Vec<Part>, Option<Point>) {
     if scene.motion == Motion::Sit {
         parts.extend(laptop_part(ground, scene.scales, mirror, pack));
     }
+    if scene.effect_amount > 0.0 {
+        add_prop(scene, &mut parts, centre_x);
+    }
     let anchor = scene.anchor.map(|anchor| {
         let mut position = anchor.in_pose(&pose);
         view.map_point(&mut position);
@@ -341,15 +399,64 @@ fn pet_parts(scene: &Scene, pack: &Pack) -> (Vec<Part>, Option<Point>) {
     (parts, anchor)
 }
 
+fn add_prop(scene: &Scene, parts: &mut Vec<Part>, centre_x: f32) {
+    let top = parts
+        .iter()
+        .filter_map(|part| {
+            part.sprite
+                .lower_edge(part.transform.post_scale(1.0, -1.0))
+                .map(|edge| -edge)
+        })
+        .min_by(f32::total_cmp)
+        .unwrap_or(0.0);
+    let (sprite, scale_x, scale_y, contact, behind) = if scene.motion == Motion::Parachute {
+        let open = 0.25 + scene.effect_amount * 0.75;
+        (
+            crate::props::parachute(),
+            scene.scales.0 * 1.24 * open,
+            scene.scales.1 * 0.87 * open,
+            top + 26.0 * scene.scales.1,
+            true,
+        )
+    } else {
+        (
+            crate::props::hand(),
+            scene.scales.0 * 0.9,
+            scene.scales.1,
+            top + 36.0 * scene.scales.1 - (1.0 - scene.effect_amount) * 190.0 * scene.scales.1,
+            false,
+        )
+    };
+    let x = centre_x - sprite.image.width() as f32 * scale_x * 0.5;
+    let y = contact - sprite.image.height() as f32 * scale_y;
+    let prop = Part {
+        sprite: sprite.clone(),
+        transform: Transform::from_scale(scale_x, scale_y).post_translate(x, y),
+        joint: None,
+    };
+    if behind {
+        parts.insert(0, prop);
+    } else {
+        parts.push(prop);
+    }
+}
+
 fn leg(name: &str) -> bool {
     name.ends_with("leg") || name.ends_with("foot")
 }
 
 fn pose_contact(pack: &Pack, pose: &Pose, motion: Motion, view: Transform) -> Option<f32> {
     let supports = |bone: &str| match motion {
-        Motion::Idle | Motion::Walk => leg(bone),
+        Motion::Idle | Motion::Walk | Motion::HandRelease => leg(bone),
         Motion::Sit => bone == "torso" || leg(bone),
-        Motion::Down | Motion::Rise | Motion::Fall => true,
+        Motion::Down
+        | Motion::Rise
+        | Motion::Fall
+        | Motion::ClimbWall
+        | Motion::ClimbCeiling
+        | Motion::SlideWall
+        | Motion::Parachute
+        | Motion::Hand => true,
         Motion::Drag => false,
     };
     pack.bones
@@ -412,7 +519,7 @@ fn laptop_part(
     })
 }
 
-fn rgba_to_bgra(data: &[u8]) -> Vec<u8> {
+pub(crate) fn rgba_to_bgra(data: &[u8]) -> Vec<u8> {
     let mut out = vec![0; data.len()];
     let (src_chunks, _) = data.as_chunks::<4>();
     let (dst_chunks, _) = out.as_chunks_mut::<4>();
@@ -436,6 +543,67 @@ mod tests {
             scales: (1.0, 1.0),
             pose: Vec::new(),
             anchor: None,
+            effect_amount: 0.0,
+        }
+    }
+
+    #[test]
+    fn climbing_and_the_ceiling_exits_draw_visible_art() {
+        let pack = Pack::builtin();
+        for motion in [
+            Motion::ClimbWall,
+            Motion::ClimbCeiling,
+            Motion::Parachute,
+            Motion::Hand,
+        ] {
+            let mut scene = still();
+            scene.motion = motion;
+            scene.tilt = match motion {
+                Motion::ClimbWall => -std::f32::consts::FRAC_PI_2,
+                Motion::ClimbCeiling => std::f32::consts::PI,
+                _ => 0.0,
+            };
+            scene.effect_amount = f32::from(matches!(motion, Motion::Parachute | Motion::Hand));
+            let frame = render(&scene, &pack, 1);
+            assert!(frame
+                .bgra
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .any(|pixel| pixel[3] > 0));
+            match motion {
+                Motion::ClimbWall => {
+                    assert!(frame
+                        .bgra
+                        .chunks_exact(frame.width as usize * 4)
+                        .any(|row| *row.last().unwrap() > 0));
+                    scene.facing_left = true;
+                    let frame = render(&scene, &pack, 1);
+                    assert!(frame
+                        .bgra
+                        .chunks_exact(frame.width as usize * 4)
+                        .any(|row| row[3] > 0));
+                }
+                Motion::ClimbCeiling => {
+                    assert!(frame.bgra[..frame.width as usize * 4]
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .any(|pixel| pixel[3] > 0));
+                }
+                Motion::Parachute | Motion::Hand => {
+                    assert_eq!(
+                        frame
+                            .parts
+                            .iter()
+                            .filter(|part| part.joint.is_none())
+                            .count(),
+                        1
+                    );
+                    assert!(frame.shift.1 < 0);
+                }
+                _ => unreachable!(),
+            }
         }
     }
 
@@ -519,7 +687,8 @@ mod tests {
                 assert!(frame.width > 2 * SPRITE_W as u32);
                 let width = (frame.width / 2) as i32;
                 let height = (frame.height / 2) as i32;
-                let (left, top, right, _) = part_bounds(&frame.parts, width, height);
+                let (left, top, right, _) =
+                    part_bounds(&frame.parts, width, height, width.max(height));
                 assert_eq!((left, top, right), (0, 0, width));
                 assert_eq!(frame.shift.1 + height, FEET_Y as i32);
                 let lowest_ink = frame

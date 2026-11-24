@@ -10,9 +10,14 @@ pub const FEET_Y: f32 = SPRITE_H;
 const IDLE_FOR: f32 = 1.6;
 const FALLBACK_WALK_CYCLE: f32 = 0.7;
 const SIT_FOR: f32 = 7.0;
-const DOWN_FOR: f32 = 2.6;
-pub const RISE_FOR: f32 = 1.5;
+pub const REFERENCE_RISE: f32 = 1.5;
 const WALK_SPEED: f32 = 78.0;
+const CLIMB_SPEED: f32 = 115.0;
+const SLIDE_SPEED: f32 = 235.0;
+const PARACHUTE_SPEED: f32 = 125.0;
+const HAND_SPEED: f32 = 375.0;
+pub const HAND_REACH: f32 = 0.4;
+pub const HAND_RELEASE: f32 = 0.3;
 const BOUNCE_RESTITUTION: f32 = 0.62;
 const MIN_REBOUND_SPEED: f32 = 120.0;
 pub const GRAVITY: f32 = 2400.0;
@@ -26,6 +31,12 @@ pub enum Activity {
     Down,
     Rise,
     Sit,
+    ClimbWall,
+    SlideWall,
+    ClimbCeiling,
+    Parachute,
+    Hand,
+    HandRelease,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,6 +51,7 @@ pub struct Room {
     pub left: f32,
     pub right: f32,
     pub floor: f32,
+    pub ceiling: f32,
 }
 
 #[derive(Clone, Debug)]
@@ -52,9 +64,11 @@ pub struct Pet {
     pub activity: Activity,
     pub time: f32,
     pub phase: f32,
+    pub rise_for: f32,
     landing: Landing,
     walk_cycle: f32,
     walk_for: f32,
+    down_for: f32,
 }
 
 impl Pet {
@@ -69,13 +83,15 @@ impl Pet {
             activity: Activity::Idle,
             time: 0.0,
             phase: 0.0,
+            rise_for: REFERENCE_RISE,
             landing: Landing::Drop,
             walk_cycle,
             walk_for: 4.0 * walk_cycle,
+            down_for: 2.6,
         }
     }
 
-    pub fn step(&mut self, room: &Room, dt: f32) {
+    pub fn step(&mut self, room: &Room, dt: f32, slippery: bool) {
         let dt = dt.clamp(0.0, 0.05);
         self.phase += dt;
         if self.activity != Activity::Drag {
@@ -86,12 +102,23 @@ impl Pet {
             Activity::Fall => self.fall(room, dt),
             Activity::Down => self.down(room, dt),
             Activity::Rise => {
-                if self.time >= RISE_FOR {
+                if self.time >= self.rise_for {
                     self.start(Activity::Idle);
                 }
             }
             Activity::Sit => self.sit(room),
             Activity::Walk => self.walk(room, dt),
+            Activity::ClimbWall => self.climb_wall(room, dt, slippery),
+            Activity::SlideWall => self.slide_wall(room, dt),
+            Activity::ClimbCeiling => self.climb_ceiling(room, dt),
+            Activity::Parachute => self.parachute(room, dt),
+            Activity::Hand => self.hand(room, dt),
+            Activity::HandRelease => {
+                self.y = room.floor;
+                if self.time >= HAND_RELEASE {
+                    self.start(Activity::Idle);
+                }
+            }
             Activity::Idle => {
                 self.vx = 0.0;
                 self.vy = 0.0;
@@ -161,6 +188,11 @@ impl Pet {
         match self.activity {
             Activity::Fall => (self.vx / 800.0).clamp(-0.35, 0.35),
             Activity::Drag => (self.vx / 1200.0).clamp(-0.25, 0.25),
+            Activity::ClimbWall | Activity::SlideWall => -std::f32::consts::FRAC_PI_2,
+            Activity::ClimbCeiling => std::f32::consts::PI,
+            Activity::Hand if self.time < HAND_REACH => {
+                std::f32::consts::PI * (1.0 - self.time / HAND_REACH)
+            }
             _ => 0.0,
         }
     }
@@ -169,6 +201,11 @@ impl Pet {
         self.activity = activity;
         self.time = 0.0;
         self.phase = 0.0;
+        match activity {
+            Activity::Down => self.down_for = 1.5 + 1.5 * fastrand::f32(),
+            Activity::Rise => self.rise_for = 1.0 + fastrand::f32(),
+            _ => {}
+        }
     }
 
     fn fall(&mut self, room: &Room, dt: f32) {
@@ -248,10 +285,10 @@ impl Pet {
             self.vx = 0.0;
         }
         // The lie only finishes after the skid. Standing up mid-slide looks like a pop.
-        if self.vx.abs() > 36.0 {
-            self.time = self.time.min(0.4);
+        if self.vx != 0.0 {
+            self.time = 0.0;
         }
-        if self.time >= DOWN_FOR && self.vx == 0.0 {
+        if self.time >= self.down_for {
             self.start(Activity::Rise);
         }
     }
@@ -271,15 +308,95 @@ impl Pet {
         let travel_time = (self.walk_for - (self.time - dt)).clamp(0.0, dt);
         self.x += self.vx * travel_time;
         self.y = room.floor;
-        if self.x <= room.left {
-            self.x = room.left;
-            self.face = 1.0;
-        } else if self.x >= room.right {
-            self.x = room.right;
-            self.face = -1.0;
+        if (self.face < 0.0 && self.x <= room.left) || (self.face > 0.0 && self.x >= room.right) {
+            self.x = self.x.clamp(room.left, room.right);
+            if self.reach_wall(room, fastrand::u8(0..100)) {
+                return;
+            }
         }
         if self.time >= self.walk_for {
             self.start(Activity::Idle);
+        }
+    }
+
+    fn reach_wall(&mut self, room: &Room, roll: u8) -> bool {
+        if roll < 20 && room.floor - room.ceiling > 40.0 {
+            self.vx = 0.0;
+            self.vy = 0.0;
+            self.start(Activity::ClimbWall);
+            true
+        } else {
+            self.face = -self.face;
+            false
+        }
+    }
+
+    fn climb_wall(&mut self, room: &Room, dt: f32, slippery: bool) {
+        self.x = if self.face < 0.0 {
+            room.left
+        } else {
+            room.right
+        };
+        let limit = if slippery {
+            room.ceiling + (room.floor - room.ceiling) * 0.25
+        } else {
+            room.ceiling
+        };
+        self.y = (self.y - CLIMB_SPEED * dt).max(limit);
+        if self.y <= limit {
+            self.leave_wall(slippery, fastrand::u8(0..100));
+        }
+    }
+
+    fn leave_wall(&mut self, slippery: bool, roll: u8) {
+        if slippery {
+            if roll < 50 {
+                self.start(Activity::SlideWall);
+            } else {
+                self.knock_back(-self.face * 145.0, 20.0);
+            }
+        } else {
+            self.face = -self.face;
+            self.start(if roll < 95 {
+                Activity::Parachute
+            } else {
+                Activity::ClimbCeiling
+            });
+        }
+    }
+
+    fn slide_wall(&mut self, room: &Room, dt: f32) {
+        self.y = (self.y + SLIDE_SPEED * dt).min(room.floor);
+        if self.y >= room.floor {
+            self.face = -self.face;
+            self.start(Activity::Idle);
+        }
+    }
+
+    fn climb_ceiling(&mut self, room: &Room, dt: f32) {
+        self.y = room.ceiling;
+        let centre = (room.left + room.right) * 0.5;
+        let distance = centre - self.x;
+        self.x += distance.clamp(-CLIMB_SPEED * dt, CLIMB_SPEED * dt);
+        if self.x == centre {
+            self.start(Activity::Hand);
+        }
+    }
+
+    fn parachute(&mut self, room: &Room, dt: f32) {
+        self.x = (self.x + self.face * 52.0 * dt).clamp(room.left, room.right);
+        self.y = (self.y + PARACHUTE_SPEED * dt).min(room.floor);
+        if self.y >= room.floor {
+            self.start(Activity::Idle);
+        }
+    }
+
+    fn hand(&mut self, room: &Room, dt: f32) {
+        if self.time >= HAND_REACH {
+            self.y = (self.y + HAND_SPEED * dt).min(room.floor);
+            if self.y >= room.floor {
+                self.start(Activity::HandRelease);
+            }
         }
     }
 }
@@ -293,6 +410,7 @@ mod tests {
             left: 100.0,
             right: 500.0,
             floor: 400.0,
+            ceiling: 55.0,
         }
     }
 
@@ -303,7 +421,7 @@ mod tests {
         pet.y = 100.0;
         pet.become_for_test(Activity::Fall);
         for _ in 0..180 {
-            pet.step(&room, 1.0 / 60.0);
+            pet.step(&room, 1.0 / 60.0, false);
         }
         assert_ne!(pet.activity, Activity::Fall);
         assert!((pet.y - room.floor).abs() < 0.1);
@@ -313,10 +431,10 @@ mod tests {
     fn walk_turns_around_at_the_right_edge() {
         let room = room();
         let mut pet = Pet::on_floor(&room, None);
-        pet.x = room.right - 1.0;
+        pet.x = room.right;
         pet.face = 1.0;
         pet.become_for_test(Activity::Walk);
-        pet.step(&room, 1.0 / 30.0);
+        assert!(!pet.reach_wall(&room, 20));
         assert_eq!(pet.face, -1.0);
         assert!((pet.x - room.right).abs() < 0.1);
     }
@@ -332,7 +450,7 @@ mod tests {
         let mut far = pet.x;
         let mut landed = false;
         for _ in 0..300 {
-            pet.step(&room, 1.0 / 60.0);
+            pet.step(&room, 1.0 / 60.0, false);
             peak = peak.min(pet.y);
             far = far.max(pet.x);
             if pet.activity != Activity::Fall && (pet.y - room.floor).abs() < 0.1 {
@@ -352,7 +470,7 @@ mod tests {
         pet.release(&room, 80.0, 40.0);
         let mut saw_down = false;
         for _ in 0..180 {
-            pet.step(&room, 1.0 / 60.0);
+            pet.step(&room, 1.0 / 60.0, false);
             if pet.activity == Activity::Down {
                 saw_down = true;
                 assert!((pet.y - room.floor).abs() < 0.1);
@@ -372,7 +490,7 @@ mod tests {
         let mut began = None;
         let mut far = pet.x;
         for _ in 0..300 {
-            pet.step(&room, 1.0 / 60.0);
+            pet.step(&room, 1.0 / 60.0, false);
             if pet.activity == Activity::Down {
                 if began.is_none() {
                     began = Some(pet.x);
@@ -394,7 +512,7 @@ mod tests {
         pet.release(&room, 0.0, 0.0);
         let mut saw_down = false;
         for _ in 0..240 {
-            pet.step(&room, 1.0 / 60.0);
+            pet.step(&room, 1.0 / 60.0, false);
             if pet.activity == Activity::Down {
                 saw_down = true;
             }
@@ -413,9 +531,9 @@ mod tests {
             pet.release(&room, 0.0, 1100.0);
             assert_eq!(pet.activity, Activity::Fall);
             let mut heights = Vec::new();
-            for _ in 0..(fps * 4.0 + fps * RISE_FOR) as usize {
+            for _ in 0..(fps * 7.0) as usize {
                 let was_rising = pet.vy < 0.0;
-                pet.step(&room, 1.0 / fps);
+                pet.step(&room, 1.0 / fps, false);
                 assert!(pet.y <= room.floor);
                 if was_rising && pet.vy >= 0.0 {
                     heights.push(room.floor - pet.y);
@@ -437,6 +555,7 @@ mod tests {
             left: 0.0,
             right: 1600.0,
             floor: 800.0,
+            ceiling: 55.0,
         };
         for count in 3..=5 {
             let mut pet = Pet::on_floor(&room, Some(0.8));
@@ -444,7 +563,7 @@ mod tests {
             pet.choose_activity(49, count);
             assert_eq!(pet.activity, Activity::Walk);
             while pet.activity == Activity::Walk {
-                pet.step(&room, 0.04);
+                pet.step(&room, 0.04, false);
             }
             assert!((pet.x - start_x - WALK_SPEED * 0.8 * f32::from(count)).abs() < 0.1);
         }
@@ -462,10 +581,70 @@ mod tests {
         let start = pet.x;
         pet.release(&room, 700.0, 0.0);
         for _ in 0..20 {
-            pet.step(&room, 1.0 / 60.0);
+            pet.step(&room, 1.0 / 60.0, false);
         }
         assert!(pet.x > start + 80.0, "{}", pet.x);
         assert_eq!(pet.activity, Activity::Down);
+    }
+
+    #[test]
+    fn recovery_times_are_chosen_once_for_each_fall() {
+        let room = room();
+        let mut pet = Pet::on_floor(&room, None);
+        let mut previous = None;
+        let mut varied = false;
+        for _ in 0..12 {
+            pet.start(Activity::Down);
+            let down = pet.down_for;
+            assert!((1.5..=3.0).contains(&down));
+            pet.step(&room, 0.02, false);
+            assert_eq!(pet.down_for, down);
+            pet.time = down - 0.01;
+            pet.step(&room, 0.02, false);
+            assert_eq!(pet.activity, Activity::Rise);
+            let rise = pet.rise_for;
+            assert!((1.0..=2.0).contains(&rise));
+            pet.step(&room, 0.02, false);
+            assert_eq!(pet.rise_for, rise);
+            varied |= previous.is_some_and(|timing| timing != (down, rise));
+            previous = Some((down, rise));
+        }
+        assert!(varied);
+    }
+
+    #[test]
+    fn wall_routes_return_to_the_floor_for_both_seasons() {
+        let room = room();
+        for (slippery, roll, expected) in [
+            (true, 49, Activity::SlideWall),
+            (true, 50, Activity::Fall),
+            (false, 94, Activity::Parachute),
+            (false, 95, Activity::ClimbCeiling),
+        ] {
+            let mut pet = Pet::on_floor(&room, None);
+            pet.x = room.left;
+            pet.face = -1.0;
+            assert!(pet.reach_wall(&room, 19));
+            pet.climb_wall(&room, 0.05, slippery);
+            assert!(pet.y < room.floor);
+            pet.y = if slippery { 150.0 } else { room.ceiling };
+            pet.leave_wall(slippery, roll);
+            assert_eq!(pet.activity, expected);
+            let mut used_hand = false;
+            for _ in 0..600 {
+                used_hand |= pet.activity == Activity::Hand;
+                pet.step(&room, 1.0 / 60.0, slippery);
+                if pet.activity == Activity::Idle {
+                    break;
+                }
+            }
+            assert_eq!(used_hand, expected == Activity::ClimbCeiling);
+            assert_eq!(pet.y, room.floor);
+            assert_eq!(pet.activity, Activity::Idle);
+            if used_hand {
+                assert_eq!(pet.x, (room.left + room.right) * 0.5);
+            }
+        }
     }
 
     impl Pet {

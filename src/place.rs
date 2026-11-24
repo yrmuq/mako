@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use std::io::Write;
-use std::sync::mpsc::{self, SyncSender};
+use std::sync::mpsc::{self, Sender, SyncSender};
 use std::time::Duration;
 
 use slint::winit_030::winit::{dpi::PhysicalPosition, window::Window};
@@ -13,17 +13,38 @@ const SERVICE: &str = "org.kde.KWin";
 const LEGACY_SCRIPT: &str = "mako-tray-placement";
 const PLACER: &str = "/mako/Placer";
 
-struct Ready(SyncSender<()>);
+#[derive(Debug, PartialEq, Eq, serde::Deserialize)]
+pub struct FullscreenOutput {
+    pub name: String,
+    pub x: i32,
+    pub y: i32,
+}
+
+struct Placer {
+    ready: SyncSender<()>,
+    fullscreen: Sender<Vec<FullscreenOutput>>,
+}
 
 #[zbus::interface(name = "io.github.yrmuq.mako.Placer")]
-impl Ready {
+impl Placer {
     fn ready(&self) {
-        let _ = self.0.try_send(());
+        let _ = self.ready.try_send(());
+    }
+
+    fn fullscreen(&self, outputs: &str) {
+        if let Ok(outputs) = serde_json::from_str(outputs) {
+            let _ = self.fullscreen.send(outputs);
+        }
     }
 }
 
-fn ready_connection(sender: SyncSender<()>) -> zbus::Result<Bus> {
-    Builder::session()?.serve_at(PLACER, Ready(sender))?.build()
+fn ready_connection(
+    ready: SyncSender<()>,
+    fullscreen: Sender<Vec<FullscreenOutput>>,
+) -> zbus::Result<Bus> {
+    Builder::session()?
+        .serve_at(PLACER, Placer { ready, fullscreen })?
+        .build()
 }
 
 pub struct Kwin {
@@ -33,9 +54,11 @@ pub struct Kwin {
 }
 
 impl Kwin {
-    pub fn install() -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn install(
+        fullscreen: Sender<Vec<FullscreenOutput>>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let (ready, registered) = mpsc::sync_channel(1);
-        let bus = ready_connection(ready)?;
+        let bus = ready_connection(ready, fullscreen)?;
         let destination = bus.unique_name().ok_or("missing D-Bus unique name")?;
         let destination = serde_json::to_string(destination.as_str())?;
         let mut script = tempfile::Builder::new()
@@ -137,7 +160,8 @@ mod tests {
     #[ignore = "requires a private D-Bus session"]
     fn placement_callback_runs_without_an_application_runtime() {
         let (ready, registered) = mpsc::sync_channel(1);
-        let service = ready_connection(ready).expect("start the placement callback");
+        let (fullscreen, updates) = mpsc::channel();
+        let service = ready_connection(ready, fullscreen).expect("start the placement callback");
         let caller = Bus::session().expect("connect as the placement script");
         let proxy = Proxy::new(
             &caller,
@@ -149,5 +173,16 @@ mod tests {
 
         proxy.call::<_, _, ()>("Ready", &()).unwrap();
         registered.recv_timeout(Duration::from_secs(3)).unwrap();
+        proxy
+            .call::<_, _, ()>("Fullscreen", &("[{\"name\":\"DP-1\",\"x\":1920,\"y\":0}]",))
+            .unwrap();
+        assert_eq!(
+            updates.recv_timeout(Duration::from_secs(3)).unwrap(),
+            [FullscreenOutput {
+                name: "DP-1".into(),
+                x: 1920,
+                y: 0
+            }]
+        );
     }
 }

@@ -2558,6 +2558,7 @@ version = "0.1.0"
 dependencies = [
  "fastrand",
  "ksni",
+ "libc",
  "png 0.17.16",
  "rfd",
  "rustix 1.1.6",

@@ -25,12 +25,18 @@ use crate::app::{startup_room, Pointer};
 use crate::config::Settings;
 use crate::game::{Command, Game};
 use crate::pack::Pack;
+use crate::place::FullscreenOutput;
 use crate::Fault;
 use std::sync::mpsc::Receiver;
 
 const BTN_LEFT: u32 = 0x110;
 
-pub fn run(settings: Settings, first: Pack, commands: Receiver<Command>) -> Result<(), Fault> {
+pub fn run(
+    settings: Settings,
+    first: Pack,
+    commands: Receiver<Command>,
+    fullscreen_updates: Receiver<Vec<FullscreenOutput>>,
+) -> Result<(), Fault> {
     let conn = Connection::connect_to_env().map_err(|error| {
         Fault::new(
             "MAKO-WL-0001",
@@ -93,6 +99,9 @@ pub fn run(settings: Settings, first: Pack, commands: Receiver<Command>) -> Resu
         last_time: 0,
         output_ready: false,
         screen: None,
+        output: None,
+        fullscreen: Vec::new(),
+        fullscreen_updates,
     };
     use rustix::event::{poll, PollFd, PollFlags, Timespec};
     let timeout = Timespec {
@@ -100,8 +109,21 @@ pub fn run(settings: Settings, first: Pack, commands: Receiver<Command>) -> Resu
         tv_nsec: 16_000_000,
     };
     while !state.game.exit {
-        let changed = state.game.commands();
-        if changed && state.configured && !state.frame_requested {
+        let mut changed = state.game.commands();
+        if let Some(outputs) = state.fullscreen_updates.try_iter().last() {
+            state.fullscreen = outputs;
+            changed = true;
+        }
+        if changed {
+            let accepts_input = state.accepts_input();
+            state.game.cancel_grab(|_, _| accepts_input);
+        }
+        if state.configured && !state.frame_requested {
+            if let Some((width, _)) = state.screen {
+                state.game.tick_snow(0.0, width);
+            }
+        }
+        if (changed || state.game.snow.active()) && state.configured && !state.frame_requested {
             state.present(&qh);
         }
         queue.dispatch_pending(&mut state).map_err(dispatch_error)?;
@@ -147,24 +169,44 @@ struct Host {
     last_time: u32,
     output_ready: bool,
     screen: Option<(u32, u32)>,
+    output: Option<wl_output::WlOutput>,
+    fullscreen: Vec<FullscreenOutput>,
+    fullscreen_updates: Receiver<Vec<FullscreenOutput>>,
 }
 
 impl Host {
+    fn accepts_input(&self) -> bool {
+        let fullscreen = self
+            .output
+            .as_ref()
+            .and_then(|output| self.output_state.info(output))
+            .is_some_and(|info| {
+                self.fullscreen
+                    .iter()
+                    .any(|output| match (&info.name, output.name.is_empty()) {
+                        (Some(name), false) => *name == output.name,
+                        _ => info.logical_position == Some((output.x, output.y)),
+                    })
+            });
+        self.game.input_mode().accepts_input(fullscreen)
+    }
+
     fn refresh_output(&mut self) {
-        let mut found = None;
-        for output in self.output_state.outputs() {
-            if let Some(info) = self.output_state.info(&output) {
-                let (width, height) = info.logical_size.unwrap_or((1280, 720));
-                let scale = info.scale_factor.max(1) as u32;
-                found = Some((width as f32, height as f32, scale));
-                break;
-            }
-        }
-        if let Some((width, height, scale)) = found {
-            self.game.set_scale(scale);
+        let found = self
+            .output
+            .as_ref()
+            .and_then(|output| self.output_state.info(output))
+            .or_else(|| {
+                self.output_state
+                    .outputs()
+                    .find_map(|output| self.output_state.info(&output))
+            });
+        if let Some(info) = found {
+            self.game.set_scale(info.scale_factor.max(1) as u32);
             self.output_ready = true;
             if self.screen.is_none() {
-                self.note_screen(width.round() as u32, height.round() as u32);
+                let (width, height) = info.logical_size.unwrap_or((1280, 720));
+                self.note_screen(width as u32, height as u32);
             }
         }
     }
@@ -212,6 +254,7 @@ impl Host {
             return;
         };
         let surface = self.layer.wl_surface();
+        let accepts_input = self.accepts_input();
         let region = Region::new(&self.compositor)
             .expect("MAKO-WL-0003: Could not limit pointer input to the pet");
         let mut next = Vec::with_capacity(self.game.pets.len());
@@ -219,6 +262,24 @@ impl Host {
             .canvas(&mut self.pool)
             .expect("MAKO-WL-0003: Could not draw a frame");
         canvas.fill(0);
+        for (x, y, flake) in self.game.snow.images() {
+            blit(
+                canvas,
+                buf_w as u32,
+                buf_h as u32,
+                &flake.bgra,
+                flake.size,
+                flake.size,
+                x,
+                y,
+            );
+            next.push(PxRect {
+                x,
+                y,
+                w: flake.size as i32,
+                h: flake.size as i32,
+            });
+        }
         for pet in &mut self.game.pets {
             let app = &mut pet.app;
             app.prepare();
@@ -239,12 +300,14 @@ impl Host {
                 rect.x,
                 rect.y,
             );
-            region.add(
-                app.origin_x,
-                app.origin_y,
-                app.logical_w as i32,
-                app.logical_h as i32,
-            );
+            if accepts_input {
+                region.add(
+                    app.origin_x,
+                    app.origin_y,
+                    app.logical_w as i32,
+                    app.logical_h as i32,
+                );
+            }
             next.push(rect);
             app.note_committed();
         }
@@ -324,6 +387,11 @@ impl CompositorHandler for Host {
         };
         self.last_time = time;
         self.frame_requested = false;
+        let accepts_input = self.accepts_input();
+        self.game.cancel_grab(|_, _| accepts_input);
+        if let Some((width, _)) = self.screen {
+            self.game.tick_snow(dt, width);
+        }
         self.game.tick(dt.clamp(0.0, 0.05));
         self.present(qh);
     }
@@ -333,8 +401,10 @@ impl CompositorHandler for Host {
         _: &Connection,
         _: &QueueHandle<Self>,
         _: &wl_surface::WlSurface,
-        _: &wl_output::WlOutput,
+        output: &wl_output::WlOutput,
     ) {
+        self.output = Some(output.clone());
+        self.refresh_output();
     }
 
     fn surface_leave(
@@ -342,8 +412,12 @@ impl CompositorHandler for Host {
         _: &Connection,
         _: &QueueHandle<Self>,
         _: &wl_surface::WlSurface,
-        _: &wl_output::WlOutput,
+        output: &wl_output::WlOutput,
     ) {
+        if self.output.as_ref() == Some(output) {
+            self.output = None;
+            self.refresh_output();
+        }
     }
 }
 
@@ -433,6 +507,9 @@ impl PointerHandler for Host {
         _: &wl_pointer::WlPointer,
         events: &[PointerEvent],
     ) {
+        if !self.accepts_input() {
+            return;
+        }
         for event in events {
             if &event.surface != self.layer.wl_surface() {
                 continue;

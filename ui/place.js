@@ -112,6 +112,47 @@ function watch(window) {
     if (window.windowClassChanged) { window.windowClassChanged.connect(identify); }
 }
 
-workspace.windowAdded.connect(watch);
-workspace.windowList().forEach(watch);
+let lastFullscreenOutputs;
+
+function reportFullscreen() {
+    const active = new Map();
+    for (const window of workspace.windowList()) {
+        if (!window.fullScreen || window.minimized || window.hidden || !window.output) { continue; }
+        const output = window.output;
+        const desktop = workspace.currentDesktopForScreen
+            ? workspace.currentDesktopForScreen(output) : workspace.currentDesktop;
+        if (window.desktops && window.desktops.length && !Array.from(window.desktops).includes(desktop)) { continue; }
+        if (window.activities && window.activities.length && !Array.from(window.activities).includes(workspace.currentActivity)) { continue; }
+        if (window.hiddenByShowDesktop) { continue; }
+        const name = String(output.name || "");
+        const { x, y } = output.geometry;
+        active.set(name || x + "," + y, { name, x, y });
+    }
+    const activeJson = JSON.stringify(Array.from(active.keys()).sort().map((key) => active.get(key)));
+    if (activeJson !== lastFullscreenOutputs) {
+        lastFullscreenOutputs = activeJson;
+        callDBus(makoReadyBus, "/mako/Placer", "io.github.yrmuq.mako.Placer", "Fullscreen", activeJson);
+    }
+}
+
+function watchWindow(window) {
+    watch(window);
+    window.fullScreenChanged.connect(reportFullscreen);
+    window.outputChanged.connect(reportFullscreen);
+    window.minimizedChanged.connect(reportFullscreen);
+    window.desktopsChanged.connect(reportFullscreen);
+    window.activitiesChanged.connect(reportFullscreen);
+    window.hiddenChanged.connect(reportFullscreen);
+    if (window.hiddenByShowDesktopChanged) { window.hiddenByShowDesktopChanged.connect(reportFullscreen); }
+}
+
+workspace.windowAdded.connect((window) => {
+    watchWindow(window);
+    reportFullscreen();
+});
+workspace.windowRemoved.connect(reportFullscreen);
+workspace.currentDesktopChanged.connect(reportFullscreen);
+if (workspace.currentActivityChanged) { workspace.currentActivityChanged.connect(reportFullscreen); }
+workspace.windowList().forEach(watchWindow);
+reportFullscreen();
 callDBus(makoReadyBus, "/mako/Placer", "io.github.yrmuq.mako.Placer", "Ready");

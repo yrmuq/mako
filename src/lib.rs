@@ -13,9 +13,12 @@ mod i18n;
 mod icons;
 mod pack;
 mod place;
+mod props;
 mod rag;
+mod season;
 mod sim;
 mod updates;
+mod x11_input;
 
 use std::env;
 use std::fmt;

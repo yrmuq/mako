@@ -25,10 +25,30 @@ pub enum ThemePref {
     Dark,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InputMode {
+    Main,
+    Background,
+    Auto,
+}
+
+impl InputMode {
+    pub fn accepts_input(self, fullscreen: bool) -> bool {
+        match self {
+            Self::Main => true,
+            Self::Background => false,
+            Self::Auto => !fullscreen,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
     pub language: LanguagePref,
     pub theme: ThemePref,
+    pub input_mode: InputMode,
+    pub snow_size: u32,
+    pub snow_speed: u32,
     pub tiles: bool,
     pub chibi: String,
     pub scale: String,
@@ -42,6 +62,9 @@ impl Default for Settings {
         Self {
             language: LanguagePref::System,
             theme: ThemePref::System,
+            input_mode: InputMode::Main,
+            snow_size: 100,
+            snow_speed: 100,
             tiles: false,
             chibi: "bear-girl".to_string(),
             scale: "0.5".to_string(),
@@ -90,6 +113,15 @@ impl Settings {
                         _ => ThemePref::System,
                     }
                 }
+                "input_mode" => {
+                    settings.input_mode = match value {
+                        "background" => InputMode::Background,
+                        "auto" => InputMode::Auto,
+                        _ => InputMode::Main,
+                    }
+                }
+                "snow_size" => settings.snow_size = proportion(value),
+                "snow_speed" => settings.snow_speed = proportion(value),
                 "tiles" => settings.tiles = value == "true",
                 "chibi" if crate::pack::safe_id(value) => settings.chibi = value.to_string(),
                 "scale" => settings.scale = value.to_owned(),
@@ -128,7 +160,7 @@ impl Settings {
             )
         })?;
         let body = format!(
-            "language = \"{}\"\ntheme = \"{}\"\ntiles = {}\nchibi = \"{}\"\nscale = \"{}\"\nwidth = {}\nheight = {}\nfavorites = \"{}\"\n",
+            "language = \"{}\"\ntheme = \"{}\"\ninput_mode = \"{}\"\ntiles = {}\nchibi = \"{}\"\nscale = \"{}\"\nwidth = {}\nheight = {}\nfavorites = \"{}\"\nsnow_size = {}\nsnow_speed = {}\n",
             match self.language {
                 LanguagePref::System => "system",
                 LanguagePref::En => "en",
@@ -139,12 +171,19 @@ impl Settings {
                 ThemePref::Light => "light",
                 ThemePref::Dark => "dark",
             },
+            match self.input_mode {
+                InputMode::Main => "main",
+                InputMode::Background => "background",
+                InputMode::Auto => "auto",
+            },
             self.tiles,
             self.chibi,
             self.pet_scale(),
             self.width,
             self.height,
             self.favorites.join(","),
+            self.snow_size,
+            self.snow_speed,
         );
         let temporary = path.with_extension("toml.part");
         fs::write(&temporary, body).map_err(|error| {

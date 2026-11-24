@@ -14,7 +14,7 @@ use slint::{
 };
 
 use crate::about::LogoTaps;
-use crate::config::{LanguagePref, Settings, ThemePref};
+use crate::config::{InputMode, LanguagePref, Settings, ThemePref};
 use crate::game::Command;
 use crate::i18n::{Catalog, ID_NAME, ID_QUIT};
 use crate::icons;
@@ -47,6 +47,8 @@ enum Action {
     Imported(Option<Result<Pack, Fault>>),
     Language(i32),
     Theme(i32),
+    InputMode(i32),
+    Snow(i32, i32),
     Tiles(bool),
     Scale(f32),
     Proportions(i32, i32),
@@ -353,6 +355,19 @@ impl Desktop {
                 self.schedule_save();
                 self.refresh_style();
             }
+            Action::InputMode(index) => {
+                self.config.input_mode = match index {
+                    1 => InputMode::Background,
+                    2 => InputMode::Auto,
+                    _ => InputMode::Main,
+                };
+                self.apply_settings();
+            }
+            Action::Snow(size, speed) => {
+                self.config.snow_size = size.clamp(25, 200) as u32;
+                self.config.snow_speed = speed.clamp(25, 200) as u32;
+                self.apply_settings();
+            }
             Action::Tiles(tiles) => {
                 self.config.tiles = tiles;
                 if let Some(window) = &self.window {
@@ -365,13 +380,13 @@ impl Desktop {
             }
             Action::Scale(pixels) => {
                 self.config.set_size_px(pixels);
-                self.apply_dimensions();
+                self.apply_settings();
             }
             Action::Proportions(width, height) => {
                 self.config.width = width.clamp(25, 200) as u32;
                 self.config.height = height.clamp(25, 200) as u32;
                 self.refresh_size_controls();
-                self.apply_dimensions();
+                self.apply_settings();
             }
             Action::Logo => {
                 if self.taps.push(Instant::now()) {
@@ -454,7 +469,7 @@ impl Desktop {
         }
     }
 
-    fn apply_dimensions(&mut self) {
+    fn apply_settings(&mut self) {
         self.schedule_save();
         let _ = self.commands.send(Command::Appearance(self.config.clone()));
     }
@@ -587,6 +602,8 @@ impl Desktop {
             }
             connect!(on_language_selected, Action::Language(index), index);
             connect!(on_theme_selected, Action::Theme(index), index);
+            connect!(on_input_mode_selected, Action::InputMode(index), index);
+            connect!(on_snow_selected, Action::Snow(size, speed), size, speed);
             connect!(on_tiles_selected, Action::Tiles(value), value);
             connect!(on_size_selected, Action::Scale(value), value);
             connect!(
@@ -643,6 +660,13 @@ impl Desktop {
             ThemePref::Light => 1,
             ThemePref::Dark => 2,
         });
+        window.set_input_mode_index(match self.config.input_mode {
+            InputMode::Main => 0,
+            InputMode::Background => 1,
+            InputMode::Auto => 2,
+        });
+        window.set_snow_size(self.config.snow_size as f32);
+        window.set_snow_speed(self.config.snow_speed as f32);
         window.set_tiles(self.config.tiles);
         window.set_width_value(self.config.width as i32);
         window.set_height_value(self.config.height as i32);
@@ -704,7 +728,7 @@ impl Desktop {
     }
 
     fn translations(&self) -> ModelRc<SharedString> {
-        model((0..=45).map(|id| self.catalog.text(id).into()).collect())
+        model((0..=51).map(|id| self.catalog.text(id).into()).collect())
     }
 
     fn refresh_style(&self) {
@@ -831,8 +855,9 @@ pub(crate) fn run(session: Session, open_settings: bool) -> Result<(), Fault> {
         .with_winit_window_attributes_hook(window_attributes)
         .select()
         .map_err(|error| Fault::new("MAKO-UI-0001", error.to_string()))?;
+    let (fullscreen, fullscreen_rx) = mpsc::channel();
     let _placement = match session {
-        Session::Wayland => match crate::place::Kwin::install() {
+        Session::Wayland => match crate::place::Kwin::install(fullscreen) {
             Ok(script) => Some(script),
             Err(error) => {
                 eprintln!("MAKO-UI-0003: KWin positioning unavailable: {error}");
@@ -870,7 +895,9 @@ pub(crate) fn run(session: Session, open_settings: bool) -> Result<(), Fault> {
     let game_tx = tx.clone();
     let host = std::thread::spawn(move || {
         let result = match session {
-            Session::Wayland => crate::host_wayland::run(game_config, first, game_rx),
+            Session::Wayland => {
+                crate::host_wayland::run(game_config, first, game_rx, fullscreen_rx)
+            }
             Session::X11 => crate::host_x11::run(game_config, first, game_rx),
         };
         let _ = game_tx.send(Action::HostFinished(result));

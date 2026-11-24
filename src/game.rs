@@ -7,8 +7,9 @@ use std::sync::mpsc::Receiver;
 use tiny_skia::{Point, Rect};
 
 use crate::app::{App, Pointer};
-use crate::config::Settings;
+use crate::config::{InputMode, Settings};
 use crate::pack::Pack;
+use crate::season::Snow;
 use crate::sim::Room;
 
 pub enum Command {
@@ -30,6 +31,7 @@ struct CollisionBody {
 
 pub struct Game {
     pub pets: Vec<Instance>,
+    pub snow: Snow,
     room: Room,
     settings: Settings,
     commands: Receiver<Command>,
@@ -45,6 +47,7 @@ impl Game {
     pub fn new(room: Room, settings: Settings, first: Pack, commands: Receiver<Command>) -> Self {
         let mut game = Self {
             pets: Vec::new(),
+            snow: Snow::new(),
             room,
             settings,
             commands,
@@ -126,6 +129,28 @@ impl Game {
         self.scale
     }
 
+    pub fn input_mode(&self) -> InputMode {
+        self.settings.input_mode
+    }
+
+    pub fn cancel_grab(&mut self, input_at: impl FnOnce(f32, f32) -> bool) {
+        if let Some(pet) = self.pets.iter_mut().find(|pet| self.held == Some(pet.id)) {
+            if pet
+                .app
+                .grab_position()
+                .is_some_and(|point| !input_at(point.x, point.y))
+            {
+                pet.app.cancel_grab();
+                self.held = None;
+            }
+        }
+    }
+
+    pub fn tick_snow(&mut self, dt: f32, width: u32) {
+        let floor = (self.room.floor - self.bottom).max(0.0) as u32;
+        self.snow.tick(dt, width, floor, self.scale, &self.settings);
+    }
+
     pub fn tick(&mut self, dt: f32) {
         let check_collisions =
             self.pets.len() > 1 && self.pets.iter().any(|pet| pet.app.pet.can_strike());
@@ -146,7 +171,7 @@ impl Game {
                 .collect::<Vec<_>>()
         });
         for pet in &mut self.pets {
-            pet.app.tick(dt);
+            pet.app.tick(dt, self.snow.active());
         }
         if let Some(before) = before {
             self.resolve_collisions(&before);

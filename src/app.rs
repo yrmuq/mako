@@ -7,7 +7,10 @@ use crate::config::Settings;
 use crate::draw::{self, Frame, Motion, Part, Scene};
 use crate::pack::{BonePoint, Pack};
 use crate::rag::Ragdoll;
-use crate::sim::{Activity, Pet, Room, FEET_X, FEET_Y, GRAVITY, RISE_FOR, SPRITE_H, SPRITE_W};
+use crate::sim::{
+    Activity, Pet, Room, FEET_X, FEET_Y, GRAVITY, HAND_REACH, HAND_RELEASE, REFERENCE_RISE,
+    SPRITE_H, SPRITE_W,
+};
 
 struct Grip {
     point: BonePoint,
@@ -86,17 +89,17 @@ impl App {
     pub fn set_room(&mut self, room: Room) {
         self.screen = screen_of(&room);
         self.fit_room();
-        if self.grip.is_none()
-            && self.pet.activity != Activity::Fall
-            && self.pet.activity != Activity::Down
-        {
+        if matches!(
+            self.pet.activity,
+            Activity::Idle | Activity::Walk | Activity::Sit | Activity::Rise
+        ) {
             self.pet.y = self.room.floor;
             self.pet.x = self.pet.x.clamp(self.room.left, self.room.right);
         }
         self.sync_geometry();
     }
 
-    pub fn tick(&mut self, dt: f32) {
+    pub fn tick(&mut self, dt: f32, slippery: bool) {
         self.clock += dt;
         if self.clock >= self.blink_at + self.blink_length {
             self.blink_at = next_blink(self.clock);
@@ -122,9 +125,17 @@ impl App {
         } else {
             let vx = self.pet.vx;
             let vy = self.pet.vy;
-            let was_rising = self.pet.activity == Activity::Rise;
-            self.pet.step(&self.room, dt);
+            let before = self.pet.activity;
+            let wall_pose =
+                (before == Activity::ClimbWall).then(|| (self.pet.tilt(), self.pet.phase));
+            self.pet.step(&self.room, dt, slippery);
             if self.pet.activity == Activity::Fall {
+                if let Some((tilt, phase)) = wall_pose {
+                    let degrees = self.pack.local_degrees(self.climb_animation(), phase);
+                    self.rag.seed(&degrees);
+                    self.rag.set_turn(tilt);
+                    self.rag.live = true;
+                }
                 let ax = ((self.pet.vx - vx) / dt.max(0.001)).clamp(-14000.0, 14000.0);
                 let ay = ((self.pet.vy - vy) / dt.max(0.001)).clamp(-14000.0, 14000.0);
                 self.rag.step(dt, ax, ay, self.settings.pet_scale());
@@ -141,7 +152,7 @@ impl App {
                 self.rag.step(dt, ax, ay, self.settings.pet_scale());
             } else if self.pet.activity == Activity::Rise {
                 self.pet.y = self.room.floor;
-            } else if was_rising {
+            } else if before == Activity::Rise {
                 self.rag.stop();
             } else {
                 self.rag.relax(dt);
@@ -171,13 +182,18 @@ impl App {
                 };
                 self.sync_rag();
                 self.rag.clear_plant();
-                if self.pet.activity == Activity::Rise {
-                    let (tilt, degrees) = self.rise_pose();
+                if self.pet.activity == Activity::Rise || !self.rag.live {
+                    let (tilt, degrees) = if self.pet.activity == Activity::Rise {
+                        self.rise_pose()
+                    } else {
+                        (
+                            self.pet.tilt(),
+                            self.pack
+                                .local_degrees(self.motion_name(), self.motion_phase()),
+                        )
+                    };
                     self.rag.seed(&degrees);
                     self.rag.set_turn(tilt);
-                } else if !self.rag.live {
-                    let degrees = self.pack.local_degrees(self.motion_name(), self.pet.phase);
-                    self.rag.seed(&degrees);
                 }
                 self.rag.live = true;
                 let cursor =
@@ -208,6 +224,23 @@ impl App {
         }
     }
 
+    pub fn cancel_grab(&mut self) {
+        if let Some(grip) = self.grip.take() {
+            self.rag.release(
+                &self.pack,
+                grip.point,
+                Point::from_xy(0.0, 0.0),
+                self.settings.scales(),
+            );
+            self.trail.clear();
+            self.pet.release(&self.room, 0.0, 0.0);
+        }
+    }
+
+    pub fn grab_position(&self) -> Option<Point> {
+        self.grip.as_ref().map(|grip| grip.cursor)
+    }
+
     fn move_grip(&mut self, lx: f32, ly: f32) {
         let grip = self.grip.as_mut().expect("active grip");
         let cursor = Point::from_xy(self.committed_x as f32 + lx, self.committed_y as f32 + ly);
@@ -235,7 +268,7 @@ impl App {
             (self.pet.tilt(), Vec::new())
         };
         Scene {
-            cycle: self.pet.phase,
+            cycle: self.motion_phase(),
             blink: (self.clock >= self.blink_at).then_some(self.clock - self.blink_at),
             motion: match self.pet.activity {
                 Activity::Walk => Motion::Walk,
@@ -245,29 +278,40 @@ impl App {
                 Activity::Rise => Motion::Rise,
                 Activity::Sit => Motion::Sit,
                 Activity::Idle => Motion::Idle,
+                Activity::ClimbWall => Motion::ClimbWall,
+                Activity::SlideWall => Motion::SlideWall,
+                Activity::ClimbCeiling => Motion::ClimbCeiling,
+                Activity::Parachute => Motion::Parachute,
+                Activity::Hand => Motion::Hand,
+                Activity::HandRelease => Motion::HandRelease,
             },
             tilt,
             facing_left: self.pet.face < 0.0,
             scales: self.settings.scales(),
             pose,
             anchor: self.grip.as_ref().map(|grip| grip.point),
+            effect_amount: match self.pet.activity {
+                Activity::Parachute => smoothstep(self.pet.time / 0.28),
+                Activity::Hand => smoothstep(self.pet.time / HAND_REACH),
+                Activity::HandRelease => 1.0 - smoothstep(self.pet.time / HAND_RELEASE),
+                _ => 0.0,
+            },
         }
     }
 
     fn rise_pose(&self) -> (f32, Vec<f32>) {
-        let time = self.pet.time;
+        let progress = self.pet.time / self.pet.rise_for;
+        let time = progress * REFERENCE_RISE;
         let side = self.rag.lying();
-        let mut degrees = self
-            .pack
-            .rise_degrees(side.rise_animation(), time / RISE_FOR);
+        let mut degrees = self.pack.rise_degrees(side.rise_animation(), progress);
         let blend = smoothstep(time / 0.22);
         if blend < 1.0 {
             for (target, start) in degrees.iter_mut().zip(self.rag.degrees()) {
                 *target = start + (*target - start) * blend;
             }
         }
-        if time > RISE_FOR - 0.18 {
-            let blend = smoothstep((time - (RISE_FOR - 0.18)) / 0.18);
+        if time > REFERENCE_RISE - 0.18 {
+            let blend = smoothstep((time - (REFERENCE_RISE - 0.18)) / 0.18);
             for (angle, standing) in degrees.iter_mut().zip(self.pack.local_degrees("idle", 0.0)) {
                 *angle += (standing - *angle) * blend;
             }
@@ -323,6 +367,18 @@ impl App {
             let rightmost_origin = (self.screen.0 as i32 - self.logical_w as i32).max(0);
             self.origin_x = ((self.pet.x - feet_x).round() as i32).clamp(0, rightmost_origin);
             self.origin_y = (self.pet.y - feet_y).round() as i32;
+            if matches!(self.pet.activity, Activity::ClimbWall | Activity::SlideWall) {
+                self.origin_x = if self.pet.face < 0.0 {
+                    0
+                } else {
+                    rightmost_origin
+                };
+                self.origin_y = self
+                    .origin_y
+                    .clamp(0, (self.room.floor as i32 - self.logical_h as i32).max(0));
+            } else if self.pet.activity == Activity::ClimbCeiling {
+                self.origin_y = 0;
+            }
         }
         frame
     }
@@ -360,9 +416,29 @@ impl App {
             Activity::Walk => "walk",
             Activity::Fall => "fall",
             Activity::Drag => "drag",
-            Activity::Down | Activity::Rise => "idle",
+            Activity::ClimbWall | Activity::ClimbCeiling | Activity::SlideWall => {
+                self.climb_animation()
+            }
+            Activity::Parachute if self.pack.animation_length("parachute").is_some() => "parachute",
+            Activity::Parachute | Activity::Hand => "drag",
             Activity::Sit => "sit",
-            Activity::Idle => "idle",
+            Activity::Idle | Activity::Down | Activity::Rise | Activity::HandRelease => "idle",
+        }
+    }
+
+    fn climb_animation(&self) -> &'static str {
+        if self.pack.animation_length("climb").is_some() {
+            "climb"
+        } else {
+            "walk"
+        }
+    }
+
+    fn motion_phase(&self) -> f32 {
+        if self.pet.activity == Activity::SlideWall {
+            0.15
+        } else {
+            self.pet.phase
         }
     }
 
@@ -406,6 +482,7 @@ impl App {
             left: 16.0 + inset,
             right: (width - 16.0 - inset).max(16.0 + inset + 1.0),
             floor: (height - self.bottom).max(1.0),
+            ceiling: (self.feet_y() * 0.62).min((height - self.bottom).max(1.0)),
         };
     }
 
@@ -439,6 +516,7 @@ pub fn startup_room(width: f32, height: f32) -> Room {
         left: margin + FEET_X,
         right: (width - margin - FEET_X).max(margin + FEET_X + 1.0),
         floor: height.max(FEET_Y),
+        ceiling: FEET_Y * 0.62,
     }
 }
 
@@ -526,7 +604,7 @@ mod tests {
         let mut far = app.pet.x;
         let mut high = app.pet.y;
         for _ in 0..40 {
-            app.tick(1.0 / 60.0);
+            app.tick(1.0 / 60.0, false);
             far = far.max(app.pet.x);
             high = high.min(app.pet.y);
         }
@@ -578,7 +656,7 @@ mod tests {
         let mut bounced = false;
         let mut rested = false;
         for _ in 0..480 {
-            app.tick(1.0 / 60.0);
+            app.tick(1.0 / 60.0, false);
             let frame = app.render();
             assert!(app.origin_x >= 0 && app.origin_x + frame.width as i32 <= 1200);
             assert!(app.origin_y + frame.height as i32 <= app.room.floor as i32);
@@ -612,7 +690,7 @@ mod tests {
                 .position(|bone| bone.name == "left-foot")
                 .unwrap();
             for _ in 0..360 {
-                app.tick(1.0 / 60.0);
+                app.tick(1.0 / 60.0, false);
                 if app.pet.activity == Activity::Idle {
                     break;
                 }
@@ -621,7 +699,9 @@ mod tests {
                     stages[usize::from(app.pet.activity == Activity::Rise)] = true;
                     let frame = app.render();
                     assert_eq!(app.origin_y + frame.height as i32, app.room.floor as i32);
-                    if app.pet.activity == Activity::Rise && (0.6..0.7).contains(&app.pet.time) {
+                    if app.pet.activity == Activity::Rise
+                        && (0.4..0.46).contains(&(app.pet.time / app.pet.rise_for))
+                    {
                         let angle = app.scene().pose[knee];
                         assert_eq!(angle > 90.0, side == Lying::Front);
                     }
@@ -665,7 +745,7 @@ mod tests {
                 let (x, y) = app.pointer_from_screen(550.0, 215.0);
                 app.pointer(x, y, Pointer::Motion);
                 for tick in 0..150 {
-                    app.tick(1.0 / 60.0);
+                    app.tick(1.0 / 60.0, false);
                     if tick % 20 == 0 {
                         app.render();
                         app.note_committed();
