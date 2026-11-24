@@ -126,3 +126,46 @@ anim sculpt-top 0.91
 rot head 0 -5 0.28 -10 0.64 -4 0.91 -5
 rot left-hand 0 -108 0.22 -122 0.47 -109 0.67 -121 0.91 -108
 rot right-hand 0 -120 0.24 -105 0.44 -123 0.70 -108 0.91 -120
+
+anim water-tree 1.2
+rot torso 0 6 0.5 14 0.84 14 1.2 6
+rot left-hand 0 -53 0.5 -79 0.84 -79 1.2 -53
+rot right-hand 0 -32 0.5 -45 0.84 -45 1.2 -32
+
+anim decorate-tree 1.45
+rot head 0 -2 0.56 -10 1.45 -2
+rot left-hand 0 -48 0.56 -126 0.95 -122 1.45 -48
+rot right-hand 0 -33 0.56 -88 0.95 -94 1.45 -33
+
+anim open-gift 1.45
+rot torso 0 7 0.56 40 0.85 41 1.45 7
+rot left-hand 0 -32 0.56 -54 0.85 -65 1.45 -32
+rot right-hand 0 -20 0.56 -49 0.85 -63 1.45 -20
+
+anim eat-candy 2.25
+rot head 0 1 0.75 -10 1.35 -6 1.65 5 1.87 -3 2.25 1
+rot left-hand 0 -58 0.95 -108 1.35 -111 1.9 -38 2.25 -58
+rot right-hand 0 -55 0.95 -95 1.35 -99 1.9 -24 2.25 -55
+
+anim carry-tree 0.55
+rot torso 0 -4 0.28 4 0.55 -4
+rot left-hand 0 -86 0.28 -91 0.55 -86
+rot right-hand 0 -80 0.28 -76 0.55 -80
+rot left-leg 0 -14 0.28 13 0.55 -14
+rot right-leg 0 13 0.28 -14 0.55 13
+
+anim parry-snow 0.55
+rot torso 0 -11 0.16 8 0.34 19 0.55 -11
+rot left-hand 0 -140 0.16 -130 0.34 -68 0.55 -140
+rot right-hand 0 -55 0.16 -68 0.34 -44 0.55 -55
+
+anim hide-snow 0.7
+rot torso 0 20 0.7 20
+rot head 0 -13 0.7 -13
+rot left-hand 0 -27 0.7 -27
+rot right-hand 0 -27 0.7 -27
+
+anim snow-cannon 0.24
+rot torso 0 -3 0.085 -10 0.24 -3
+rot left-hand 0 -86 0.085 -91 0.24 -86
+rot right-hand 0 -76 0.085 -81 0.24 -76

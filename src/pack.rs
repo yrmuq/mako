@@ -287,6 +287,14 @@ impl Pack {
                 | "sculpt"
                 | "sculpt-middle"
                 | "sculpt-top"
+                | "water-tree"
+                | "decorate-tree"
+                | "open-gift"
+                | "eat-candy"
+                | "carry-tree"
+                | "parry-snow"
+                | "hide-snow"
+                | "snow-cannon"
         ) && self.animation_length(anim_name).is_none()
         {
             if let Some(anim) = builtin_pack()

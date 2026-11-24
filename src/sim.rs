@@ -28,6 +28,42 @@ const MAX_SOFT_REBOUND: f32 = 270.0;
 pub const GRAVITY: f32 = 2400.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Special {
+    Plant,
+    Water,
+    Decorate,
+    TinselTree,
+    StarTree,
+    UntrimTree,
+    OpenGift,
+    EatCandy,
+    CarryTree,
+    Parry,
+    RunCover,
+    Hide,
+    Cannon,
+}
+
+impl Special {
+    pub fn animation(self) -> &'static str {
+        match self {
+            Self::Plant => "open-gift",
+            Self::Water => "water-tree",
+            Self::Decorate | Self::TinselTree | Self::StarTree | Self::UntrimTree => {
+                "decorate-tree"
+            }
+            Self::OpenGift => "open-gift",
+            Self::EatCandy => "eat-candy",
+            Self::CarryTree => "carry-tree",
+            Self::Parry => "parry-snow",
+            Self::RunCover => "walk",
+            Self::Hide => "hide-snow",
+            Self::Cannon => "snow-cannon",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Activity {
     Idle,
     Walk,
@@ -48,6 +84,7 @@ pub enum Activity {
     PackSnow,
     ThrowSnow,
     Sculpt,
+    Special(Special),
 }
 
 impl Activity {
@@ -143,7 +180,8 @@ impl Pet {
             | Activity::Listen
             | Activity::PackSnow
             | Activity::ThrowSnow
-            | Activity::Sculpt => {
+            | Activity::Sculpt
+            | Activity::Special(_) => {
                 self.y = room.floor;
                 self.vx = 0.0;
                 self.vy = 0.0;
@@ -240,12 +278,16 @@ impl Pet {
     }
 
     pub fn approach(&mut self, room: &Room, x: f32, dt: f32) -> bool {
+        self.approach_at(room, x, WALK_SPEED, dt)
+    }
+
+    pub fn approach_at(&mut self, room: &Room, x: f32, speed: f32, dt: f32) -> bool {
         let goal = x.clamp(room.left, room.right);
         let distance = goal - self.x;
         if distance.abs() > 0.01 {
             self.face = distance.signum();
         }
-        let travel = WALK_SPEED * dt;
+        let travel = speed * dt;
         self.x += distance.clamp(-travel, travel);
         distance.abs() <= travel
     }

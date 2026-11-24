@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use crate::pack;
+use crate::{festive::Tree, pack};
 
 pub const SNOWMAN_SECONDS: f32 = 600.0;
 const SAVE_INTERVAL: Duration = Duration::from_secs(2);
@@ -19,6 +19,22 @@ pub struct WinterObjects {
     year: Option<i32>,
     pub piles: Vec<Pile>,
     pub snowman: Option<Snowman>,
+    #[serde(default)]
+    pub walls: Vec<SnowWall>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct SnowWall {
+    pub position: f32,
+    pub seconds: f32,
+}
+
+pub const MAX_SNOW_WALLS: usize = 2;
+
+impl SnowWall {
+    pub fn finished(self) -> bool {
+        self.seconds >= SNOWMAN_SECONDS
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -38,6 +54,8 @@ struct Save {
     version: u32,
     chibis: Vec<String>,
     winter: WinterObjects,
+    #[serde(default)]
+    tree: Option<Tree>,
 }
 
 impl Save {
@@ -46,6 +64,7 @@ impl Save {
             version: 1,
             chibis: vec![chibi.to_owned()],
             winter: WinterObjects::default(),
+            tree: None,
         }
     }
 
@@ -64,6 +83,11 @@ impl Save {
         saved.winter.snowman = saved.winter.snowman.filter(|man| {
             (0.0..=1.0).contains(&man.position) && (0.0..=SNOWMAN_SECONDS).contains(&man.seconds)
         });
+        saved.winter.walls.retain(|wall| {
+            (0.0..=1.0).contains(&wall.position) && (0.0..=SNOWMAN_SECONDS).contains(&wall.seconds)
+        });
+        saved.winter.walls.truncate(MAX_SNOW_WALLS);
+        saved.tree = saved.tree.filter(|tree| tree.valid());
         Ok(saved)
     }
 
@@ -141,6 +165,7 @@ impl World {
             version: self.save.version,
             chibis: self.save.chibis.clone(),
             winter: WinterObjects::default(),
+            tree: None,
         });
     }
 
@@ -192,6 +217,14 @@ impl World {
 
     pub fn winter_mut(&mut self) -> &mut WinterObjects {
         &mut self.active_mut().winter
+    }
+
+    pub fn tree(&self) -> Option<Tree> {
+        self.preview.as_ref().unwrap_or(&self.save).tree
+    }
+
+    pub fn tree_mut(&mut self) -> &mut Option<Tree> {
+        &mut self.active_mut().tree
     }
 
     pub fn changed(&mut self) {
@@ -286,6 +319,11 @@ mod tests {
                 position: 0.78,
                 seconds: 124.0,
             });
+            world.winter_mut().walls.push(SnowWall {
+                position: 0.2,
+                seconds: 347.0,
+            });
+            *world.tree_mut() = Some(Tree::new(0.50, 2027, true));
         }
         {
             let mut world = World::open(path.clone(), "bear-girl");
@@ -295,6 +333,8 @@ mod tests {
             assert_eq!(world.winter().piles[0].position, 0.35);
             let saved = world.winter().snowman.unwrap();
             assert_eq!((saved.position, saved.seconds), (0.78, 124.0));
+            assert_eq!(world.winter().walls[0].seconds, 347.0);
+            assert_eq!(world.tree().unwrap().position, 0.50);
             assert!(world.update_season(Some(2028)));
             world.remove("bear-girl");
             world.remove("bear-girl");
@@ -303,6 +343,8 @@ mod tests {
         assert!(world.chibis().is_empty());
         assert!(world.winter().piles.is_empty());
         assert!(world.winter().snowman.is_none());
+        assert!(world.winter().walls.is_empty());
+        assert!(world.tree().is_some());
     }
 }
 #[test]
@@ -316,11 +358,14 @@ fn preview_never_writes_test_objects_or_rosters_to_the_scene_file() {
             position: 0.4,
             seconds: 89.0,
         });
+        *world.tree_mut() = Some(Tree::new(0.65, 2027, true));
         world.save_now();
         world.start_preview();
         world.update_season(Some(2099));
         world.add(pack::LION_ID.to_owned());
         assert!(world.winter().snowman.is_none());
+        assert!(world.tree().is_none());
+        *world.tree_mut() = Some(Tree::new(0.3, 2099, false));
         world.winter_mut().snowman = Some(Snowman {
             position: 0.6,
             seconds: 600.0,
@@ -336,4 +381,5 @@ fn preview_never_writes_test_objects_or_rosters_to_the_scene_file() {
     let world = World::open(path, "bear-girl");
     assert_eq!(world.chibis(), ["bear-girl"]);
     assert_eq!(world.winter().snowman.unwrap().position, 0.4);
+    assert_eq!(world.tree().unwrap().position, 0.65);
 }

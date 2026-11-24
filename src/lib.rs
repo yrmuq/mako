@@ -6,6 +6,7 @@ mod app;
 mod config;
 mod desktop;
 mod draw;
+mod festive;
 mod game;
 mod host_wayland;
 mod host_x11;

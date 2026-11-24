@@ -74,6 +74,7 @@ impl Season {
 
 pub struct Snow {
     date: Option<Date>,
+    effective_date: Date,
     winter_year: Option<i32>,
     check_at: Instant,
     flakes: Vec<Flake>,
@@ -131,9 +132,11 @@ impl From<Pixmap> for OverlayImage {
 impl Snow {
     pub fn new() -> Self {
         let now = Instant::now();
+        let date = Date::today();
         Self {
             date: None,
-            winter_year: Date::today().winter_year(),
+            effective_date: date,
+            winter_year: date.winter_year(),
             check_at: now + Duration::from_secs(10),
             flakes: Vec::new(),
             geometry: (0, 0),
@@ -150,6 +153,10 @@ impl Snow {
         self.winter_year
     }
 
+    pub fn effective_date(&self) -> Date {
+        self.effective_date
+    }
+
     pub fn set_date(&mut self, date: Option<Date>) {
         if self.date != date {
             self.date = date;
@@ -158,7 +165,8 @@ impl Snow {
     }
 
     fn refresh_date(&mut self, now: Instant) {
-        self.winter_year = self.date.unwrap_or_else(Date::today).winter_year();
+        self.effective_date = self.date.unwrap_or_else(Date::today);
+        self.winter_year = self.effective_date.winter_year();
         self.check_at = now + Duration::from_secs(10);
     }
 

@@ -9,8 +9,8 @@ use crate::pack::{BonePoint, Pack};
 use crate::props::SculptStage;
 use crate::rag::Ragdoll;
 use crate::sim::{
-    Activity, Pet, Room, FEET_X, FEET_Y, GRAVITY, HAND_REACH, HAND_RELEASE, REFERENCE_RISE,
-    SPRITE_H, SPRITE_W,
+    Activity, Pet, Room, Special, FEET_X, FEET_Y, GRAVITY, HAND_REACH, HAND_RELEASE,
+    REFERENCE_RISE, SPRITE_H, SPRITE_W,
 };
 
 struct Grip {
@@ -22,12 +22,14 @@ pub struct App {
     pub pet: Pet,
     pub room: Room,
     pub sculpt_stage: SculptStage,
+    pub cover: Option<Rect>,
     settings: Settings,
     pack: Pack,
     rag: Ragdoll,
     grip: Option<Grip>,
     committed_x: i32,
     committed_y: i32,
+    committed_cover: Option<Rect>,
     parts: Vec<Part>,
     committed_parts: Vec<Part>,
     trail: Vec<(f32, f32, f32)>,
@@ -56,12 +58,14 @@ impl App {
             pet,
             room,
             sculpt_stage: SculptStage::default(),
+            cover: None,
             settings,
             pack,
             rag,
             grip: None,
             committed_x: 0,
             committed_y: 0,
+            committed_cover: None,
             parts: Vec::new(),
             committed_parts: Vec::new(),
             trail: Vec::new(),
@@ -106,6 +110,7 @@ impl App {
                 | Activity::PackSnow
                 | Activity::ThrowSnow
                 | Activity::Sculpt
+                | Activity::Special(_)
         ) {
             self.pet.y = self.room.floor;
             self.pet.x = self.pet.x.clamp(self.room.left, self.room.right);
@@ -180,7 +185,9 @@ impl App {
     pub fn pointer(&mut self, lx: f32, ly: f32, kind: Pointer) {
         match kind {
             Pointer::LeftDown => {
-                if self.grip.is_some() {
+                if self.grip.is_some()
+                    || self.occluded(lx + self.committed_x as f32, ly + self.committed_y as f32)
+                {
                     return;
                 }
                 let Some(point) = draw::pick(&self.committed_parts, lx, ly) else {
@@ -317,6 +324,7 @@ impl App {
             Activity::PackSnow => Motion::PackSnow,
             Activity::ThrowSnow => Motion::ThrowSnow,
             Activity::Sculpt => Motion::Sculpt(self.sculpt_stage),
+            Activity::Special(action) => Motion::Special(action),
         }
     }
 
@@ -361,6 +369,8 @@ impl App {
                         | Activity::PackSnow
                         | Activity::ThrowSnow
                         | Activity::Sculpt
+                        | Activity::ClimbWall
+                        | Activity::Special(_)
                 ))
     }
 
@@ -369,7 +379,11 @@ impl App {
             return false;
         }
         let degrees = self.pack.local_degrees(self.motion_name(), self.pet.phase);
+        let tilt = self.pet.tilt();
         self.rag.seed(&degrees);
+        if self.pet.activity == Activity::ClimbWall {
+            self.rag.set_turn(tilt);
+        }
         self.rag
             .impact((vx * self.pet.face / 85.0).clamp(-12.0, 12.0));
         self.pet.knock_back(vx, vy);
@@ -407,12 +421,39 @@ impl App {
                 self.origin_y = 0;
             }
         }
+        if let Some(bounds) = self
+            .cover
+            .filter(|_| self.pet.activity == Activity::Special(Special::Hide))
+        {
+            let scale = self.scale as f32;
+            let x = |x: f32| {
+                ((x - self.origin_x as f32) * scale)
+                    .round()
+                    .clamp(0.0, frame.width as f32) as usize
+            };
+            let y = |y: f32| {
+                ((y - self.origin_y as f32) * scale)
+                    .round()
+                    .clamp(0.0, frame.height as f32) as usize
+            };
+            for row in frame
+                .bgra
+                .chunks_exact_mut(frame.width as usize * 4)
+                .take(y(bounds.bottom()))
+                .skip(y(bounds.top()))
+            {
+                row[x(bounds.left()) * 4..x(bounds.right()) * 4].fill(0);
+            }
+        }
         frame
     }
 
     pub fn note_committed(&mut self) {
         self.committed_x = self.origin_x;
         self.committed_y = self.origin_y;
+        self.committed_cover = self
+            .cover
+            .filter(|_| self.pet.activity == Activity::Special(Special::Hide));
         self.committed_parts = std::mem::take(&mut self.parts);
     }
 
@@ -436,7 +477,13 @@ impl App {
 
     pub fn hit_body(&self, screen_x: f32, screen_y: f32) -> bool {
         let (x, y) = self.pointer_from_screen(screen_x, screen_y);
-        draw::pick(&self.committed_parts, x, y).is_some()
+        !self.occluded(screen_x, screen_y) && draw::pick(&self.committed_parts, x, y).is_some()
+    }
+
+    fn occluded(&self, x: f32, y: f32) -> bool {
+        self.committed_cover.is_some_and(|cover| {
+            (cover.left()..cover.right()).contains(&x) && (cover.top()..cover.bottom()).contains(&y)
+        })
     }
 
     fn feet_x(&self) -> f32 {
@@ -467,10 +514,10 @@ impl App {
     }
 
     fn motion_phase(&self) -> f32 {
-        if self.pet.activity == Activity::SlideWall {
-            0.15
-        } else {
-            self.pet.phase
+        match self.pet.activity {
+            Activity::SlideWall => 0.15,
+            Activity::Special(Special::RunCover) => self.pet.phase * 1.8,
+            _ => self.pet.phase,
         }
     }
 

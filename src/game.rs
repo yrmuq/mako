@@ -9,6 +9,7 @@ use tiny_skia::{Point, Rect};
 
 use crate::app::{App, Pointer};
 use crate::config::{InputMode, Settings};
+use crate::festive::{Festive, FrameInfo};
 use crate::interactions::{Interactions, WinterArt};
 use crate::pack::Pack;
 use crate::season::{OverlayImage, Snow};
@@ -54,6 +55,7 @@ struct OrdinaryScene {
     pets: Vec<Instance>,
     interactions: Interactions,
     snowman: SnowmanMotion,
+    festive: Festive,
 }
 
 pub struct Game {
@@ -61,6 +63,7 @@ pub struct Game {
     pub snow: Snow,
     world: World,
     interactions: Interactions,
+    festive: Festive,
     winter_art: WinterArt,
     width: u32,
     room: Room,
@@ -89,6 +92,7 @@ impl Game {
             snow,
             world: startup.world,
             interactions: Interactions::new(),
+            festive: Festive::new(),
             winter_art: WinterArt::default(),
             width: 0,
             room,
@@ -192,6 +196,7 @@ impl Game {
                     pets,
                     interactions: std::mem::replace(&mut self.interactions, Interactions::new()),
                     snowman: std::mem::take(&mut self.snowman_motion),
+                    festive: std::mem::replace(&mut self.festive, Festive::new()),
                 });
             } else {
                 self.world.stop_preview();
@@ -199,6 +204,7 @@ impl Game {
                 self.pets = scene.pets;
                 self.interactions = scene.interactions;
                 self.snowman_motion = scene.snowman;
+                self.festive = scene.festive;
                 for pet in &mut self.pets {
                     pet.app.set_bottom(self.bottom);
                     pet.app.set_room(self.room.clone());
@@ -281,6 +287,7 @@ impl Game {
             ))
             .chain(self.interactions.ball_images(&self.winter_art))
             .chain(self.interactions.fragment_images(&self.winter_art))
+            .chain(self.festive.images(self.world.tree(), self.width, floor))
     }
 
     pub fn snowman_bounds(&self) -> Option<Rect> {
@@ -351,6 +358,17 @@ impl Game {
             self.contacts.clear();
         }
         let floor = (self.room.floor - self.bottom).max(0.0);
+        self.festive.tick(
+            &mut self.pets,
+            &mut self.world,
+            FrameInfo {
+                date: self.snow.effective_date(),
+                width: self.width,
+                floor,
+                scale: self.scale,
+                elapsed: dt,
+            },
+        );
         self.interactions.tick(
             &mut self.pets,
             &mut self.world,

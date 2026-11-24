@@ -11,7 +11,7 @@ use crate::pack::{is_builtin, BonePoint, Face, Pack, Pose, Sprite};
 use crate::props::SculptStage;
 #[cfg(test)]
 use crate::sim::FEET_Y;
-use crate::sim::{FEET_X, SPRITE_H, SPRITE_W, WALL_STROKE};
+use crate::sim::{Special, FEET_X, SPRITE_H, SPRITE_W, WALL_STROKE};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Motion {
@@ -33,6 +33,7 @@ pub enum Motion {
     PackSnow,
     ThrowSnow,
     Sculpt(SculptStage),
+    Special(Special),
 }
 
 impl Motion {
@@ -53,6 +54,7 @@ impl Motion {
             Self::Sculpt(SculptStage::Base) => "sculpt",
             Self::Sculpt(SculptStage::Middle) => "sculpt-middle",
             Self::Sculpt(SculptStage::Top) => "sculpt-top",
+            Self::Special(action) => action.animation(),
         }
     }
 }
@@ -246,9 +248,16 @@ pub fn collision_bounds(
     let (left, top, right, bottom) = frame_bounds(scene, &parts);
     let width = (right - left) as f32;
     let visible = Rect::from_xywh(left as f32, top as f32, width, (bottom - top) as f32)?;
-    let x = (origin.x + left as f32)
-        .round()
-        .clamp(0.0, (screen_width - width).max(0.0));
+    let rightmost = (screen_width - width).max(0.0);
+    let x = if matches!(scene.motion, Motion::ClimbWall | Motion::SlideWall) {
+        if scene.facing_left {
+            0.0
+        } else {
+            rightmost
+        }
+    } else {
+        (origin.x + left as f32).round().clamp(0.0, rightmost)
+    };
     body.intersect(&visible)?
         .transform(Transform::from_translate(x - left as f32, origin.y.round()))
 }
@@ -320,7 +329,11 @@ fn frame_bounds(scene: &Scene, parts: &[Part]) -> (i32, i32, i32, i32) {
             let (left, _, right, bottom) = surface_bounds();
             return (left, 0, right, bottom);
         }
-        Motion::Parachute | Motion::Hand | Motion::HandRelease | Motion::ThrowSnow => {
+        Motion::Parachute
+        | Motion::Hand
+        | Motion::HandRelease
+        | Motion::ThrowSnow
+        | Motion::Special(_) => {
             return surface_bounds();
         }
         _ => {}
@@ -386,8 +399,8 @@ fn pet_parts(scene: &Scene, pack: &Pack) -> (Vec<Part>, Option<Point>) {
         scene.cycle
     };
     let mut pose = pack.pose_for(anim, cycle, degrees, face);
-    if matches!(scene.motion, Motion::Sculpt(_)) {
-        plant_sculpting_feet(pack, &mut pose);
+    if plants_feet(scene.motion) {
+        plant_standing_feet(pack, &mut pose);
     }
     let (scale_x, scale_y) = scene.scales;
     let fit = (SPRITE_W / pack.canvas_w).min(SPRITE_H / pack.canvas_h);
@@ -508,7 +521,7 @@ fn pet_parts(scene: &Scene, pack: &Pack) -> (Vec<Part>, Option<Point>) {
             })
         })
         .collect();
-    if scene.grounded > 0.0 || matches!(scene.motion, Motion::Sculpt(_)) {
+    if scene.grounded > 0.0 || plants_feet(scene.motion) {
         align_floor_contacts(&mut parts, pack, ground, scene);
     }
     if scene.sad {
@@ -537,6 +550,9 @@ fn pet_parts(scene: &Scene, pack: &Pack) -> (Vec<Part>, Option<Point>) {
     }
     if scene.effect_amount > 0.0 {
         add_prop(scene, &mut parts, centre_x);
+    }
+    if let Motion::Special(action) = scene.motion {
+        add_special(scene, action, &mut parts, pack);
     }
     if (scene.motion == Motion::PackSnow && scene.cycle > 0.25)
         || (scene.motion == Motion::ThrowSnow && scene.cycle < crate::interactions::RELEASE_AT)
@@ -595,7 +611,15 @@ fn floor_group(pack: &Pack, mut index: usize) -> usize {
     }
 }
 
-fn plant_sculpting_feet(pack: &Pack, pose: &mut Pose) {
+fn plants_feet(motion: Motion) -> bool {
+    matches!(
+        motion,
+        Motion::Sculpt(_)
+            | Motion::Special(Special::Plant | Special::Water | Special::OpenGift | Special::Hide)
+    )
+}
+
+fn plant_standing_feet(pack: &Pack, pose: &mut Pose) {
     let hip = |name| pack.bones.iter().position(|bone| bone.name == name);
     let (Some(left), Some(right)) = (hip("left-leg"), hip("right-leg")) else {
         return;
@@ -622,8 +646,8 @@ fn plant_sculpting_feet(pack: &Pack, pose: &mut Pose) {
 }
 
 fn align_floor_contacts(parts: &mut [Part], pack: &Pack, floor: f32, scene: &Scene) {
-    let sculpting = matches!(scene.motion, Motion::Sculpt(_));
-    let amount = if sculpting { 1.0 } else { scene.grounded };
+    let standing = plants_feet(scene.motion);
+    let amount = if standing { 1.0 } else { scene.grounded };
     let mut contacts = [f32::NEG_INFINITY; 6];
     for part in parts.iter() {
         if let Some(joint) = part.joint {
@@ -637,12 +661,12 @@ fn align_floor_contacts(parts: &mut [Part], pack: &Pack, floor: f32, scene: &Sce
         if let Some(joint) = part.joint {
             let group = floor_group(pack, joint.bone);
             // Ground the lying legs together so their spacing follows the skeleton.
-            let edge = if !sculpting && group >= 4 {
+            let edge = if !standing && group >= 4 {
                 contacts[4].max(contacts[5])
             } else {
                 contacts[group]
             };
-            if edge.is_finite() && (!sculpting || group >= 4) {
+            if edge.is_finite() && (!standing || group >= 4) {
                 let offset = (floor - edge).clamp(0.0, floor * 0.24) * amount;
                 part.transform = part.transform.post_translate(0.0, offset);
             }
@@ -738,6 +762,102 @@ fn add_prop(scene: &Scene, parts: &mut Vec<Part>, centre_x: f32) {
     }
 }
 
+fn add_special(scene: &Scene, action: Special, parts: &mut Vec<Part>, pack: &Pack) {
+    let hand = snowball_centre(parts, pack);
+    let direction = if scene.facing_left { -1.0 } else { 1.0 };
+    if matches!(
+        action,
+        Special::Decorate | Special::TinselTree | Special::StarTree
+    ) {
+        if let Some(centre) = hand {
+            let sprite = crate::props::hand_ornament(action);
+            let size = scene.scales.0 * 41.0;
+            let scale = size / sprite.image.width() as f32;
+            parts.push(Part {
+                sprite: sprite.clone(),
+                transform: Transform::from_scale(scale, scale).post_translate(
+                    centre.x + direction * size * 0.26 - size * 0.5,
+                    centre.y - sprite.image.height() as f32 * scale * 0.72,
+                ),
+                joint: None,
+            });
+        }
+    }
+    if matches!(action, Special::Water | Special::Cannon) {
+        let Some(mut centre) = hand else { return };
+        let (sprite, size, angle) = if action == Special::Water {
+            (
+                crate::props::watering_can(),
+                86.0,
+                26.0 * (scene.cycle * 5.0).sin().max(0.0),
+            )
+        } else {
+            (crate::props::snow_cannon(), 128.0, -11.0)
+        };
+        let size = size * scene.scales.0;
+        centre.x += direction * size * 0.20;
+        let scale = size / sprite.image.width() as f32;
+        parts.push(Part {
+            sprite: sprite.clone(),
+            transform: Transform::from_translate(
+                -(sprite.image.width() as f32) * 0.5,
+                -(sprite.image.height() as f32) * 0.5,
+            )
+            .post_scale(scale * direction, scale)
+            .post_rotate(angle * direction)
+            .post_translate(centre.x, centre.y),
+            joint: None,
+        });
+    }
+    if action != Special::EatCandy || scene.cycle >= 1.72 {
+        return;
+    }
+    let bone_named = |part: &Part, name| {
+        part.joint
+            .is_some_and(|joint| pack.bones[joint.bone].name == name)
+    };
+    let Some(head) = parts.iter().find(|part| bone_named(part, "head")) else {
+        return;
+    };
+    let head_width = head.sprite.image.width() as f32 * head.transform.get_scale().0;
+    let Some(mouth) = parts.iter_mut().find(|part| bone_named(part, "mouth")) else {
+        return;
+    };
+    let mut centre = Point::from_xy(
+        mouth.sprite.image.width() as f32 * 0.5,
+        mouth.sprite.image.height() as f32 * 0.5,
+    );
+    mouth.transform.map_point(&mut centre);
+    let opening = ((scene.cycle - 0.35) / 0.36).clamp(0.0, 1.0);
+    if opening > 0.0 {
+        let sprite = crate::props::open_mouth();
+        let scale = head_width * (0.14 + 0.43 * opening) / sprite.image.width() as f32;
+        mouth.sprite = sprite.clone();
+        mouth.transform = Transform::from_scale(scale, scale).post_translate(
+            centre.x - sprite.image.width() as f32 * scale * 0.5,
+            centre.y - sprite.image.height() as f32 * scale * 0.37,
+        );
+        mouth.joint = None;
+    }
+    let raise = ((scene.cycle - 0.35) / 0.82).clamp(0.0, 1.0);
+    let bite = ((scene.cycle - 1.17) / 0.55).clamp(0.0, 1.0);
+    let start = hand.unwrap_or(Point::from_xy(centre.x + direction * 40.0, centre.y + 30.0));
+    let destination = Point::from_xy(centre.x + direction * head_width * 0.5, centre.y);
+    let x = start.x + (destination.x - start.x) * raise + (centre.x - destination.x) * bite;
+    let y = start.y + (destination.y - start.y) * raise;
+    let sprite = crate::props::candy();
+    let size = head_width * 1.22 * (1.0 - bite);
+    let scale = size / sprite.image.width() as f32;
+    parts.push(Part {
+        sprite: sprite.clone(),
+        transform: Transform::from_scale(scale, scale).post_translate(
+            x - size * 0.5,
+            y - sprite.image.height() as f32 * scale * 0.5,
+        ),
+        joint: None,
+    });
+}
+
 fn leg(name: &str) -> bool {
     name.ends_with("leg") || name.ends_with("foot")
 }
@@ -751,7 +871,8 @@ fn pose_contact(pack: &Pack, pose: &Pose, motion: Motion, view: Transform) -> Op
         | Motion::Listen
         | Motion::PackSnow
         | Motion::ThrowSnow
-        | Motion::Sculpt(_) => leg(bone),
+        | Motion::Sculpt(_)
+        | Motion::Special(_) => leg(bone),
         Motion::Sit => bone == "torso" || leg(bone),
         Motion::Down
         | Motion::Rise

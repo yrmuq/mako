@@ -375,3 +375,374 @@ fn snow_oval(image: &mut Pixmap, (x, y, w, h): (f32, f32, f32, f32)) {
         None,
     );
 }
+
+fn oval(image: &mut Pixmap, (x, y, w, h): (f32, f32, f32, f32), color: [u8; 4]) {
+    paint(image, color, None, |p| {
+        p.push_oval(tiny_skia::Rect::from_xywh(x, y, w, h).expect("oval bounds"));
+    });
+}
+
+fn resize_art(image: Pixmap, scale: u32) -> Pixmap {
+    if scale == 1 {
+        return image;
+    }
+    let mut large =
+        Pixmap::new(image.width() * scale, image.height() * scale).expect("scaled artwork");
+    large.draw_pixmap(
+        0,
+        0,
+        image.as_ref(),
+        &tiny_skia::PixmapPaint::default(),
+        Transform::from_scale(scale as f32, scale as f32),
+        None,
+    );
+    large
+}
+
+pub fn snow_wall(step: u8, scale: u32) -> Pixmap {
+    let mut image = Pixmap::new(112, 86).expect("wall dimensions");
+    let height = 8.0 + 76.0 * f32::from(step) / f32::from(SNOWMAN_STEPS);
+    let top = 86.0 - height;
+    let outline = |p: &mut PathBuilder| {
+        p.move_to(2.0, 86.0);
+        p.line_to(8.0, top + 7.0);
+        p.quad_to(11.0, top, 19.0, top);
+        p.line_to(93.0, top);
+        p.quad_to(101.0, top, 104.0, top + 7.0);
+        p.line_to(110.0, 86.0);
+        p.close();
+    };
+    paint(&mut image, [169, 205, 228, 255], None, outline);
+    paint(&mut image, [223, 241, 251, 255], None, |p| {
+        p.move_to(8.0, 85.0);
+        p.line_to(13.0, top + 8.0);
+        p.quad_to(15.0, top + 3.0, 23.0, top + 3.0);
+        p.line_to(89.0, top + 3.0);
+        p.quad_to(96.0, top + 3.0, 100.0, top + 10.0);
+        p.line_to(105.0, 83.0);
+        p.close();
+    });
+    paint(&mut image, [252, 254, 255, 255], Some(3.2), |p| {
+        p.move_to(18.0, top + 5.0);
+        p.quad_to(53.0, top + 2.0, 90.0, top + 5.0);
+    });
+    if height > 25.0 {
+        paint(&mut image, [173, 207, 229, 255], Some(1.4), |p| {
+            for (n, y) in (1..=3)
+                .map(|n| (n, top + n as f32 * 19.0))
+                .filter(|(_, y)| *y < 82.0)
+            {
+                p.move_to(14.0, y);
+                p.quad_to(55.0, y + 2.0, 100.0, y);
+                for x in if n % 2 == 0 {
+                    [38.0, 76.0]
+                } else {
+                    [26.0, 65.0]
+                } {
+                    p.move_to(x, y - 14.0);
+                    p.line_to(x + 1.0, y);
+                }
+            }
+        });
+    }
+    resize_art(image, scale)
+}
+
+pub fn tree(stage: u8, decorations: u8, scale: u32) -> Pixmap {
+    let mut image = Pixmap::new(145, 185).expect("tree dimensions");
+    let green = [40, 112, 76, 255];
+    let centre = 72.5;
+    if stage > 0 {
+        let size = [0.0, 0.10, 0.25, 0.46, 0.71, 1.0][usize::from(stage.min(5))];
+        paint(
+            &mut image,
+            [128, 85, 57, 255],
+            Some(2.0 + 7.0 * size),
+            |p| {
+                p.move_to(centre + 2.0, 162.0);
+                p.quad_to(centre - 2.0, 153.0, centre, 155.0 - 93.0 * size);
+            },
+        );
+        for tier in (0..stage.min(4)).rev() {
+            let n = f32::from(tier);
+            let y = 155.0 - (132.0 - n * 28.0) * size;
+            let half = (19.0 + n * 13.0) * size;
+            let height = (47.0 + n * 2.0) * size;
+            let branch = |p: &mut PathBuilder| {
+                p.move_to(centre, y);
+                p.quad_to(
+                    centre + half * 0.43,
+                    y + height * 0.63,
+                    centre + half,
+                    y + height,
+                );
+                p.quad_to(
+                    centre + half * 0.35,
+                    y + height * 1.14,
+                    centre,
+                    y + height * 0.96,
+                );
+                p.quad_to(
+                    centre - half * 0.49,
+                    y + height * 1.16,
+                    centre - half,
+                    y + height,
+                );
+                p.quad_to(centre - half * 0.35, y + height * 0.54, centre, y);
+                p.close();
+            };
+            paint(&mut image, green, None, branch);
+            paint(
+                &mut image,
+                [66, 145, 97, 255],
+                Some((2.4 * size).max(1.0)),
+                |p| {
+                    p.move_to(centre - half * 0.74, y + height * 0.91);
+                    p.quad_to(
+                        centre - half * 0.36,
+                        y + height * 0.63,
+                        centre - 1.0,
+                        y + height * 0.27,
+                    );
+                },
+            );
+        }
+    }
+    paint(&mut image, [132, 70, 60, 255], None, |p| {
+        p.move_to(50.0, 161.0);
+        p.line_to(95.0, 161.0);
+        p.line_to(89.0, 180.0);
+        p.quad_to(73.0, 185.0, 56.0, 180.0);
+        p.close();
+    });
+    oval(&mut image, (48.0, 156.0, 49.0, 12.0), [178, 104, 82, 255]);
+    oval(&mut image, (53.0, 157.0, 39.0, 6.0), [91, 58, 51, 255]);
+    if stage == 0 {
+        oval(&mut image, (69.0, 156.0, 7.0, 4.0), [221, 181, 104, 255]);
+    } else {
+        oval(&mut image, (70.0, 154.0, 5.0, 6.0), green);
+    }
+    if decorations >= 2 {
+        paint(&mut image, [241, 191, 97, 255], Some(2.8), |p| {
+            p.move_to(58.0, 58.0);
+            p.quad_to(75.0, 74.0, 92.0, 70.0);
+            p.move_to(48.0, 85.0);
+            p.quad_to(75.0, 106.0, 105.0, 102.0);
+            p.move_to(32.0, 117.0);
+            p.quad_to(73.0, 145.0, 123.0, 134.0);
+        });
+    }
+    for (index, (x, y, color)) in [
+        (65.0, 56.0, [227, 92, 100, 255]),
+        (87.0, 79.0, [146, 205, 255, 255]),
+        (49.0, 98.0, [244, 134, 161, 255]),
+        (108.0, 120.0, [224, 81, 99, 255]),
+        (71.0, 121.0, [191, 164, 249, 255]),
+        (41.0, 135.0, [149, 213, 249, 255]),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        if decorations >= if index < 3 { 1 } else { 3 } {
+            oval(&mut image, (x, y, 9.0, 10.0), color);
+            oval(
+                &mut image,
+                (x + 2.0, y + 1.0, 2.0, 3.0),
+                [255, 246, 230, 235],
+            );
+        }
+    }
+    if decorations >= 4 {
+        star(&mut image, centre, 21.0, 15.0, [255, 211, 73, 255]);
+        star(&mut image, centre - 1.0, 20.0, 8.0, [255, 233, 152, 255]);
+    }
+    resize_art(image, scale)
+}
+
+fn star(image: &mut Pixmap, cx: f32, cy: f32, radius: f32, color: [u8; 4]) {
+    paint(image, color, None, |p| {
+        for i in 0..10 {
+            let angle = i as f32 * std::f32::consts::PI / 5.0 - std::f32::consts::FRAC_PI_2;
+            let r = if i % 2 == 0 { radius } else { radius * 0.43 };
+            let (x, y) = (cx + r * angle.cos(), cy + r * angle.sin());
+            if i == 0 {
+                p.move_to(x, y);
+            } else {
+                p.line_to(x, y);
+            }
+        }
+        p.close();
+    });
+}
+
+pub fn hand_ornament(kind: crate::sim::Special) -> &'static Sprite {
+    use crate::sim::Special;
+    static BALL: OnceLock<Sprite> = OnceLock::new();
+    static TINSEL: OnceLock<Sprite> = OnceLock::new();
+    static STAR: OnceLock<Sprite> = OnceLock::new();
+    let cache = match kind {
+        Special::TinselTree => &TINSEL,
+        Special::StarTree => &STAR,
+        _ => &BALL,
+    };
+    cache.get_or_init(|| {
+        let mut image = Pixmap::new(42, 42).expect("ornament dimensions");
+        match kind {
+            Special::TinselTree => {
+                paint(&mut image, [244, 192, 89, 255], Some(4.5), |p| {
+                    p.move_to(7.0, 9.0);
+                    p.cubic_to(12.0, 20.0, 39.0, 1.0, 32.0, 21.0);
+                    p.cubic_to(27.0, 35.0, 12.0, 22.0, 35.0, 35.0);
+                });
+            }
+            Special::StarTree => star(&mut image, 21.0, 21.0, 19.0, [255, 211, 73, 255]),
+            _ => {
+                oval(&mut image, (7.0, 10.0, 28.0, 30.0), [218, 85, 121, 255]);
+                oval(&mut image, (12.0, 15.0, 6.0, 10.0), [255, 175, 186, 255]);
+                paint(&mut image, [240, 201, 105, 255], Some(3.0), |p| {
+                    p.move_to(17.0, 12.0);
+                    p.cubic_to(14.0, 2.0, 29.0, 2.0, 24.0, 12.0);
+                });
+            }
+        }
+        crop(image).expect("ornament artwork")
+    })
+}
+
+pub const FESTIVE_COLORS: [[u8; 4]; 4] = [
+    [219, 69, 104, 255],
+    [85, 161, 195, 255],
+    [238, 173, 62, 255],
+    [168, 111, 211, 255],
+];
+
+pub fn gift(kind: usize, scale: u32) -> Pixmap {
+    let mut image = Pixmap::new(33, 33).expect("gift dimensions");
+    let color = FESTIVE_COLORS[kind % FESTIVE_COLORS.len()];
+    paint(&mut image, color, None, |p| {
+        p.move_to(3.0, 11.0);
+        p.line_to(29.0, 11.0);
+        p.line_to(27.0, 33.0);
+        p.line_to(5.0, 33.0);
+        p.close();
+    });
+    let ribbon = [255, 226, 153, 255];
+    paint(&mut image, ribbon, Some(3.0), |p| {
+        p.move_to(16.0, 32.0);
+        p.line_to(16.0, 10.0);
+        p.cubic_to(1.0, 7.0, 9.0, 0.0, 16.0, 10.0);
+        p.cubic_to(21.0, -1.0, 29.0, 7.0, 16.0, 10.0);
+        p.move_to(4.0, 18.0);
+        p.line_to(28.0, 18.0);
+    });
+    resize_art(image, scale)
+}
+
+pub fn confetti(kind: usize, scale: u32) -> Pixmap {
+    let mut image = Pixmap::new(7, 7).expect("confetti dimensions");
+    paint(
+        &mut image,
+        FESTIVE_COLORS[kind % FESTIVE_COLORS.len()],
+        None,
+        |p| {
+            p.move_to(1.0, 2.0);
+            p.line_to(6.0, 0.5);
+            p.line_to(5.0, 6.0);
+            p.line_to(2.0, 7.0);
+            p.close();
+        },
+    );
+    resize_art(image, scale)
+}
+
+pub fn water_drop(scale: u32) -> Pixmap {
+    let mut image = Pixmap::new(6, 9).expect("water drop dimensions");
+    paint(&mut image, [125, 204, 245, 242], None, |p| {
+        p.move_to(3.0, 0.0);
+        p.cubic_to(2.3, 3.6, 0.0, 4.4, 0.4, 6.4);
+        p.cubic_to(1.0, 10.1, 6.0, 9.1, 5.7, 6.2);
+        p.quad_to(5.3, 3.4, 3.0, 0.0);
+        p.close();
+    });
+    resize_art(image, scale)
+}
+
+pub fn candy() -> &'static Sprite {
+    static ART: OnceLock<Sprite> = OnceLock::new();
+    ART.get_or_init(|| {
+        let mut image = Pixmap::new(138, 82).expect("candy dimensions");
+        paint(&mut image, [221, 88, 146, 255], None, |p| {
+            p.move_to(33.0, 32.0);
+            p.line_to(2.0, 14.0);
+            p.line_to(5.0, 64.0);
+            p.line_to(36.0, 48.0);
+            p.line_to(103.0, 48.0);
+            p.line_to(134.0, 64.0);
+            p.line_to(137.0, 14.0);
+            p.line_to(101.0, 31.0);
+            p.close();
+        });
+        oval(&mut image, (26.0, 5.0, 87.0, 73.0), [174, 62, 119, 255]);
+        oval(&mut image, (30.0, 8.0, 79.0, 66.0), [246, 131, 185, 255]);
+        paint(&mut image, [255, 223, 232, 255], Some(8.0), |p| {
+            p.move_to(45.0, 55.0);
+            p.cubic_to(27.0, 12.0, 90.0, 8.0, 93.0, 39.0);
+            p.cubic_to(94.0, 60.0, 57.0, 63.0, 55.0, 42.0);
+            p.quad_to(58.0, 27.0, 74.0, 39.0);
+        });
+        crop(image).expect("candy artwork")
+    })
+}
+
+pub fn open_mouth() -> &'static Sprite {
+    static ART: OnceLock<Sprite> = OnceLock::new();
+    ART.get_or_init(|| {
+        let mut image = Pixmap::new(72, 61).expect("open mouth dimensions");
+        oval(&mut image, (1.0, 1.0, 70.0, 59.0), [81, 40, 60, 255]);
+        oval(&mut image, (17.0, 31.0, 39.0, 24.0), [232, 130, 156, 255]);
+        oval(&mut image, (12.0, 4.0, 48.0, 13.0), [255, 232, 218, 255]);
+        crop(image).expect("open mouth artwork")
+    })
+}
+
+pub fn watering_can() -> &'static Sprite {
+    static ART: OnceLock<Sprite> = OnceLock::new();
+    ART.get_or_init(|| {
+        let mut image = Pixmap::new(76, 56).expect("watering can dimensions");
+        paint(&mut image, [79, 147, 188, 255], Some(5.0), |p| {
+            p.move_to(22.0, 23.0);
+            p.cubic_to(3.0, 3.0, 3.0, 41.0, 23.0, 39.0);
+            p.move_to(46.0, 34.0);
+            p.line_to(67.0, 16.0);
+        });
+        oval(&mut image, (17.0, 11.0, 37.0, 34.0), [113, 192, 221, 255]);
+        oval(&mut image, (19.0, 9.0, 32.0, 10.0), [68, 135, 174, 255]);
+        oval(&mut image, (65.0, 9.0, 9.0, 11.0), [94, 159, 191, 255]);
+        crop(image).expect("watering can artwork")
+    })
+}
+
+pub fn snow_cannon() -> &'static Sprite {
+    static ART: OnceLock<Sprite> = OnceLock::new();
+    ART.get_or_init(|| {
+        let mut image = Pixmap::new(112, 59).expect("snow cannon dimensions");
+        oval(&mut image, (6.0, 19.0, 50.0, 35.0), [112, 161, 204, 255]);
+        oval(&mut image, (16.0, 2.0, 31.0, 28.0), [227, 247, 255, 255]);
+        paint(&mut image, [100, 161, 209, 255], None, |p| {
+            p.move_to(42.0, 17.0);
+            p.line_to(97.0, 17.0);
+            p.line_to(104.0, 40.0);
+            p.line_to(40.0, 42.0);
+            p.close();
+        });
+        oval(&mut image, (88.0, 14.0, 23.0, 29.0), [206, 233, 249, 255]);
+        oval(&mut image, (95.0, 19.0, 15.0, 19.0), [68, 114, 157, 255]);
+        paint(&mut image, [245, 190, 96, 255], Some(4.0), |p| {
+            p.move_to(58.0, 20.0);
+            p.line_to(78.0, 20.0);
+            p.move_to(43.0, 42.0);
+            p.line_to(40.0, 57.0);
+        });
+        crop(image).expect("snow cannon artwork")
+    })
+}

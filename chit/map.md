@@ -5,7 +5,8 @@
 - `src/draw.rs` — draws the skeleton, builds face thumbnails and picks body parts using their rendered transforms.
 - `src/props.rs` — ceiling exit artwork, the talking mouth and snow object artwork.
 - `src/season.rs` — local and preview dates, seasons and snowfall.
-- `src/interactions.rs` — conversations, snowball physics, snowman work and ground snow rendering.
+- `src/festive.rs` — fir and gift dates, planting, watering, decoration, opening gifts and spring disposal.
+- `src/interactions.rs` — conversations, snowball combat, snowman and wall building, and ground snow rendering.
 - `src/world.rs` — ordinary scene save, temporary test scene, chibi rosters and snow objects.
 - `src/snowman.rs` — snowman drag speed and fragments.
 - `src/rag.rs` — suspended and free ragdoll motion, joint limits and landing pose.
