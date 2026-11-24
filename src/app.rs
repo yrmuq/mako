@@ -39,6 +39,7 @@ pub struct App {
     pub origin_x: i32,
     pub origin_y: i32,
     clock: f32,
+    sad_until: f32,
     blink_at: f32,
     blink_length: f32,
 }
@@ -71,6 +72,7 @@ impl App {
             origin_x: 0,
             origin_y: 0,
             clock: 0.0,
+            sad_until: 0.0,
             blink_at: next_blink(0.0),
             blink_length,
         };
@@ -279,6 +281,7 @@ impl App {
         Scene {
             cycle: self.motion_phase(),
             blink: (self.clock >= self.blink_at).then_some(self.clock - self.blink_at),
+            sad: self.clock < self.sad_until,
             motion: self.motion(),
             tilt,
             facing_left: self.pet.face < 0.0,
@@ -415,6 +418,14 @@ impl App {
 
     pub fn pack_id(&self) -> &str {
         &self.pack.id
+    }
+
+    pub fn pack(&self) -> Pack {
+        self.pack.clone()
+    }
+
+    pub fn mourn(&mut self) {
+        self.sad_until = self.clock + 4.0;
     }
 
     pub fn apply_settings(&mut self, settings: Settings) {

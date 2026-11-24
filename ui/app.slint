@@ -210,6 +210,7 @@ export struct ChibiRow {
     face: image,
     count: int,
     added: bool,
+    builtin: bool,
 }
 
 component ChibiName inherits HorizontalLayout {
@@ -420,7 +421,7 @@ export component SettingsWindow inherits Window {
     in-out property <int> width-value: 100;
     in-out property <int> height-value: 100;
     in property <string> version;
-    in property <[ChibiRow]> rows;
+    in property <int> favorite-count;
     in property <[ChibiRow]> installed;
     in property <[Attribution]> parts;
     in property <bool> importing;
@@ -428,7 +429,16 @@ export component SettingsWindow inherits Window {
     in property <string> update-status;
     in property <bool> update-available;
     in property <bool> checking;
-    private property <bool> adding;
+    in-out property <bool> preview-date;
+    in-out property <int> date-day: 1;
+    in-out property <int> date-month: 1;
+    in-out property <int> date-year: 2026;
+    in property <int> date-days: 31;
+    private property <string> deleting-id;
+    private property <string> deleting-name;
+    private property <int> tile-columns: 4;
+    private property <length> tile-height: 146px;
+    private property <length> tile-grid-height: Math.max(0px, Math.ceil(root.installed.length * 1.0 / root.tile-columns) * (root.tile-height + 8px) - 8px);
     private property <int> drag-from: -1;
     private property <int> drag-to: -1;
     callback language-selected(int);
@@ -442,7 +452,9 @@ export component SettingsWindow inherits Window {
     callback add-favorite(string);
     callback remove-favorite(string);
     callback move-favorite(int, int);
-    callback refresh-installed();
+    callback uninstall-chibi(string);
+    callback preview-selected(bool);
+    callback date-selected(int, int, int);
     callback import-zip();
     callback logo-tapped();
     callback check-update();
@@ -510,65 +522,99 @@ export component SettingsWindow inherits Window {
         }
         if root.tab == 1: VerticalLayout {
             padding: 8px; spacing: 10px;
-            if root.rows.length == 0: Text { text: Translations.tr(24); color: Breeze.inactive; }
-            ScrollView {
-                VerticalLayout {
-                    spacing: 6px;
-                    for row[i] in root.rows: Rectangle {
-                        height: 58px; border-radius: Breeze.radius; border-width: 1px;
+            grid-scroll := ScrollView {
+                content-width: self.visible-width;
+                content-height: root.tile-grid-height;
+                Rectangle {
+                    width: grid-scroll.visible-width;
+                    height: root.tile-grid-height;
+                    for row[i] in root.installed: tile := Rectangle {
+                        width: (parent.width - (root.tile-columns - 1) * 8px) / root.tile-columns;
+                        height: root.tile-height;
+                        x: Math.mod(i, root.tile-columns) * (self.width + 8px);
+                        y: Math.floor(i * 1.0 / root.tile-columns) * (self.height + 8px);
+                        border-radius: Breeze.radius;
+                        border-width: 1px;
                         border-color: root.drag-to == i ? Breeze.selection : Breeze.frame;
                         background: root.drag-from == i ? Breeze.button-hover : Breeze.button;
-                        HorizontalLayout {
-                            padding-left: 8px; padding-right: 7px;
-                            Rectangle {
-                                horizontal-stretch: 1;
-                                ChibiName { entry: row; width: parent.width; height: parent.height; }
-                                forward-focus: reorder-keys;
-                                reorder-keys := FocusScope {
-                                    key-pressed(event) => {
-                                        if event.text == Key.UpArrow && i > 0 { root.move-favorite(i, i - 1); return accept; }
-                                        if event.text == Key.DownArrow && i + 1 < root.rows.length { root.move-favorite(i, i + 1); return accept; }
-                                        return reject;
+                        accessible-role: list-item;
+                        accessible-label: row.name;
+                        Image {
+                            source: row.face; y: 10px;
+                            width: 74px; height: 74px;
+                            x: (parent.width - self.width) / 2;
+                            image-fit: contain;
+                        }
+                        Text {
+                            text: row.name; color: Breeze.fg; horizontal-alignment: center;
+                            overflow: elide; y: 90px; x: 5px; width: parent.width - 10px;
+                        }
+                        if row.added: Rectangle {
+                            width: parent.width; height: 113px;
+                            forward-focus: reorder;
+                            reorder := FocusScope {
+                                key-pressed(event) => {
+                                    if event.text == Key.LeftArrow && i > 0 { root.move-favorite(i, i - 1); return accept; }
+                                    if event.text == Key.RightArrow && i + 1 < root.favorite-count { root.move-favorite(i, i + 1); return accept; }
+                                    if event.text == Key.UpArrow && i >= root.tile-columns { root.move-favorite(i, i - root.tile-columns); return accept; }
+                                    if event.text == Key.DownArrow && i + root.tile-columns < root.favorite-count { root.move-favorite(i, i + root.tile-columns); return accept; }
+                                    return reject;
+                                }
+                            }
+                            TouchArea {
+                                mouse-cursor: root.drag-from == i ? grabbing : grab;
+                                pointer-event(event) => {
+                                    if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                                        root.drag-from = i;
+                                        root.drag-to = i;
+                                        reorder.focus();
+                                    }
+                                    if event.kind == PointerEventKind.up && root.drag-from == i {
+                                        root.move-favorite(i, root.drag-to);
+                                        root.drag-from = -1;
+                                        root.drag-to = -1;
+                                    }
+                                    if event.kind == PointerEventKind.cancel {
+                                        root.drag-from = -1;
+                                        root.drag-to = -1;
                                     }
                                 }
-                                drag := TouchArea {
-                                    mouse-cursor: root.drag-from == i ? grabbing : grab;
-                                    pointer-event(event) => {
-                                        if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
-                                            root.drag-from = i;
-                                            root.drag-to = i;
-                                            reorder-keys.focus();
-                                        }
-                                        if event.kind == PointerEventKind.up && root.drag-from == i {
-                                            root.move-favorite(i, root.drag-to);
-                                            root.drag-from = -1;
-                                            root.drag-to = -1;
-                                        }
-                                        if event.kind == PointerEventKind.cancel {
-                                            root.drag-from = -1;
-                                            root.drag-to = -1;
-                                        }
-                                    }
-                                    moved => {
-                                        if root.drag-from == i {
-                                            root.drag-to = Math.clamp(i + Math.round((self.mouse-y - self.pressed-y) / 64px), 0, root.rows.length - 1);
-                                        }
+                                moved => {
+                                    if root.drag-from == i {
+                                        root.drag-to = Math.clamp(i
+                                            + Math.round((self.mouse-x - self.pressed-x) / (tile.width + 8px))
+                                            + root.tile-columns * Math.round((self.mouse-y - self.pressed-y) / (tile.height + 8px)),
+                                            0, root.favorite-count - 1);
                                     }
                                 }
                             }
-                            VerticalLayout {
-                                width: 32px; alignment: center;
-                                ToolButton {
-                                    label: Translations.tr(21) + " " + row.name; flat: true;
-                                    clicked => { root.remove-favorite(row.id); }
-                                    Text { text: "×"; font-size: 24px; color: #da4453; }
-                                }
+                        }
+                        ToolButton {
+                            x: 5px; y: parent.height - self.height - 4px; width: 28px; height: 28px;
+                            label: Translations.tr(row.added ? 21 : 57) + " " + row.name;
+                            flat: true;
+                            clicked => {
+                                if row.added { root.remove-favorite(row.id); } else { root.add-favorite(row.id); }
                             }
+                            Text { text: row.added ? "−" : "+"; font-size: 22px; color: Breeze.fg; }
+                        }
+                        ToolButton {
+                            x: parent.width - self.width - 5px; y: parent.height - self.height - 4px;
+                            width: 28px; height: 28px;
+                            enabled: !row.builtin;
+                            label: Translations.tr(row.builtin ? 65 : 58) + " " + row.name;
+                            flat: true;
+                            clicked => {
+                                root.deleting-id = row.id;
+                                root.deleting-name = row.name;
+                            }
+                            Text { text: "×"; font-size: 24px; color: row.builtin ? Breeze.inactive : #da4453; }
                         }
                     }
                 }
             }
-            Button { text: Translations.tr(18); clicked => { root.refresh-installed(); root.adding = true; } }
+            if root.status != "": Text { text: root.status; color: Breeze.fg; wrap: word-wrap; }
+            Button { text: Translations.tr(22); enabled: !root.importing; clicked => { root.import-zip(); } }
         }
         if root.tab == 2: ScrollView {
             VerticalLayout {
@@ -656,44 +702,64 @@ export component SettingsWindow inherits Window {
                 }
                 Text { text: "\{Math.round(root.snow-speed)}%"; width: 56px; vertical-alignment: center; color: Breeze.fg; }
             }
+            SettingRow {
+                label: Translations.tr(53);
+                CheckBox {
+                    checked <=> root.preview-date;
+                    toggled => { root.preview-selected(self.checked); }
+                }
+            }
+            HorizontalLayout {
+                spacing: 10px;
+                VerticalLayout {
+                    spacing: 4px;
+                    Text { text: Translations.tr(54); color: Breeze.fg; }
+                    SpinBox {
+                        enabled: root.preview-date; minimum: 1; maximum: root.date-days; value <=> root.date-day;
+                        edited(value) => { root.date-selected(value, root.date-month, root.date-year); }
+                    }
+                }
+                VerticalLayout {
+                    spacing: 4px;
+                    Text { text: Translations.tr(55); color: Breeze.fg; }
+                    SpinBox {
+                        enabled: root.preview-date; minimum: 1; maximum: 12; value <=> root.date-month;
+                        edited(value) => { root.date-selected(root.date-day, value, root.date-year); }
+                    }
+                }
+                VerticalLayout {
+                    spacing: 4px;
+                    Text { text: Translations.tr(56); color: Breeze.fg; }
+                    SpinBox {
+                        enabled: root.preview-date; minimum: 1; maximum: 9999; value <=> root.date-year;
+                        edited(value) => { root.date-selected(root.date-day, root.date-month, value); }
+                    }
+                }
+            }
         }
     }
-    if root.adding: Rectangle {
-        width: root.width; height: root.height; background: #00000055;
+    if root.deleting-id != "": Rectangle {
+        width: root.width; height: root.height; background: #00000077;
         TouchArea {}
         Rectangle {
-            width: parent.width - 40px; height: parent.height - 80px;
-            x: 20px; y: 40px;
+            width: Math.min(parent.width - 32px, 380px); height: 160px;
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
             background: Breeze.window; border-color: Breeze.frame; border-radius: Breeze.radius; border-width: 1px;
             VerticalLayout {
-                padding: 14px; spacing: 10px;
+                padding: 16px; spacing: 12px;
+                Text { text: Translations.tr(58) + " " + root.deleting-name + "?"; font-weight: 600; color: Breeze.fg; wrap: word-wrap; }
+                Text { text: Translations.tr(59); color: Breeze.fg; wrap: word-wrap; vertical-stretch: 1; }
                 HorizontalLayout {
-                    Text { text: Translations.tr(23); font-weight: 600; color: Breeze.fg; vertical-alignment: center; horizontal-stretch: 1; }
-                    ToolButton { label: Translations.tr(33); clicked => { root.adding = false; } Text { text: "×"; color: Breeze.fg; font-size: 24px; } }
-                }
-                ScrollView {
-                    VerticalLayout {
-                        spacing: 6px;
-                        for row in root.installed: Rectangle {
-                            height: 52px; background: Breeze.button; border-color: Breeze.frame; border-width: 1px; border-radius: Breeze.radius;
-                            HorizontalLayout {
-                                padding: 7px; spacing: 8px;
-                                ChibiName { entry: row; horizontal-stretch: 1; }
-                                if row.added: Text { text: "✓"; color: Breeze.inactive; vertical-alignment: center; width: 32px; horizontal-alignment: center; }
-                                if !row.added: VerticalLayout {
-                                    width: 32px; alignment: center;
-                                    ToolButton {
-                                        label: Translations.tr(18) + " " + row.name;
-                                        clicked => { root.add-favorite(row.id); }
-                                        Text { text: "+"; color: Breeze.fg; font-size: 22px; }
-                                    }
-                                }
-                            }
+                    spacing: 8px; alignment: end;
+                    Button { text: Translations.tr(60); clicked => { root.deleting-id = ""; } }
+                    Button {
+                        text: Translations.tr(61);
+                        clicked => {
+                            root.uninstall-chibi(root.deleting-id);
+                            root.deleting-id = "";
                         }
                     }
                 }
-                if root.status != "": Text { text: root.status; color: Breeze.fg; wrap: word-wrap; }
-                Button { text: Translations.tr(22); enabled: !root.importing; clicked => { root.import-zip(); } }
             }
         }
     }

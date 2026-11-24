@@ -20,6 +20,7 @@ use crate::game::{Command, Startup};
 use crate::i18n::{Catalog, ID_NAME, ID_QUIT};
 use crate::icons;
 use crate::pack::{self, Pack};
+use crate::season::Date;
 use crate::updates::{self, Status};
 use crate::{Fault, Session};
 
@@ -68,9 +69,9 @@ enum Action {
     Remove(String),
     Favorite(String, bool),
     Move(i32, i32),
-    Reload,
     Import,
     Imported(Option<Result<Pack, Fault>>),
+    Uninstall(String),
     Language(i32),
     Theme(i32),
     InputMode(i32),
@@ -79,6 +80,8 @@ enum Action {
     Tiles(bool),
     Scale(f32),
     Proportions(i32, i32),
+    Preview(bool),
+    Date(i32, i32, i32),
     Logo,
     Check,
     Updated(Result<Option<String>, ()>),
@@ -211,6 +214,7 @@ struct Desktop {
     catalog: Catalog,
     entries: Vec<Entry>,
     counts: HashMap<String, i32>,
+    ordinary_counts: Option<HashMap<String, i32>>,
     tray: Option<ksni::blocking::Handle<Tray>>,
     tray_icons: TrayIcons,
     next_icon_check: Instant,
@@ -320,10 +324,6 @@ impl Desktop {
                     self.refresh_rows();
                 }
             }
-            Action::Reload => {
-                self.entries = pack::installed().into_iter().map(Entry::new).collect();
-                self.refresh_rows();
-            }
             Action::Import => {
                 if self.importing {
                     return;
@@ -354,6 +354,30 @@ impl Desktop {
                         self.import_result = Some(42);
                     }
                     None => {}
+                }
+                self.refresh_status();
+            }
+            Action::Uninstall(id) => {
+                match pack::uninstall(&id) {
+                    Ok(()) => {
+                        let _ = self.commands.send(Command::Uninstall(id.clone()));
+                        self.entries.retain(|entry| entry.pack.id != id);
+                        self.counts.remove(&id);
+                        if let Some(counts) = &mut self.ordinary_counts {
+                            counts.remove(&id);
+                        }
+                        self.config.favorites.retain(|favorite| *favorite != id);
+                        if self.config.chibi == id {
+                            self.config.chibi = pack::BUILTIN_ID.to_owned();
+                        }
+                        self.save();
+                        self.import_result = Some(62);
+                        self.refresh_rows();
+                    }
+                    Err(error) => {
+                        eprintln!("{error}");
+                        self.import_result = Some(63);
+                    }
                 }
                 self.refresh_status();
             }
@@ -419,6 +443,27 @@ impl Desktop {
                 self.refresh_size_controls();
                 self.apply_settings();
             }
+            Action::Preview(enabled) => {
+                if enabled != self.config.preview_date.is_some() {
+                    if enabled {
+                        self.ordinary_counts = Some(self.counts.clone());
+                        self.config.preview_date = Some(Date::today());
+                    } else {
+                        self.config.preview_date = None;
+                        self.counts = self.ordinary_counts.take().expect("ordinary scene counts");
+                    }
+                    let _ = self.commands.send(Command::Appearance(self.config.clone()));
+                    self.refresh_rows();
+                    self.refresh_date_controls();
+                }
+            }
+            Action::Date(day, month, year) => {
+                if self.config.preview_date.is_some() {
+                    self.config.preview_date = Some(Date::new(day, month, year));
+                    let _ = self.commands.send(Command::Appearance(self.config.clone()));
+                }
+                self.refresh_date_controls();
+            }
             Action::Logo => {
                 if self.taps.push(Instant::now()) {
                     if let Some(window) = &self.window {
@@ -481,6 +526,14 @@ impl Desktop {
             }
         }
         if self.popup_transition.is_none() && Instant::now() >= self.next_icon_check {
+            if self.config.preview_date.is_none()
+                && self
+                    .window
+                    .as_ref()
+                    .is_some_and(|window| window.get_dev_open())
+            {
+                self.refresh_date_controls();
+            }
             self.next_icon_check = Instant::now() + Duration::from_secs(1);
             let theme = icons::Theme::load();
             if theme != self.tray_icons.theme {
@@ -655,8 +708,13 @@ impl Desktop {
                 id
             );
             connect!(on_move_favorite, Action::Move(from, to), from, to);
-            connect!(on_refresh_installed, Action::Reload);
             connect!(on_import_zip, Action::Import);
+            connect!(on_uninstall_chibi, Action::Uninstall(id.to_string()), id);
+            connect!(on_preview_selected, Action::Preview(enabled), enabled);
+            let date_tx = tx.clone();
+            window.on_date_selected(move |day, month, year| {
+                let _ = date_tx.send(Action::Date(day, month, year));
+            });
             connect!(on_logo_tapped, Action::Logo);
             connect!(on_check_update, Action::Check);
             connect!(on_open_link, Action::Link(url.to_string()), url);
@@ -708,6 +766,7 @@ impl Desktop {
         window.set_width_value(self.config.width as i32);
         window.set_height_value(self.config.height as i32);
         self.refresh_size_controls();
+        self.refresh_date_controls();
         self.refresh_style();
         self.refresh_rows();
         self.refresh_status();
@@ -727,18 +786,30 @@ impl Desktop {
         }
     }
 
+    fn refresh_date_controls(&self) {
+        if let Some(window) = &self.window {
+            let date = self.config.preview_date.unwrap_or_else(Date::today);
+            window.set_preview_date(self.config.preview_date.is_some());
+            window.set_date_year(date.year);
+            window.set_date_month(date.month);
+            window.set_date_days(date.days());
+            window.set_date_day(date.day);
+        }
+    }
+
     fn row(&self, entry: &Entry) -> ChibiRow {
         let id = &entry.pack.id;
         ChibiRow {
             id: id.into(),
-            name: if id == pack::BUILTIN_ID {
-                self.catalog.text(ID_NAME).into()
-            } else {
-                entry.pack.name.as_str().into()
+            name: match id.as_str() {
+                pack::BUILTIN_ID => self.catalog.text(ID_NAME).into(),
+                pack::LION_ID => self.catalog.text(64).into(),
+                _ => entry.pack.name.as_str().into(),
             },
             face: entry.face.clone(),
             count: self.counts.get(id).copied().unwrap_or(0),
             added: self.config.favorites.contains(id),
+            builtin: pack::is_builtin(id),
         }
     }
 
@@ -752,20 +823,27 @@ impl Desktop {
     }
 
     fn refresh_rows(&self) {
-        let rows = model(self.favorite_rows());
+        let favorites = self.favorite_rows();
+        let favorite_count = favorites.len() as i32;
+        let rows = model(favorites);
         if let Some(popup) = &self.popup {
             popup.set_rows(rows.clone());
         }
         if let Some(window) = &self.window {
-            window.set_rows(rows);
-            window.set_installed(model(
-                self.entries.iter().map(|entry| self.row(entry)).collect(),
-            ));
+            let mut installed = self.favorite_rows();
+            installed.extend(
+                self.entries
+                    .iter()
+                    .filter(|entry| !self.config.favorites.contains(&entry.pack.id))
+                    .map(|entry| self.row(entry)),
+            );
+            window.set_favorite_count(favorite_count);
+            window.set_installed(model(installed));
         }
     }
 
     fn translations(&self) -> ModelRc<SharedString> {
-        model((0..=52).map(|id| self.catalog.text(id).into()).collect())
+        model((0..=65).map(|id| self.catalog.text(id).into()).collect())
     }
 
     fn refresh_style(&self) {
@@ -963,6 +1041,7 @@ pub(crate) fn run(session: Session, open_settings: bool) -> Result<(), Fault> {
         catalog,
         entries,
         counts,
+        ordinary_counts: None,
         tray,
         tray_icons,
         next_icon_check: Instant::now() + Duration::from_secs(1),

@@ -15,6 +15,49 @@ enum Season {
     Winter,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Date {
+    pub day: i32,
+    pub month: i32,
+    pub year: i32,
+}
+
+impl Date {
+    pub fn new(day: i32, month: i32, year: i32) -> Self {
+        let month = month.clamp(1, 12);
+        let year = year.clamp(1, 9999);
+        let mut date = Self { day, month, year };
+        date.day = day.clamp(1, date.days());
+        date
+    }
+
+    pub fn days(self) -> i32 {
+        match self.month {
+            2 if self.year % 4 == 0 && (self.year % 100 != 0 || self.year % 400 == 0) => 29,
+            2 => 28,
+            4 | 6 | 9 | 11 => 30,
+            _ => 31,
+        }
+    }
+
+    pub fn today() -> Self {
+        let mut local = std::mem::MaybeUninit::<libc::tm>::uninit();
+        // localtime_r writes the supplied structure only on success.
+        unsafe {
+            let now = libc::time(std::ptr::null_mut());
+            if libc::localtime_r(&now, local.as_mut_ptr()).is_null() {
+                return Self::new(1, 3, 1970);
+            }
+            let date = local.assume_init();
+            Self::new(date.tm_mday, date.tm_mon + 1, date.tm_year + 1900)
+        }
+    }
+
+    fn winter_year(self) -> Option<i32> {
+        Season::winter_year(self.year, self.month, self.day)
+    }
+}
+
 impl Season {
     fn for_date(month: i32, day: i32) -> Self {
         match (month, day) {
@@ -24,25 +67,13 @@ impl Season {
         }
     }
 
-    fn local() -> Option<i32> {
-        let mut local = std::mem::MaybeUninit::<libc::tm>::uninit();
-        // localtime_r writes the supplied structure only on success.
-        unsafe {
-            let now = libc::time(std::ptr::null_mut());
-            if libc::localtime_r(&now, local.as_mut_ptr()).is_null() {
-                return None;
-            }
-            let date = local.assume_init();
-            Self::winter_year(date.tm_year + 1900, date.tm_mon + 1, date.tm_mday)
-        }
-    }
-
     fn winter_year(year: i32, month: i32, day: i32) -> Option<i32> {
         (Self::for_date(month, day) != Self::Ordinary).then(|| year + i32::from(month >= 11))
     }
 }
 
 pub struct Snow {
+    date: Option<Date>,
     winter_year: Option<i32>,
     check_at: Instant,
     flakes: Vec<Flake>,
@@ -101,7 +132,8 @@ impl Snow {
     pub fn new() -> Self {
         let now = Instant::now();
         Self {
-            winter_year: Season::local(),
+            date: None,
+            winter_year: Date::today().winter_year(),
             check_at: now + Duration::from_secs(10),
             flakes: Vec::new(),
             geometry: (0, 0),
@@ -118,11 +150,22 @@ impl Snow {
         self.winter_year
     }
 
+    pub fn set_date(&mut self, date: Option<Date>) {
+        if self.date != date {
+            self.date = date;
+            self.refresh_date(Instant::now());
+        }
+    }
+
+    fn refresh_date(&mut self, now: Instant) {
+        self.winter_year = self.date.unwrap_or_else(Date::today).winter_year();
+        self.check_at = now + Duration::from_secs(10);
+    }
+
     pub fn tick(&mut self, dt: f32, width: u32, floor: u32, scale: u32, settings: &Settings) {
         let now = Instant::now();
         if now >= self.check_at {
-            self.winter_year = Season::local();
-            self.check_at = now + Duration::from_secs(10);
+            self.refresh_date(now);
         }
         if !self.active() || !settings.precipitation || width == 0 || floor == 0 {
             self.flakes.clear();
@@ -267,4 +310,18 @@ mod tests {
         assert!(snow.active());
         assert!(snow.images().next().is_none());
     }
+}
+#[test]
+fn changing_the_calendar_clamps_days_and_recomputes_the_season_immediately() {
+    assert_eq!(Date::new(31, 2, 2028), Date::new(29, 2, 2028));
+    assert_eq!(Date::new(31, 2, 2100), Date::new(28, 2, 2100));
+    let mut snow = Snow::new();
+    snow.set_date(Some(Date::new(20, 11, 2040)));
+    assert_eq!(snow.winter_year(), Some(2041));
+    snow.set_date(Some(Date::new(28, 2, 2041)));
+    assert_eq!(snow.winter_year(), Some(2041));
+    snow.set_date(Some(Date::new(1, 3, 2041)));
+    assert_eq!(snow.winter_year(), None);
+    snow.set_date(None);
+    assert_eq!(snow.winter_year(), Date::today().winter_year());
 }

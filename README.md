@@ -18,7 +18,7 @@
 
 ## Features
 
-- One built-in character with separately animated body parts and point-based mouse grabs.
+- Bear girl and Lion girl with separately animated body parts and point-based mouse grabs.
 - Multiple live chibis, ZIP character packs and a quick list in the KDE tray.
 - English and Russian settings with native Wayland and X11 support.
 
@@ -33,9 +33,9 @@
 | Tray icon | Open the quick panel. Use `+` or `−` to add or remove one copy of a chibi. |
 | Gear and pin | Open Settings or keep the quick panel open when it loses focus. |
 | General | Choose the language, theme, interaction mode and tray layout (List or Tiles). Toggle precipitation to show or hide falling snow. The Size slider shows the chibi's base height in logical pixels, including its Dev height proportion. The default size is 115 × 108 px. |
-| Chibis | Drag rows to reorder chibis in the tray. Use the cross to remove a row, or Add to browse and import installed chibis. |
+| Chibis | Use `+` and `−` on a tile to add or remove a chibi in the tray list. Drag a marked tile to reorder it. A red `×` opens the confirmation for uninstalling a custom chibi and removing its active copies. |
 | About | View the project details and check for updates. Click the logo five times to reveal Dev. |
-| Dev | Adjust chibi width and height independently. Change snowflake size and snowfall speed. Each control ranges from 25% to 200%. |
+| Dev | Adjust chibi proportions and snowfall from 25% to 200%. Set a custom day, month and year to try a separate scene for the current session. Turn off the custom date to return to the ordinary scene. |
 
 | Interaction mode | Pointer input |
 | --- | --- |
@@ -47,7 +47,7 @@ Bear girl randomly walks, sits or pauses on the upper edge of the bottom panel. 
 
 Chibis have a 10% chance to climb when they reach a screen edge. They grip the wall with hands and feet and pull themselves upward. When they reach the ceiling, they usually parachute down. In 5% of climbs that reach the ceiling, the chibi crawls to the center and a hand carries it down. Nearby chibis sometimes stop and take turns talking and gesturing.
 
-Snow falls to the top of the bottom panel in the festive period (November 20–January 13) and winter period (January 14–February 28), using local dates. Both periods have slippery walls, snow piles and a shared snowman. Chibis make snowballs from the piles and can knock each other over. Any chibi can work on the snowman for 3–5 seconds at a time, and it takes about ten minutes of active work to finish. Turning off precipitation keeps the snow piles and winter activities available.
+Snow falls to the top of the bottom panel in the festive period (November 20–January 13) and winter period (January 14–February 28), using local dates. Both periods have slippery walls, snow piles and a shared snowman. Chibis make snowballs from the piles and can knock each other over. Any chibi can work on the snowman for 3–5 seconds at a time, and it takes about ten minutes of active work to finish. Drag the snowman to move it along the panel, or flick it to break it. The chibis will continue building at the new spot after a gentle move. Turning off precipitation keeps the snow piles and winter activities available.
 
 The active chibis and snow objects are saved to `$XDG_STATE_HOME/mako/scene.json` (default `~/.local/state/mako/scene.json`). Chibis start on the floor. The piles and snowman, including its progress, keep their places until the snow season ends.
 
@@ -55,7 +55,7 @@ The system language follows `LANGUAGE`, `LC_ALL`, `LC_MESSAGES` and `LANG`. The 
 
 ### Character archives
 
-Use **Chibis → Add → Import** to install a ZIP. Installed archives are stored in `$XDG_DATA_HOME/mako/chibis/`, or `~/.local/share/mako/chibis/` by default. A pack requires a name in `heart`. Missing `body` or `anima` files use bear girl's skeleton or animations. A pack can add optional `creature/eyes-shock.png` and `creature/mouth-shock.png` sprites for bones named `eyes` and `mouth`.
+Use **Chibis → Import** to install a ZIP. Installed archives are stored in `$XDG_DATA_HOME/mako/chibis/`, or `~/.local/share/mako/chibis/` by default. A pack requires a name in `heart`. Missing `body` or `anima` files use bear girl's skeleton or animations. A pack can add optional `creature/eyes-shock.png` and `creature/mouth-shock.png` sprites for bones named `eyes` and `mouth`.
 
 | Path | Role |
 | --- | --- |

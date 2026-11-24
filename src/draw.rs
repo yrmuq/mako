@@ -7,7 +7,7 @@
 use tiny_skia::PremultipliedColorU8;
 use tiny_skia::{Pixmap, PixmapPaint, Point, Rect, Transform};
 
-use crate::pack::{BonePoint, Face, Pack, Pose, Sprite, BUILTIN_ID};
+use crate::pack::{is_builtin, BonePoint, Face, Pack, Pose, Sprite};
 #[cfg(test)]
 use crate::sim::FEET_Y;
 use crate::sim::{FEET_X, SPRITE_H, SPRITE_W, WALL_STROKE};
@@ -58,6 +58,7 @@ impl Motion {
 pub struct Scene {
     pub cycle: f32,
     pub blink: Option<f32>,
+    pub sad: bool,
     pub motion: Motion,
     pub tilt: f32,
     pub facing_left: bool,
@@ -309,9 +310,13 @@ fn part_bounds(parts: &[Part], width: i32, height: i32, pad: i32) -> (i32, i32, 
 
 fn pet_parts(scene: &Scene, pack: &Pack) -> (Vec<Part>, Option<Point>) {
     let anim = scene.motion.animation(pack);
-    let face = match scene.motion {
-        Motion::Fall | Motion::Drag | Motion::SlideWall => Face::Shock,
-        _ => scene.blink.map_or(Face::Neutral, Face::Blink),
+    let face = if scene.sad {
+        Face::Neutral
+    } else {
+        match scene.motion {
+            Motion::Fall | Motion::Drag | Motion::SlideWall => Face::Shock,
+            _ => scene.blink.map_or(Face::Neutral, Face::Blink),
+        }
     };
     let degrees = (!scene.pose.is_empty()).then_some(scene.pose.as_slice());
     let cycle = if scene.motion == Motion::Rise {
@@ -373,11 +378,11 @@ fn pet_parts(scene: &Scene, pack: &Pack) -> (Vec<Part>, Option<Point>) {
         let layer = match scene.motion {
             Motion::Sit
                 if bone.name.ends_with("hand")
-                    && (pack.id != BUILTIN_ID || bone.name == "left-hand") =>
+                    && (!is_builtin(&pack.id) || bone.name == "left-hand") =>
             {
                 2
             }
-            Motion::Sit if pack.id != BUILTIN_ID && leg(&bone.name) => 1,
+            Motion::Sit if !is_builtin(&pack.id) && leg(&bone.name) => 1,
             _ => 0,
         };
         (layer, bone.z)
@@ -418,8 +423,19 @@ fn pet_parts(scene: &Scene, pack: &Pack) -> (Vec<Part>, Option<Point>) {
                         .post_translate(pivot * (1.0 - stretch), 0.0);
                 }
             }
+            let picture = if scene.sad && bone.name == "mouth" {
+                let frown = crate::props::frown();
+                let size =
+                    (sprite.image.width() as f32 * 0.9 / frown.image.width() as f32).max(0.12);
+                transform = Transform::from_scale(size, size)
+                    .post_translate(sprite.image.width() as f32 * 0.05, -2.0)
+                    .post_concat(transform);
+                frown
+            } else {
+                sprite
+            };
             Some(Part {
-                sprite: sprite.clone(),
+                sprite: picture.clone(),
                 transform,
                 joint: Some(BonePoint {
                     bone: index,
@@ -428,6 +444,27 @@ fn pet_parts(scene: &Scene, pack: &Pack) -> (Vec<Part>, Option<Point>) {
             })
         })
         .collect();
+    if scene.sad {
+        if let Some(eyes) = parts.iter().find(|part| {
+            part.joint
+                .is_some_and(|joint| pack.bones[joint.bone].name == "eyes")
+        }) {
+            let width = eyes.sprite.image.width() as f32;
+            let height = eyes.sprite.image.height() as f32;
+            let view = eyes.transform;
+            let tear = crate::props::tear();
+            let size = (width * 0.0044).clamp(0.48, 1.2);
+            for (x, y) in [(0.18, 0.78), (0.77, 0.92)] {
+                parts.push(Part {
+                    sprite: tear.clone(),
+                    transform: Transform::from_scale(size, size)
+                        .post_translate(x * width, y * height)
+                        .post_concat(view),
+                    joint: None,
+                });
+            }
+        }
+    }
     if scene.motion == Motion::Sit {
         parts.extend(laptop_part(ground, scene.scales, mirror, pack));
     }
@@ -666,6 +703,7 @@ mod tests {
         Scene {
             cycle: 0.0,
             blink: None,
+            sad: false,
             motion: Motion::Idle,
             tilt: 0.0,
             facing_left: false,

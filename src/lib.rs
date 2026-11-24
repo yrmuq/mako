@@ -18,6 +18,7 @@ mod props;
 mod rag;
 mod season;
 mod sim;
+mod snowman;
 mod updates;
 mod world;
 mod x11_input;

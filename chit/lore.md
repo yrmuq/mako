@@ -17,6 +17,8 @@
 - The precipitation preference affects falling particles. Keep the seasonal ground objects and interactions available when precipitation is disabled.
 - Restore the active chibi roster on the floor, including an empty roster. Carry ground snow objects and snowman progress between launches in the same snow season and discard them after February 28, even if mako was closed.
 - Count snowman progress only during active sculpting. All chibis share the same unfinished snowman.
+- The Dev date uses a separate temporary scene. Restore the ordinary scene when returning to the system date and keep its winter objects out of the test scene.
+- The Chibis tab uninstalls a custom ZIP only after confirmation and removes every live and saved copy of that pack. Keep built-in packs installed.
 
 ## External Compatibility Constraints
 

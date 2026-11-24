@@ -17,6 +17,12 @@ use zip::ZipArchive;
 use crate::Fault;
 
 pub const BUILTIN_ID: &str = "bear-girl";
+// The importer has always replaced dots, so existing imported IDs stay distinct.
+pub const LION_ID: &str = "builtin.lion-girl";
+
+pub fn is_builtin(id: &str) -> bool {
+    matches!(id, BUILTIN_ID | LION_ID)
+}
 const MAX_FILE: u64 = 4_000_000;
 const MAX_TOTAL: u64 = 24_000_000;
 const KNEES: [(&str, &str, &str, &str); 2] = [
@@ -217,7 +223,7 @@ impl Pack {
             }
             bob = 0.0;
         }
-        if self.id == BUILTIN_ID && (degrees.is_some() || anim_name == "climb") {
+        if is_builtin(&self.id) && (degrees.is_some() || anim_name == "climb") {
             for (leg, foot, thigh, shin) in KNEES {
                 let foot_index = self.names[foot];
                 if angle[foot_index].abs() > 0.1 {
@@ -407,7 +413,7 @@ fn sample_step<T>(samples: &[Sample<T>], time: f32) -> Option<&T> {
 }
 
 pub fn installed() -> Vec<Pack> {
-    let mut found = vec![Pack::builtin()];
+    let mut found = vec![Pack::builtin(), lion_pack().clone()];
     let Ok(entries) = fs::read_dir(chibi_dir()) else {
         return found;
     };
@@ -420,7 +426,7 @@ pub fn installed() -> Vec<Pack> {
         let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
             continue;
         };
-        if stem == BUILTIN_ID || !safe_id(stem) {
+        if is_builtin(stem) || !safe_id(stem) {
             continue;
         }
         zips.push((stem.to_string(), path));
@@ -468,19 +474,44 @@ pub fn safe_id(id: &str) -> bool {
 
 fn builtin_pack() -> &'static Pack {
     static PACK: OnceLock<Pack> = OnceLock::new();
-    PACK.get_or_init(|| load_builtin().unwrap_or_else(|error| panic!("{error}")))
+    PACK.get_or_init(|| load_builtin(BUILTIN_ID).unwrap_or_else(|error| panic!("{error}")))
 }
 
-fn load_builtin() -> Result<Pack, Fault> {
+fn lion_pack() -> &'static Pack {
+    static PACK: OnceLock<Pack> = OnceLock::new();
+    PACK.get_or_init(|| load_builtin(LION_ID).unwrap_or_else(|error| panic!("{error}")))
+}
+
+fn load_builtin(id: &str) -> Result<Pack, Fault> {
+    let lion = id == LION_ID;
+    let (heart, body) = if lion {
+        (
+            include_str!("../assets/lion-girl/heart"),
+            include_str!("../assets/lion-girl/body"),
+        )
+    } else {
+        (
+            include_str!("../assets/bear-girl/heart"),
+            include_str!("../assets/bear-girl/body"),
+        )
+    };
     let mut images = HashMap::new();
-    for (name, bytes) in BUILTIN_IMAGES {
+    for (name, bytes) in if lion { LION_IMAGES } else { BUILTIN_IMAGES } {
         images.insert((*name).to_string(), crop(decode(bytes)?)?);
     }
-    images.insert("mouth-talk".into(), crate::props::talk_mouth());
+    if !lion {
+        images.insert("mouth-talk".into(), crate::props::talk_mouth());
+    }
+    images.insert(
+        "it-1".into(),
+        crop(decode(include_bytes!(
+            "../assets/bear-girl/pocket/it-1.png"
+        ))?)?,
+    );
     let mut pack = assemble(
-        BUILTIN_ID,
-        include_str!("../assets/bear-girl/heart"),
-        include_str!("../assets/bear-girl/body"),
+        id,
+        heart,
+        body,
         include_str!("../assets/bear-girl/anima"),
         images,
     )?;
@@ -489,14 +520,22 @@ fn load_builtin() -> Result<Pack, Fault> {
         "hand",
         "",
         (40.0, 26.0),
-        include_bytes!("../assets/bear-girl/creature/arm.png"),
+        if lion {
+            include_bytes!("../assets/lion-girl/creature/arm.png")
+        } else {
+            include_bytes!("../assets/bear-girl/creature/arm.png")
+        },
     )?;
     add_shared_limb(
         &mut pack,
         "leg",
         "",
         (49.0, 47.0),
-        include_bytes!("../assets/bear-girl/creature/leg.png"),
+        if lion {
+            include_bytes!("../assets/lion-girl/creature/leg.png")
+        } else {
+            include_bytes!("../assets/bear-girl/creature/leg.png")
+        },
     )?;
     add_knees(&mut pack)?;
     Ok(pack)
@@ -581,11 +620,25 @@ const BUILTIN_IMAGES: &[(&str, &[u8])] = &[
         "torso",
         include_bytes!("../assets/bear-girl/creature/torso.png"),
     ),
-    (
-        "it-1",
-        include_bytes!("../assets/bear-girl/pocket/it-1.png"),
-    ),
 ];
+
+macro_rules! lion_images {
+    ($($name:literal),+ $(,)?) => {
+        &[$(($name, include_bytes!(concat!("../assets/lion-girl/creature/", $name, ".png")))),+]
+    };
+}
+
+const LION_IMAGES: &[(&str, &[u8])] = lion_images!(
+    "head",
+    "eyes-open",
+    "eyes-closed",
+    "eyes-shock",
+    "mouth",
+    "mouth-shock",
+    "mouth-talk",
+    "torso",
+    "tail",
+);
 
 fn from_path(path: &Path, id: &str) -> Result<Pack, Fault> {
     let file = File::open(path).map_err(|error| {
@@ -1160,7 +1213,7 @@ pub fn import(path: &Path) -> Result<Pack, Fault> {
             }
         })
         .collect();
-    let base = if normalized.is_empty() || normalized == BUILTIN_ID {
+    let base = if normalized.is_empty() || is_builtin(&normalized) {
         "imported-chibi"
     } else {
         &normalized
@@ -1201,6 +1254,24 @@ pub fn import(path: &Path) -> Result<Pack, Fault> {
         }
     }
     unreachable!()
+}
+
+pub fn uninstall(id: &str) -> Result<(), Fault> {
+    if is_builtin(id) || !safe_id(id) {
+        return Err(Fault::new(
+            "MAKO-IMPORT-0004",
+            "Only installed custom chibis can be removed",
+        ));
+    }
+    let path = chibi_dir().join(format!("{id}.zip"));
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(Fault::new(
+            "MAKO-IMPORT-0005",
+            format!("Could not remove the installed ZIP: {error}"),
+        )),
+    }
 }
 
 fn import_read(error: std::io::Error) -> Fault {
@@ -1355,5 +1426,30 @@ mod tests {
             assert_eq!(left.y - left_bone.pivot_y, right.y - right_bone.pivot_y);
             assert_eq!(left_bone.y, right_bone.y);
         }
+    }
+}
+#[test]
+fn both_builtins_are_protected_and_lion_renders_all_core_poses() {
+    for id in [BUILTIN_ID, LION_ID, "../outside"] {
+        assert_eq!(uninstall(id).unwrap_err().code, "MAKO-IMPORT-0004");
+    }
+    let lion = lion_pack();
+    assert_eq!(lion.id, LION_ID);
+    assert!(lion.sprite("tail").is_some());
+    assert!(crate::draw::portrait(lion).is_some());
+    for motion in [
+        "idle",
+        "walk",
+        "climb",
+        "talk",
+        "pack-snow",
+        "sculpt",
+        "rise-back",
+    ] {
+        assert!(lion.animation_length(motion).is_some());
+        assert_eq!(
+            lion.pose_for(motion, 0.2, None, Face::Shock).image.len(),
+            lion.bones.len()
+        );
     }
 }

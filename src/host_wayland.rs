@@ -256,6 +256,18 @@ impl Host {
         let accepts_input = self.accepts_input();
         let region = Region::new(&self.compositor)
             .expect("MAKO-WL-0003: Could not limit pointer input to the pet");
+        if accepts_input {
+            if let Some(bounds) = self.game.snowman_bounds() {
+                let x = bounds.left().floor() as i32;
+                let y = bounds.top().floor() as i32;
+                region.add(
+                    x,
+                    y,
+                    bounds.right().ceil() as i32 - x,
+                    bounds.bottom().ceil() as i32 - y,
+                );
+            }
+        }
         let mut next = Vec::with_capacity(self.game.pets.len());
         let canvas = self.frames[index]
             .canvas(&mut self.pool)

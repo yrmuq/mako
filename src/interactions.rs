@@ -9,6 +9,7 @@ use crate::game::{swept_contact, Instance};
 use crate::props;
 use crate::season::OverlayImage;
 use crate::sim::Activity;
+use crate::snowman::Fragment;
 use crate::world::{Pile, Snowman, WinterObjects, World, SNOWMAN_SECONDS};
 
 pub const RELEASE_AT: f32 = 0.44;
@@ -58,6 +59,9 @@ pub struct Interactions {
     tasks: HashMap<u64, Task>,
     conversations: Vec<Conversation>,
     balls: Vec<Snowball>,
+    fragments: Vec<Fragment>,
+    pub snowman_held: bool,
+    snowman_cooldown: f32,
     choose_in: f32,
     pile_in: f32,
 }
@@ -68,6 +72,9 @@ impl Interactions {
             tasks: HashMap::new(),
             conversations: Vec::new(),
             balls: Vec::new(),
+            fragments: Vec::new(),
+            snowman_held: false,
+            snowman_cooldown: 0.0,
             choose_in: 2.0,
             pile_in: 3.0,
         }
@@ -85,6 +92,9 @@ impl Interactions {
         }
         self.tasks.clear();
         self.balls.clear();
+        self.fragments.clear();
+        self.snowman_held = false;
+        self.snowman_cooldown = 0.0;
         self.pile_in = 3.0;
     }
 
@@ -99,6 +109,9 @@ impl Interactions {
     ) {
         let dt = elapsed.clamp(0.0, 0.05);
         self.talk(pets, elapsed);
+        self.snowman_cooldown = (self.snowman_cooldown - elapsed).max(0.0);
+        self.fragments
+            .retain_mut(|fragment| fragment.tick(dt, floor));
         if winter && width > 0 {
             self.drop_pile(world, dt);
             self.tasks
@@ -107,7 +120,9 @@ impl Interactions {
                 let id = pets[index].id;
                 if let Some(task) = self.tasks.remove(&id) {
                     if pets[index].app.pet.activity == task.activity() {
-                        if let Some(next) =
+                        if self.snowman_held && task.building() {
+                            self.tasks.insert(id, task);
+                        } else if let Some(next) =
                             self.advance(task, index, pets, world, width as f32, dt, elapsed)
                         {
                             self.tasks.insert(id, next);
@@ -187,7 +202,9 @@ impl Interactions {
                     }
                 }
             }
-            14..38 if winter && width > 0.0 => {
+            14..38
+                if winter && width > 0.0 && !self.snowman_held && self.snowman_cooldown == 0.0 =>
+            {
                 if !self.tasks.values().any(|task| task.building())
                     && world
                         .winter()
@@ -258,6 +275,40 @@ impl Interactions {
         }
         pet.app.pet.start(Activity::Approach);
         self.tasks.insert(pet.id, Task::ApproachSnowman);
+    }
+
+    pub fn release_snowman(&mut self, pets: &mut [Instance], broken: bool) {
+        self.snowman_held = false;
+        for pet in pets {
+            if let Some(task) = self.tasks.get_mut(&pet.id).filter(|task| task.building()) {
+                if pet.app.pet.activity == task.activity() {
+                    if broken {
+                        pet.app.pet.start(Activity::Idle);
+                    } else {
+                        *task = Task::ApproachSnowman;
+                        pet.app.pet.start(task.activity());
+                    }
+                }
+            }
+        }
+        if broken {
+            self.tasks.retain(|_, task| !task.building());
+        }
+    }
+
+    pub fn break_snowman(
+        &mut self,
+        pets: &mut [Instance],
+        at: Point,
+        velocity: Point,
+        height: f32,
+    ) {
+        self.release_snowman(pets, true);
+        self.snowman_cooldown = 7.0;
+        Fragment::scatter(&mut self.fragments, at, velocity, height);
+        for pet in pets {
+            pet.app.mourn();
+        }
     }
 
     fn drop_pile(&mut self, world: &mut World, dt: f32) {
@@ -451,6 +502,15 @@ impl Interactions {
             ))
         })
     }
+
+    pub fn fragment_images<'a>(
+        &'a self,
+        art: &'a WinterArt,
+    ) -> impl Iterator<Item = (i32, i32, &'a OverlayImage)> + Clone {
+        self.fragments
+            .iter()
+            .filter_map(|fragment| fragment.image(&art.fragments, art.scale as f32))
+    }
 }
 
 impl Snowball {
@@ -485,6 +545,7 @@ pub struct WinterArt {
     piles: Vec<OverlayImage>,
     ball: Option<OverlayImage>,
     man: Option<(u8, OverlayImage)>,
+    fragments: Vec<OverlayImage>,
 }
 
 impl WinterArt {
@@ -495,6 +556,9 @@ impl WinterArt {
                 .map(|size| props::pile(size, scale).into())
                 .collect();
             self.ball = Some(props::ball_image(scale).into());
+            self.fragments = (0..3)
+                .map(|kind| props::snow_chunk(kind, scale).into())
+                .collect();
             self.man = None;
         }
         if let Some(man) = objects.snowman {
@@ -505,6 +569,25 @@ impl WinterArt {
         } else {
             self.man = None;
         }
+    }
+
+    pub fn snowman_bounds(&self, man: Snowman, width: u32, floor: f32) -> Option<Rect> {
+        let (_, image) = self.man.as_ref()?;
+        let scale = self.scale as f32;
+        let centre = man.position * width as f32;
+        let top = f32::from(image.ink.first()?.1) / scale;
+        let left = image.ink.iter().map(|line| line.0).min()?;
+        let right = image
+            .ink
+            .iter()
+            .map(|line| i32::from(line.0) + i32::from(line.2))
+            .max()?;
+        Rect::from_xywh(
+            centre - image.width as f32 / (2.0 * scale) + f32::from(left) / scale,
+            floor - image.height as f32 / scale + top,
+            (right - i32::from(left)) as f32 / scale,
+            image.height as f32 / scale - top,
+        )
     }
 
     pub fn images<'a>(

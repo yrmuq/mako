@@ -84,6 +84,7 @@ pub struct World {
     _lock: Option<fs::File>,
     path: Option<PathBuf>,
     save: Save,
+    preview: Option<Save>,
     save_at: Option<Instant>,
 }
 
@@ -114,6 +115,7 @@ impl World {
             path: path.filter(|_| lock.is_some()),
             _lock: lock,
             save,
+            preview: None,
             save_at: None,
         }
     }
@@ -124,31 +126,59 @@ impl World {
             _lock: None,
             path: None,
             save: Save::new(default_chibi),
+            preview: None,
             save_at: None,
         }
     }
 
     pub fn chibis(&self) -> &[String] {
-        &self.save.chibis
+        &self.preview.as_ref().unwrap_or(&self.save).chibis
+    }
+
+    pub fn start_preview(&mut self) {
+        self.flush();
+        self.preview = Some(Save {
+            version: self.save.version,
+            chibis: self.save.chibis.clone(),
+            winter: WinterObjects::default(),
+        });
+    }
+
+    pub fn stop_preview(&mut self) {
+        self.preview = None;
+    }
+
+    fn active_mut(&mut self) -> &mut Save {
+        self.preview.as_mut().unwrap_or(&mut self.save)
     }
 
     pub fn add(&mut self, id: String) {
-        self.save.chibis.push(id);
+        self.active_mut().chibis.push(id);
         self.save_now();
     }
 
     pub fn remove(&mut self, id: &str) {
-        if let Some(index) = self.save.chibis.iter().rposition(|saved| saved == id) {
-            self.save.chibis.remove(index);
+        let save = self.active_mut();
+        if let Some(index) = save.chibis.iter().rposition(|saved| saved == id) {
+            save.chibis.remove(index);
             self.save_now();
         }
     }
 
+    pub fn uninstall(&mut self, id: &str) {
+        self.save.chibis.retain(|entry| entry != id);
+        if let Some(preview) = &mut self.preview {
+            preview.chibis.retain(|entry| entry != id);
+        }
+        self.save_at = self.path.as_ref().map(|_| Instant::now());
+        self.flush();
+    }
+
     pub fn update_season(&mut self, year: Option<i32>) -> bool {
-        if self.save.winter.year == year {
+        if self.winter().year == year {
             return false;
         }
-        self.save.winter = WinterObjects {
+        *self.winter_mut() = WinterObjects {
             year,
             ..WinterObjects::default()
         };
@@ -157,22 +187,22 @@ impl World {
     }
 
     pub fn winter(&self) -> &WinterObjects {
-        &self.save.winter
+        &self.preview.as_ref().unwrap_or(&self.save).winter
     }
 
     pub fn winter_mut(&mut self) -> &mut WinterObjects {
-        &mut self.save.winter
+        &mut self.active_mut().winter
     }
 
     pub fn changed(&mut self) {
-        if self.path.is_some() {
+        if self.path.is_some() && self.preview.is_none() {
             self.save_at
                 .get_or_insert_with(|| Instant::now() + SAVE_INTERVAL);
         }
     }
 
     pub fn save_now(&mut self) {
-        if self.path.is_some() {
+        if self.path.is_some() && self.preview.is_none() {
             self.save_at = Some(Instant::now());
             self.flush();
         }
@@ -274,4 +304,36 @@ mod tests {
         assert!(world.winter().piles.is_empty());
         assert!(world.winter().snowman.is_none());
     }
+}
+#[test]
+fn preview_never_writes_test_objects_or_rosters_to_the_scene_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("scene.json");
+    {
+        let mut world = World::open(path.clone(), "bear-girl");
+        world.update_season(Some(2027));
+        world.winter_mut().snowman = Some(Snowman {
+            position: 0.4,
+            seconds: 89.0,
+        });
+        world.save_now();
+        world.start_preview();
+        world.update_season(Some(2099));
+        world.add(pack::LION_ID.to_owned());
+        assert!(world.winter().snowman.is_none());
+        world.winter_mut().snowman = Some(Snowman {
+            position: 0.6,
+            seconds: 600.0,
+        });
+        world.save_now();
+        world.stop_preview();
+        assert_eq!(world.chibis(), ["bear-girl"]);
+        assert_eq!(world.winter().snowman.unwrap().seconds, 89.0);
+        world.start_preview();
+        world.remove("bear-girl");
+        assert!(world.chibis().is_empty());
+    }
+    let world = World::open(path, "bear-girl");
+    assert_eq!(world.chibis(), ["bear-girl"]);
+    assert_eq!(world.winter().snowman.unwrap().position, 0.4);
 }

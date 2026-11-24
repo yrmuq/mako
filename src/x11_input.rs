@@ -68,6 +68,35 @@ impl Fullscreen {
         }
     }
 
+    pub fn overlay_region(&self, mode: InputMode, bounds: Option<tiny_skia::Rect>) -> InputRegion {
+        let Some(bounds) = bounds else {
+            return InputRegion::Restricted(Vec::new());
+        };
+        let x = bounds.left().floor() as i32;
+        let y = bounds.top().floor() as i32;
+        let w = (bounds.right().ceil() as i32 - x) as u32;
+        let h = (bounds.bottom().ceil() as i32 - y) as u32;
+        let rects = match self.region(mode, x, y, w, h) {
+            InputRegion::Full => vec![Rectangle {
+                x: 0,
+                y: 0,
+                width: w as u16,
+                height: h as u16,
+            }],
+            InputRegion::Restricted(rects) => rects,
+        };
+        InputRegion::Restricted(
+            rects
+                .into_iter()
+                .map(|rect| Rectangle {
+                    x: (i32::from(rect.x) + x) as i16,
+                    y: (i32::from(rect.y) + y) as i16,
+                    ..rect
+                })
+                .collect(),
+        )
+    }
+
     fn read(&self, conn: &impl Connection, root: Window) -> Option<Vec<Area>> {
         let atoms = &self.atoms;
         let desktop = property(

@@ -24,6 +24,38 @@ pub fn talk_mouth() -> Sprite {
     crop(image).expect("mouth artwork")
 }
 
+pub fn frown() -> &'static Sprite {
+    static SPRITE: OnceLock<Sprite> = OnceLock::new();
+    SPRITE.get_or_init(|| {
+        let mut image = Pixmap::new(30, 17).expect("frown dimensions");
+        paint(&mut image, [88, 46, 54, 255], Some(4.5), |p| {
+            p.move_to(4.0, 12.0);
+            p.cubic_to(7.0, 10.0, 10.0, 3.0, 15.0, 5.0);
+            p.cubic_to(20.0, 3.0, 23.0, 10.0, 26.0, 12.0);
+        });
+        crop(image).expect("frown artwork")
+    })
+}
+
+pub fn tear() -> &'static Sprite {
+    static SPRITE: OnceLock<Sprite> = OnceLock::new();
+    SPRITE.get_or_init(|| {
+        let mut image = Pixmap::new(18, 38).expect("tear dimensions");
+        paint(&mut image, [86, 176, 222, 245], None, |p| {
+            p.move_to(9.0, 2.0);
+            p.cubic_to(9.0, 9.0, 2.0, 21.0, 2.0, 27.0);
+            p.cubic_to(2.0, 40.0, 16.0, 38.0, 16.0, 27.0);
+            p.cubic_to(16.0, 21.0, 10.0, 9.0, 9.0, 2.0);
+            p.close();
+        });
+        paint(&mut image, [224, 249, 255, 255], Some(2.2), |p| {
+            p.move_to(7.0, 21.0);
+            p.quad_to(3.0, 28.0, 6.0, 31.0);
+        });
+        crop(image).expect("tear artwork")
+    })
+}
+
 pub fn parachute() -> &'static Sprite {
     static SPRITE: OnceLock<Sprite> = OnceLock::new();
     SPRITE.get_or_init(|| {
@@ -188,6 +220,30 @@ pub fn pile(servings: u8, scale: u32) -> Pixmap {
 }
 
 pub const SNOWMAN_STEPS: u8 = 20;
+
+pub fn snow_chunk(kind: usize, scale: u32) -> Pixmap {
+    let size = 8 + kind as u32 * 3;
+    let mut image = Pixmap::new(size * scale, size * scale).expect("snow chunk dimensions");
+    let s = (size * scale) as f32;
+    paint(&mut image, [231, 246, 255, 255], None, |p| {
+        p.move_to(s * 0.12, s * 0.52);
+        p.line_to(s * 0.28, s * 0.13);
+        p.line_to(s * 0.72, s * 0.09);
+        p.line_to(s * 0.92, s * 0.43);
+        p.line_to(s * 0.76, s * 0.79);
+        p.line_to(s * 0.43, s * 0.91);
+        p.close();
+    });
+    paint(&mut image, [152, 194, 222, 255], None, |p| {
+        p.move_to(s * 0.12, s * 0.52);
+        p.line_to(s * 0.60, s * 0.71);
+        p.line_to(s * 0.92, s * 0.43);
+        p.line_to(s * 0.76, s * 0.79);
+        p.line_to(s * 0.43, s * 0.91);
+        p.close();
+    });
+    image
+}
 
 pub fn snowman(step: u8, scale: u32) -> Pixmap {
     let mut image = Pixmap::new(78 * scale, 126 * scale).expect("snowman dimensions");

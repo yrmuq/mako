@@ -33,6 +33,7 @@ struct OverlayWindow {
     id: u32,
     gc: u32,
     shown: Vec<Rectangle>,
+    input: InputRegion,
 }
 
 pub fn run(settings: Settings, startup: Startup, commands: Receiver<Command>) -> Result<(), Fault> {
@@ -97,6 +98,11 @@ pub fn run(settings: Settings, startup: Startup, commands: Receiver<Command>) ->
                 snow = Some(window);
             }
             if let Some(window) = &mut snow {
+                let input = fullscreen.overlay_region(mode, game.snowman_bounds());
+                if window.input != input {
+                    input.apply(&conn, window.id).map_err(input_error)?;
+                    window.input = input;
+                }
                 window.present(&conn, game.overlay_images())?;
             }
         } else if let Some(window) = snow.take() {
@@ -259,7 +265,10 @@ impl OverlayWindow {
                 .colormap(colormap)
                 .background_pixel(0)
                 .border_pixel(0)
-                .override_redirect(1),
+                .override_redirect(1)
+                .event_mask(
+                    EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE | EventMask::POINTER_MOTION,
+                ),
         )
         .map_err(x11)?;
         InputRegion::Restricted(Vec::new())
@@ -273,6 +282,7 @@ impl OverlayWindow {
             id,
             gc,
             shown: Vec::new(),
+            input: InputRegion::Restricted(Vec::new()),
         })
     }
 

@@ -3,6 +3,7 @@
 
 use std::collections::HashSet;
 use std::sync::mpsc::Receiver;
+use std::time::Instant;
 
 use tiny_skia::{Point, Rect};
 
@@ -12,11 +13,13 @@ use crate::interactions::{Interactions, WinterArt};
 use crate::pack::Pack;
 use crate::season::{OverlayImage, Snow};
 use crate::sim::Room;
+use crate::snowman::Grab;
 use crate::world::World;
 
 pub enum Command {
     Add(Pack),
     Remove(String),
+    Uninstall(String),
     Appearance(Settings),
 }
 
@@ -61,6 +64,8 @@ pub struct Game {
     scale: u32,
     next_id: u64,
     held: Option<u64>,
+    snowman_grab: Option<Grab>,
+    ordinary: Option<(Vec<Instance>, Interactions)>,
     contacts: HashSet<(u64, u64)>,
     pub exit: bool,
 }
@@ -87,6 +92,8 @@ impl Game {
             scale: 1,
             next_id: 0,
             held: None,
+            snowman_grab: None,
+            ordinary: None,
             contacts: HashSet::new(),
             exit: false,
         };
@@ -133,10 +140,21 @@ impl Game {
                     }
                 }
                 Ok(Command::Appearance(settings)) => {
-                    self.settings = settings;
-                    for pet in &mut self.pets {
-                        pet.app.apply_settings(self.settings.clone());
+                    self.appearance(settings);
+                }
+                Ok(Command::Uninstall(id)) => {
+                    if self
+                        .pets
+                        .iter()
+                        .any(|pet| Some(pet.id) == self.held && pet.app.pack_id() == id)
+                    {
+                        self.held = None;
                     }
+                    self.pets.retain(|pet| pet.app.pack_id() != id);
+                    if let Some((pets, _)) = &mut self.ordinary {
+                        pets.retain(|pet| pet.app.pack_id() != id);
+                    }
+                    self.world.uninstall(&id);
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
                     self.world.checkpoint();
@@ -149,6 +167,41 @@ impl Game {
             }
             changed = true;
         }
+    }
+
+    fn appearance(&mut self, settings: Settings) {
+        let was_preview = self.settings.preview_date.is_some();
+        let preview = settings.preview_date.is_some();
+        self.settings = settings;
+        if was_preview != preview {
+            self.cancel_grab(|_, _| false);
+            self.contacts.clear();
+            if preview {
+                self.world.start_preview();
+                let pets = std::mem::take(&mut self.pets);
+                for pack in pets.iter().map(|pet| pet.app.pack()) {
+                    self.add(pack);
+                }
+                self.ordinary = Some((
+                    pets,
+                    std::mem::replace(&mut self.interactions, Interactions::new()),
+                ));
+            } else {
+                self.world.stop_preview();
+                (self.pets, self.interactions) =
+                    self.ordinary.take().expect("parked ordinary scene");
+                for pet in &mut self.pets {
+                    pet.app.set_bottom(self.bottom);
+                    pet.app.set_room(self.room.clone());
+                    pet.app.scale = self.scale;
+                }
+            }
+        }
+        self.snow.set_date(self.settings.preview_date);
+        for pet in &mut self.pets {
+            pet.app.apply_settings(self.settings.clone());
+        }
+        self.tick_snow(0.0, self.width);
     }
 
     pub fn set_room(&mut self, room: Room, bottom: f32) {
@@ -175,7 +228,13 @@ impl Game {
         self.settings.input_mode
     }
 
-    pub fn cancel_grab(&mut self, input_at: impl FnOnce(f32, f32) -> bool) {
+    pub fn cancel_grab(&mut self, input_at: impl Fn(f32, f32) -> bool) {
+        if self.snowman_grab.as_ref().is_some_and(|grab| {
+            let cursor = grab.cursor();
+            !input_at(cursor.x, cursor.y)
+        }) {
+            self.release_snowman(None);
+        }
         if let Some(pet) = self.pets.iter_mut().find(|pet| self.held == Some(pet.id)) {
             if pet
                 .app
@@ -193,6 +252,7 @@ impl Game {
         let floor = (self.room.floor - self.bottom).max(0.0) as u32;
         self.snow.tick(dt, width, floor, self.scale, &self.settings);
         if self.world.update_season(self.snow.winter_year()) {
+            self.snowman_grab = None;
             self.interactions.clear_winter(&mut self.pets);
         }
         if self.snow.active() {
@@ -209,6 +269,31 @@ impl Game {
                     .images(self.world.winter(), self.width, floor),
             )
             .chain(self.interactions.ball_images(&self.winter_art))
+            .chain(self.interactions.fragment_images(&self.winter_art))
+    }
+
+    pub fn snowman_bounds(&self) -> Option<Rect> {
+        self.winter_art.snowman_bounds(
+            self.world.winter().snowman?,
+            self.width,
+            (self.room.floor - self.bottom).max(0.0),
+        )
+    }
+
+    fn release_snowman(&mut self, velocity: Option<Point>) {
+        self.snowman_grab = None;
+        if let Some(velocity) = velocity {
+            let height = self.snowman_bounds().map_or(8.0, |bounds| bounds.height());
+            if let Some(man) = self.world.winter_mut().snowman.take() {
+                let floor = (self.room.floor - self.bottom).max(0.0);
+                let at = Point::from_xy(man.position * self.width as f32, floor);
+                self.interactions
+                    .break_snowman(&mut self.pets, at, velocity, height);
+            }
+        } else {
+            self.interactions.release_snowman(&mut self.pets, false);
+        }
+        self.world.save_now();
     }
 
     pub fn tick(&mut self, dt: f32) {
@@ -319,6 +404,24 @@ impl Game {
     }
 
     pub fn pointer(&mut self, screen_x: f32, screen_y: f32, kind: Pointer) {
+        let now = Instant::now();
+        let point = Point::from_xy(screen_x, screen_y);
+        if let Some(grab) = &mut self.snowman_grab {
+            if matches!(kind, Pointer::Motion | Pointer::LeftUp) {
+                let centre = grab.move_to(point, now);
+                let width = self.width as f32;
+                if let Some(man) = self.world.winter_mut().snowman.as_mut() {
+                    let margin = (39.0 / width).min(0.5);
+                    man.position = (centre / width).clamp(margin, 1.0 - margin);
+                    self.world.changed();
+                }
+                if matches!(kind, Pointer::LeftUp) {
+                    let velocity = grab.throw(now);
+                    self.release_snowman(velocity);
+                }
+            }
+            return;
+        }
         let index = match kind {
             Pointer::LeftDown if self.held.is_none() => self
                 .pets
@@ -335,6 +438,20 @@ impl Game {
                 Pointer::Motion => {}
             }
             pet.app.pointer(x, y, kind);
+        } else if self.held.is_none()
+            && matches!(kind, Pointer::LeftDown)
+            && self.width > 0
+            && self.snowman_bounds().is_some_and(|bounds| {
+                screen_x >= bounds.left()
+                    && screen_x < bounds.right()
+                    && screen_y >= bounds.top()
+                    && screen_y < bounds.bottom()
+            })
+        {
+            if let Some(man) = self.world.winter().snowman {
+                self.snowman_grab = Some(Grab::new(point, man.position * self.width as f32, now));
+                self.interactions.snowman_held = true;
+            }
         }
     }
 }
@@ -364,6 +481,45 @@ pub(crate) fn swept_contact(a: Rect, next_a: Rect, b: Rect, next_b: Rect) -> Opt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn changing_the_dev_date_parks_and_restores_the_ordinary_pets() {
+        use crate::season::Date;
+        use crate::world::Snowman;
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let settings = Settings::default();
+        let mut game = Game::new(
+            crate::startup_room(1200.0, 800.0),
+            settings.clone(),
+            Startup::test(Pack::builtin()),
+            rx,
+        );
+        game.tick_snow(0.0, 1200);
+        game.pets[0].app.pet.x = 365.0;
+        game.world.winter_mut().snowman = Some(Snowman {
+            position: 0.46,
+            seconds: 212.0,
+        });
+        tx.send(Command::Appearance(Settings {
+            preview_date: Some(Date::new(15, 1, 2041)),
+            ..settings.clone()
+        }))
+        .unwrap();
+        game.commands();
+        assert!(game.snow.active());
+        assert_ne!(game.pets[0].id, 0);
+        assert!(game.world.winter().snowman.is_none());
+        tx.send(Command::Remove(crate::pack::BUILTIN_ID.into()))
+            .unwrap();
+        game.commands();
+        assert!(game.pets.is_empty());
+        tx.send(Command::Appearance(settings)).unwrap();
+        game.commands();
+        assert_eq!(game.pets[0].id, 0);
+        assert_eq!(game.pets[0].app.pet.x, 365.0);
+        assert_eq!(game.world.winter().snowman.unwrap().seconds, 212.0);
+    }
 
     #[test]
     fn fast_throws_knock_down_multiple_chibis_and_miss_bodies_outside_the_path() {

@@ -44,6 +44,7 @@ impl InputMode {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
+    pub preview_date: Option<crate::season::Date>,
     pub language: LanguagePref,
     pub theme: ThemePref,
     pub input_mode: InputMode,
@@ -61,6 +62,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            preview_date: None,
             language: LanguagePref::System,
             theme: ThemePref::System,
             input_mode: InputMode::Main,
