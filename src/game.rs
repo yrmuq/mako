@@ -22,6 +22,12 @@ pub struct Instance {
     pub app: App,
 }
 
+struct CollisionBody {
+    bounds: Option<Rect>,
+    velocity: Option<Point>,
+    vulnerable: bool,
+}
+
 pub struct Game {
     pub pets: Vec<Instance>,
     room: Room,
@@ -131,7 +137,11 @@ impl Game {
                     let velocity = body
                         .can_strike()
                         .then_some(Point::from_xy(body.vx, body.vy));
-                    (pet.app.collision_bounds(), velocity)
+                    CollisionBody {
+                        bounds: pet.app.collision_bounds(),
+                        velocity,
+                        vulnerable: pet.app.can_be_struck(),
+                    }
                 })
                 .collect::<Vec<_>>()
         });
@@ -145,7 +155,7 @@ impl Game {
         }
     }
 
-    fn resolve_collisions(&mut self, before: &[(Option<Rect>, Option<Point>)]) {
+    fn resolve_collisions(&mut self, before: &[CollisionBody]) {
         let after: Vec<_> = self
             .pets
             .iter()
@@ -153,19 +163,20 @@ impl Game {
             .collect();
         let mut contacts = HashSet::new();
         let mut hits = Vec::new();
-        for (left, &(left_start, left_velocity)) in before.iter().enumerate() {
-            let Some(left_start) = left_start else {
+        for (left, left_body) in before.iter().enumerate() {
+            let Some(left_start) = left_body.bounds else {
                 continue;
             };
             for right in (left + 1)..before.len() {
-                let (source, target, velocity) = match (left_velocity, before[right].1) {
+                let right_body = &before[right];
+                let (source, target, velocity) = match (left_body.velocity, right_body.velocity) {
                     (Some(a), Some(b)) if b.x.hypot(b.y) > a.x.hypot(a.y) => (right, left, b),
                     (Some(a), _) => (left, right, a),
                     (None, Some(b)) => (right, left, b),
                     (None, None) => continue,
                 };
                 let (Some(right_start), Some(left_end), Some(right_end)) =
-                    (before[right].0, after[left], after[right])
+                    (right_body.bounds, after[left], after[right])
                 else {
                     continue;
                 };
@@ -173,7 +184,7 @@ impl Game {
                 if left_end.intersect(&right_end).is_some() {
                     contacts.insert(pair);
                 }
-                if !self.contacts.contains(&pair) {
+                if before[target].vulnerable && !self.contacts.contains(&pair) {
                     if let Some(time) = swept_contact(left_start, left_end, right_start, right_end)
                     {
                         hits.push((time, source, target, velocity));
@@ -182,29 +193,27 @@ impl Game {
             }
         }
         hits.sort_by(|a, b| a.0.total_cmp(&b.0));
-        let mut struck = HashSet::new();
         let mut remaining = vec![1.0_f32; before.len()];
         for (_, source, target, velocity) in hits {
-            if struck.insert(target) {
-                let power = remaining[source];
-                let speed = velocity.x.hypot(velocity.y) * power;
-                let vx = if velocity.x.abs() < 100.0 {
-                    let delta = self.pets[target].app.pet.x - self.pets[source].app.pet.x;
-                    let side = if delta.abs() < 0.01 {
-                        if target < source {
-                            -1.0
-                        } else {
-                            1.0
-                        }
+            let power = remaining[source];
+            let speed = velocity.x.hypot(velocity.y) * power;
+            let vx = if velocity.x.abs() < 100.0 {
+                let delta = self.pets[target].app.pet.x - self.pets[source].app.pet.x;
+                let side = if delta.abs() < 0.01 {
+                    if target < source {
+                        -1.0
                     } else {
-                        delta.signum()
-                    };
-                    side * (speed * 0.24).clamp(150.0, 480.0)
+                        1.0
+                    }
                 } else {
-                    (velocity.x * 0.54 * power).clamp(-1800.0, 1800.0)
+                    delta.signum()
                 };
-                let vy = -(170.0 + speed * 0.26).min(840.0);
-                self.pets[target].app.knock_back(vx, vy);
+                side * (speed * 0.24).clamp(150.0, 480.0)
+            } else {
+                (velocity.x * 0.54 * power).clamp(-1800.0, 1800.0)
+            };
+            let vy = -(170.0 + speed * 0.26).min(840.0);
+            if self.pets[target].app.knock_back(vx, vy) {
                 self.pets[source].app.pet.vx *= 0.84;
                 remaining[source] *= 0.84;
             }

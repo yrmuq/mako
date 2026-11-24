@@ -40,6 +40,28 @@ pub struct Ragdoll {
     turn_speed: f32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lying {
+    Back,
+    Front,
+}
+
+impl Lying {
+    pub fn rise_animation(self) -> &'static str {
+        match self {
+            Self::Back => "rise-back",
+            Self::Front => "rise-front",
+        }
+    }
+
+    pub fn tilt(self) -> f32 {
+        match self {
+            Self::Back => -PI * 0.5,
+            Self::Front => PI * 0.5,
+        }
+    }
+}
+
 impl Ragdoll {
     pub fn new(pack: &Pack) -> Self {
         let joints = pack
@@ -197,6 +219,11 @@ impl Ragdoll {
         self.turn
     }
 
+    pub fn set_turn(&mut self, turn: f32) {
+        self.turn = turn;
+        self.turn_speed = 0.0;
+    }
+
     fn steer_turn(&mut self, dt: f32, target: f32, spring: f32) {
         let error = wrap_angle(target - self.turn);
         self.turn_speed += (spring * error - 9.0 * self.turn_speed) * dt;
@@ -234,7 +261,12 @@ impl Ragdoll {
         } else {
             -slide
         };
-        self.rest_turn = side.signum() * PI * 0.5;
+        self.rest_turn = if side > 0.0 {
+            Lying::Front
+        } else {
+            Lying::Back
+        }
+        .tilt();
         self.turn_speed *= 0.45;
         for joint in &mut self.joints {
             joint.target = joint.angle * 0.75;
@@ -249,8 +281,22 @@ impl Ragdoll {
         }
     }
 
-    pub fn is_planted(&self) -> bool {
-        self.planted
+    pub fn lying(&self) -> Lying {
+        if self.rest_turn > 0.0 {
+            Lying::Front
+        } else {
+            Lying::Back
+        }
+    }
+
+    pub fn stop(&mut self) {
+        self.clear_plant();
+        self.live = false;
+        self.set_turn(0.0);
+        for joint in &mut self.joints {
+            joint.angle = 0.0;
+            joint.omega = 0.0;
+        }
     }
 
     pub fn relax(&mut self, dt: f32) {
@@ -273,9 +319,7 @@ impl Ragdoll {
             }
         }
         if !moving {
-            self.turn = 0.0;
-            self.turn_speed = 0.0;
-            self.live = false;
+            self.stop();
         }
     }
 

@@ -11,6 +11,7 @@ const IDLE_FOR: f32 = 1.6;
 const FALLBACK_WALK_CYCLE: f32 = 0.7;
 const SIT_FOR: f32 = 7.0;
 const DOWN_FOR: f32 = 2.6;
+pub const RISE_FOR: f32 = 1.5;
 const WALK_SPEED: f32 = 78.0;
 const BOUNCE_RESTITUTION: f32 = 0.62;
 const MIN_REBOUND_SPEED: f32 = 120.0;
@@ -23,6 +24,7 @@ pub enum Activity {
     Fall,
     Drag,
     Down,
+    Rise,
     Sit,
 }
 
@@ -83,6 +85,11 @@ impl Pet {
             Activity::Drag => {}
             Activity::Fall => self.fall(room, dt),
             Activity::Down => self.down(room, dt),
+            Activity::Rise => {
+                if self.time >= RISE_FOR {
+                    self.start(Activity::Idle);
+                }
+            }
             Activity::Sit => self.sit(room),
             Activity::Walk => self.walk(room, dt),
             Activity::Idle => {
@@ -244,8 +251,8 @@ impl Pet {
         if self.vx.abs() > 36.0 {
             self.time = self.time.min(0.4);
         }
-        if self.time >= DOWN_FOR {
-            self.start(Activity::Idle);
+        if self.time >= DOWN_FOR && self.vx == 0.0 {
+            self.start(Activity::Rise);
         }
     }
 
@@ -406,7 +413,7 @@ mod tests {
             pet.release(&room, 0.0, 1100.0);
             assert_eq!(pet.activity, Activity::Fall);
             let mut heights = Vec::new();
-            for _ in 0..(fps * 4.0) as usize {
+            for _ in 0..(fps * 4.0 + fps * RISE_FOR) as usize {
                 let was_rising = pet.vy < 0.0;
                 pet.step(&room, 1.0 / fps);
                 assert!(pet.y <= room.floor);

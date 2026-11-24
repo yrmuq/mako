@@ -37,7 +37,7 @@
 | About | View the project details and check for updates. Click the logo five times to reveal Dev. |
 | Dev | Enter the width and height independently from 25% to 200% of the original proportions. |
 
-Bear girl randomly walks, sits or pauses on the upper edge of the bottom panel. Each walk lasts three to five animation cycles. She looks shocked while grabbed or flying, and a thrown chibi can send others tumbling on impact. Her hands and legs use the same parts while she types. The laptop rests on the same edge with its screen facing her.
+Bear girl randomly walks, sits or pauses on the upper edge of the bottom panel. Each walk lasts three to five animation cycles. She looks shocked while grabbed or flying, and a thrown chibi can send others tumbling on impact. A chibi can be hit again after getting back up. She pushes herself into a seated position from her back or onto her knees from her front before standing. Her hands and legs use the same parts while she types. The laptop rests on the same edge with its screen facing her.
 
 The system language follows `LANGUAGE`, `LC_ALL`, `LC_MESSAGES` and `LANG`. The system theme follows the KDE color scheme. The config stores the quick-list order, language, theme, overall scale and proportions.
 

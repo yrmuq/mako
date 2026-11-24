@@ -11,6 +11,7 @@
 - General scales both axes together. Dev proportions scale each axis before in-air rotation.
 - A quick-list entry is independent of active clones. Minus removes one clone.
 - Dragging pins the clicked point on the topmost visible body part. Gravity moves the rest of the pose around the pin, and the floor stops the body at contact.
+- A knocked-down chibi can still strike others during flight or a skid and becomes vulnerable again once it has finished standing up.
 
 ## External Compatibility Constraints
 

@@ -11,7 +11,7 @@ use std::io::{Cursor, Read, Seek};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
-use tiny_skia::{Pixmap, Point, PremultipliedColorU8, Transform};
+use tiny_skia::{IntRect, Pixmap, Point, PremultipliedColorU8, Transform};
 use zip::ZipArchive;
 
 use crate::Fault;
@@ -19,6 +19,10 @@ use crate::Fault;
 pub const BUILTIN_ID: &str = "bear-girl";
 const MAX_FILE: u64 = 4_000_000;
 const MAX_TOTAL: u64 = 24_000_000;
+const KNEES: [(&str, &str, &str, &str); 2] = [
+    ("left-leg", "left-foot", "left-thigh", "left-shin"),
+    ("right-leg", "right-foot", "right-thigh", "right-shin"),
+];
 
 #[derive(Clone)]
 pub struct Sprite {
@@ -160,9 +164,7 @@ struct Raw {
 
 impl Pack {
     pub fn builtin() -> Self {
-        static PACK: OnceLock<Pack> = OnceLock::new();
-        PACK.get_or_init(|| load_builtin().unwrap_or_else(|error| panic!("{error}")))
-            .clone()
+        builtin_pack().clone()
     }
 
     pub fn sprite(&self, name: &str) -> Option<&Sprite> {
@@ -214,6 +216,15 @@ impl Pack {
                 *slot = *value;
             }
             bob = 0.0;
+            if self.id == BUILTIN_ID {
+                for (leg, foot, thigh, shin) in KNEES {
+                    let foot_index = self.names[foot];
+                    if angle[foot_index].abs() > 0.1 {
+                        image[self.names[leg]] = thigh.into();
+                        image[foot_index] = shin.into();
+                    }
+                }
+            }
         }
         let mut placed = vec![
             Placed {
@@ -232,6 +243,18 @@ impl Pack {
 
     pub fn local_degrees(&self, anim_name: &str, time: f32) -> Vec<f32> {
         self.sample_locals(anim_name, time).0
+    }
+
+    pub fn rise_degrees(&self, name: &str, progress: f32) -> Vec<f32> {
+        let anim = self
+            .anims
+            .iter()
+            .find(|anim| anim.name == name)
+            .or_else(|| builtin_pack().anims.iter().find(|anim| anim.name == name))
+            .expect("built-in rise animation");
+        let mut angle = self.local_degrees("idle", 0.0);
+        apply_rotations(anim, progress * anim.length, &self.names, &mut angle);
+        angle
     }
 
     fn sample_locals(&self, anim_name: &str, time: f32) -> (Vec<f32>, Vec<String>, f32) {
@@ -274,12 +297,7 @@ fn apply(
     image: &mut [String],
     bob: &mut f32,
 ) {
-    for track in &anim.rot {
-        let Some(&index) = names.get(&track.bone) else {
-            continue;
-        };
-        angle[index] = sample_linear(&track.samples, time);
-    }
+    apply_rotations(anim, time, names, angle);
     for track in &anim.image {
         let Some(&index) = names.get(&track.bone) else {
             continue;
@@ -290,6 +308,14 @@ fn apply(
     }
     if !anim.bob.is_empty() {
         *bob = sample_linear(&anim.bob, time);
+    }
+}
+
+fn apply_rotations(anim: &Anim, time: f32, names: &HashMap<String, usize>, angle: &mut [f32]) {
+    for track in &anim.rot {
+        if let Some(&index) = names.get(&track.bone) {
+            angle[index] = sample_linear(&track.samples, time);
+        }
     }
 }
 
@@ -427,6 +453,11 @@ pub fn safe_id(id: &str) -> bool {
             .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.')
 }
 
+fn builtin_pack() -> &'static Pack {
+    static PACK: OnceLock<Pack> = OnceLock::new();
+    PACK.get_or_init(|| load_builtin().unwrap_or_else(|error| panic!("{error}")))
+}
+
 fn load_builtin() -> Result<Pack, Fault> {
     let mut images = HashMap::new();
     for (name, bytes) in BUILTIN_IMAGES {
@@ -453,7 +484,35 @@ fn load_builtin() -> Result<Pack, Fault> {
         (49.0, 47.0),
         include_bytes!("../assets/bear-girl/creature/leg.png"),
     )?;
+    add_knees(&mut pack)?;
     Ok(pack)
+}
+
+fn add_knees(pack: &mut Pack) -> Result<(), Fault> {
+    for (leg, foot, thigh, shin) in KNEES {
+        let upper = &pack.bones[pack.names[leg]];
+        let lower = &pack.bones[pack.names[foot]];
+        let sprite = pack.images[leg].clone();
+        let split = (upper.pivot_y + lower.y - sprite.y) as u32;
+        let width = sprite.image.width();
+        let height = sprite.image.height();
+        // Overlap the two pieces of the same pant leg to cover the joint as it bends.
+        let overlap = 20;
+        let shin_top = split - overlap;
+        let piece = |top, bottom| {
+            let rect = IntRect::from_xywh(0, top as i32, width, bottom - top).unwrap();
+            crop(sprite.image.clone_rect(rect).expect("built-in leg section"))
+        };
+        let mut thigh_piece = piece(0, split + overlap)?;
+        thigh_piece.x += sprite.x;
+        thigh_piece.y += sprite.y;
+        let mut shin_piece = piece(shin_top, height)?;
+        shin_piece.x += lower.pivot_x + sprite.x - upper.pivot_x - lower.x;
+        shin_piece.y += lower.pivot_y - overlap as f32;
+        pack.images.insert(thigh.into(), thigh_piece);
+        pack.images.insert(shin.into(), shin_piece);
+    }
+    Ok(())
 }
 
 fn add_shared_limb(

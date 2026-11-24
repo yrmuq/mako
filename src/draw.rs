@@ -19,6 +19,7 @@ pub enum Motion {
     Fall,
     Drag,
     Down,
+    Rise,
     Sit,
 }
 
@@ -256,7 +257,7 @@ fn pet_parts(scene: &Scene, pack: &Pack) -> (Vec<Part>, Option<Point>) {
         Motion::Walk => "walk",
         Motion::Fall => "fall",
         Motion::Drag => "drag",
-        Motion::Down => "idle",
+        Motion::Down | Motion::Rise => "idle",
         Motion::Sit => "sit",
         Motion::Idle => "idle",
     };
@@ -265,7 +266,12 @@ fn pet_parts(scene: &Scene, pack: &Pack) -> (Vec<Part>, Option<Point>) {
         _ => scene.blink.map_or(Face::Neutral, Face::Blink),
     };
     let degrees = (!scene.pose.is_empty()).then_some(scene.pose.as_slice());
-    let pose = pack.pose_for(anim, scene.cycle, degrees, face);
+    let cycle = if scene.motion == Motion::Rise {
+        0.0
+    } else {
+        scene.cycle
+    };
+    let pose = pack.pose_for(anim, cycle, degrees, face);
     let (scale_x, scale_y) = scene.scales;
     let fit = (SPRITE_W / pack.canvas_w).min(SPRITE_H / pack.canvas_h);
     let (fit_x, fit_y) = (fit * scale_x, fit * scale_y);
@@ -343,7 +349,7 @@ fn pose_contact(pack: &Pack, pose: &Pose, motion: Motion, view: Transform) -> Op
     let supports = |bone: &str| match motion {
         Motion::Idle | Motion::Walk => leg(bone),
         Motion::Sit => bone == "torso" || leg(bone),
-        Motion::Down | Motion::Fall => true,
+        Motion::Down | Motion::Rise | Motion::Fall => true,
         Motion::Drag => false,
     };
     pack.bones

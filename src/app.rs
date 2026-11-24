@@ -7,7 +7,7 @@ use crate::config::Settings;
 use crate::draw::{self, Frame, Motion, Part, Scene};
 use crate::pack::{BonePoint, Pack};
 use crate::rag::Ragdoll;
-use crate::sim::{Activity, Pet, Room, FEET_X, FEET_Y, GRAVITY, SPRITE_H, SPRITE_W};
+use crate::sim::{Activity, Pet, Room, FEET_X, FEET_Y, GRAVITY, RISE_FOR, SPRITE_H, SPRITE_W};
 
 struct Grip {
     point: BonePoint,
@@ -122,6 +122,7 @@ impl App {
         } else {
             let vx = self.pet.vx;
             let vy = self.pet.vy;
+            let was_rising = self.pet.activity == Activity::Rise;
             self.pet.step(&self.room, dt);
             if self.pet.activity == Activity::Fall {
                 let ax = ((self.pet.vx - vx) / dt.max(0.001)).clamp(-14000.0, 14000.0);
@@ -138,10 +139,11 @@ impl App {
                 };
                 self.rag.plant(vx * self.pet.face);
                 self.rag.step(dt, ax, ay, self.settings.pet_scale());
-            } else if self.rag.is_planted() {
-                self.rag.clear_plant();
-                self.rag.relax(dt);
-            } else if self.rag.live {
+            } else if self.pet.activity == Activity::Rise {
+                self.pet.y = self.room.floor;
+            } else if was_rising {
+                self.rag.stop();
+            } else {
                 self.rag.relax(dt);
             }
         }
@@ -169,7 +171,11 @@ impl App {
                 };
                 self.sync_rag();
                 self.rag.clear_plant();
-                if !self.rag.live {
+                if self.pet.activity == Activity::Rise {
+                    let (tilt, degrees) = self.rise_pose();
+                    self.rag.seed(&degrees);
+                    self.rag.set_turn(tilt);
+                } else if !self.rag.live {
                     let degrees = self.pack.local_degrees(self.motion_name(), self.pet.phase);
                     self.rag.seed(&degrees);
                 }
@@ -221,6 +227,13 @@ impl App {
     }
 
     fn scene(&self) -> Scene {
+        let (tilt, pose) = if self.pet.activity == Activity::Rise {
+            self.rise_pose()
+        } else if self.rag.live {
+            (self.rag.turn(), self.rag.degrees())
+        } else {
+            (self.pet.tilt(), Vec::new())
+        };
         Scene {
             cycle: self.pet.phase,
             blink: (self.clock >= self.blink_at).then_some(self.clock - self.blink_at),
@@ -229,23 +242,39 @@ impl App {
                 Activity::Fall => Motion::Fall,
                 Activity::Drag => Motion::Drag,
                 Activity::Down => Motion::Down,
+                Activity::Rise => Motion::Rise,
                 Activity::Sit => Motion::Sit,
                 Activity::Idle => Motion::Idle,
             },
-            tilt: if self.rag.live {
-                self.rag.turn()
-            } else {
-                self.pet.tilt()
-            },
+            tilt,
             facing_left: self.pet.face < 0.0,
             scales: self.settings.scales(),
-            pose: if self.rag.live {
-                self.rag.degrees()
-            } else {
-                Vec::new()
-            },
+            pose,
             anchor: self.grip.as_ref().map(|grip| grip.point),
         }
+    }
+
+    fn rise_pose(&self) -> (f32, Vec<f32>) {
+        let time = self.pet.time;
+        let side = self.rag.lying();
+        let mut degrees = self
+            .pack
+            .rise_degrees(side.rise_animation(), time / RISE_FOR);
+        let blend = smoothstep(time / 0.22);
+        if blend < 1.0 {
+            for (target, start) in degrees.iter_mut().zip(self.rag.degrees()) {
+                *target = start + (*target - start) * blend;
+            }
+        }
+        if time > RISE_FOR - 0.18 {
+            let blend = smoothstep((time - (RISE_FOR - 0.18)) / 0.18);
+            for (angle, standing) in degrees.iter_mut().zip(self.pack.local_degrees("idle", 0.0)) {
+                *angle += (standing - *angle) * blend;
+            }
+        }
+        let turn = side.tilt() * (1.0 - smoothstep(time / 0.58));
+        let start = self.rag.turn();
+        (start + (turn - start) * blend, degrees)
     }
 
     pub fn collision_bounds(&self) -> Option<Rect> {
@@ -256,14 +285,24 @@ impl App {
         draw::collision_bounds(&self.scene(), &self.pack, origin, self.screen.0)
     }
 
-    pub fn knock_back(&mut self, vx: f32, vy: f32) {
-        if !self.rag.live {
-            let degrees = self.pack.local_degrees(self.motion_name(), self.pet.phase);
-            self.rag.seed(&degrees);
+    pub fn can_be_struck(&self) -> bool {
+        !self.rag.live
+            && matches!(
+                self.pet.activity,
+                Activity::Idle | Activity::Walk | Activity::Sit
+            )
+    }
+
+    pub fn knock_back(&mut self, vx: f32, vy: f32) -> bool {
+        if !self.can_be_struck() {
+            return false;
         }
+        let degrees = self.pack.local_degrees(self.motion_name(), self.pet.phase);
+        self.rag.seed(&degrees);
         self.rag
             .impact((vx * self.pet.face / 85.0).clamp(-12.0, 12.0));
         self.pet.knock_back(vx, vy);
+        true
     }
 
     pub fn render(&mut self) -> Frame {
@@ -321,7 +360,7 @@ impl App {
             Activity::Walk => "walk",
             Activity::Fall => "fall",
             Activity::Drag => "drag",
-            Activity::Down => "idle",
+            Activity::Down | Activity::Rise => "idle",
             Activity::Sit => "sit",
             Activity::Idle => "idle",
         }
@@ -377,6 +416,11 @@ impl App {
         self.origin_x = (self.pet.x - self.feet_x()).round() as i32;
         self.origin_y = (self.pet.y - self.feet_y()).round() as i32;
     }
+}
+
+fn smoothstep(progress: f32) -> f32 {
+    let t = progress.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 fn next_blink(now: f32) -> f32 {
@@ -533,7 +577,7 @@ mod tests {
 
         let mut bounced = false;
         let mut rested = false;
-        for _ in 0..360 {
+        for _ in 0..480 {
             app.tick(1.0 / 60.0);
             let frame = app.render();
             assert!(app.origin_x >= 0 && app.origin_x + frame.width as i32 <= 1200);
@@ -547,6 +591,49 @@ mod tests {
         assert!(bounced);
         assert!(rested);
         assert_eq!(app.pet.activity, Activity::Idle);
+    }
+
+    #[test]
+    fn a_chibi_cannot_be_struck_twice_until_either_rise_finishes() {
+        use crate::rag::Lying;
+
+        for side in [Lying::Back, Lying::Front] {
+            let mut app = test_app(startup_room(1200.0, 800.0));
+            assert!(app.knock_back(0.0, -260.0));
+            app.rag.set_turn(side.tilt());
+            assert!(!app.knock_back(720.0, -150.0));
+            assert_eq!((app.pet.vx, app.pet.vy), (0.0, -260.0));
+
+            let mut stages = [false; 2];
+            let knee = app
+                .pack
+                .bones
+                .iter()
+                .position(|bone| bone.name == "left-foot")
+                .unwrap();
+            for _ in 0..360 {
+                app.tick(1.0 / 60.0);
+                if app.pet.activity == Activity::Idle {
+                    break;
+                }
+                if matches!(app.pet.activity, Activity::Down | Activity::Rise) {
+                    assert_eq!(app.rag.lying(), side);
+                    stages[usize::from(app.pet.activity == Activity::Rise)] = true;
+                    let frame = app.render();
+                    assert_eq!(app.origin_y + frame.height as i32, app.room.floor as i32);
+                    if app.pet.activity == Activity::Rise && (0.6..0.7).contains(&app.pet.time) {
+                        let angle = app.scene().pose[knee];
+                        assert_eq!(angle > 90.0, side == Lying::Front);
+                    }
+                }
+                let velocity = (app.pet.vx, app.pet.vy);
+                assert!(!app.knock_back(720.0, -150.0));
+                assert_eq!((app.pet.vx, app.pet.vy), velocity);
+            }
+            assert_eq!(stages, [true, true]);
+            assert_eq!(app.pet.activity, Activity::Idle);
+            assert!(app.knock_back(720.0, -150.0));
+        }
     }
 
     #[test]
