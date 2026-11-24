@@ -68,6 +68,42 @@ impl Fullscreen {
         }
     }
 
+    pub fn chibi_region(
+        &self,
+        mode: InputMode,
+        x: i32,
+        y: i32,
+        frame: &crate::draw::Frame,
+    ) -> InputRegion {
+        if mode == InputMode::Background {
+            return InputRegion::Restricted(Vec::new());
+        }
+        let whole = Area::new(x, y, frame.width, frame.height);
+        let overlap = mode == InputMode::Auto
+            && self.areas.iter().any(|blocked| blocked.intersect(whole).is_some());
+        let mut rectangles = Vec::new();
+        for rect in frame.input_rects(1) {
+            let part = Area::new(x + rect.x(), y + rect.y(), rect.width(), rect.height());
+            if overlap {
+                if let InputRegion::Restricted(allowed) = restrict(part, &self.areas) {
+                    rectangles.extend(allowed.into_iter().map(|r| Rectangle {
+                        x: r.x + rect.x() as i16,
+                        y: r.y + rect.y() as i16,
+                        ..r
+                    }));
+                    continue;
+                }
+            }
+            rectangles.push(Rectangle {
+                x: rect.x() as i16,
+                y: rect.y() as i16,
+                width: rect.width() as u16,
+                height: rect.height() as u16,
+            });
+        }
+        InputRegion::Restricted(rectangles)
+    }
+
     pub fn overlay_region(&self, mode: InputMode, bounds: Option<tiny_skia::Rect>) -> InputRegion {
         let Some(bounds) = bounds else {
             return InputRegion::Restricted(Vec::new());

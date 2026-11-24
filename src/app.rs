@@ -151,16 +151,8 @@ impl App {
                 let ay = ((self.pet.vy - vy) / dt.max(0.001)).clamp(-14000.0, 14000.0);
                 self.rag.step(dt, ax, ay, self.settings.pet_scale());
             } else if self.pet.activity == Activity::Down {
-                let ax = ((self.pet.vx - vx) / dt.max(0.001)).clamp(-9000.0, 9000.0);
-                // The landing frame still feels the floor. After that, gravity must not
-                // stand her up while she skids.
-                let ay = if vy > 80.0 {
-                    ((self.pet.vy - vy) / dt.max(0.001)).clamp(-14000.0, 14000.0)
-                } else {
-                    crate::sim::GRAVITY
-                };
                 self.rag.plant(vx * self.pet.face);
-                self.rag.step(dt, ax, ay, self.settings.pet_scale());
+                self.rag.settle(dt, &self.pack);
             } else if self.pet.activity == Activity::Rise {
                 self.pet.y = self.room.floor;
             } else if before == Activity::Rise {
@@ -282,6 +274,11 @@ impl App {
             cycle: self.motion_phase(),
             blink: (self.clock >= self.blink_at).then_some(self.clock - self.blink_at),
             sad: self.clock < self.sad_until,
+            grounded: match self.pet.activity {
+                Activity::Down => self.rag.floor_contact(),
+                Activity::Rise => 1.0 - smoothstep(self.pet.time / self.pet.rise_for / 0.28),
+                _ => 0.0,
+            },
             motion: self.motion(),
             tilt,
             facing_left: self.pet.face < 0.0,

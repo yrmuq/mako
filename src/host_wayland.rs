@@ -312,12 +312,14 @@ impl Host {
                 rect.y,
             );
             if accepts_input {
-                region.add(
-                    app.origin_x,
-                    app.origin_y,
-                    app.logical_w as i32,
-                    app.logical_h as i32,
-                );
+                for hit in frame.input_rects(scale) {
+                    region.add(
+                        app.origin_x + hit.x(),
+                        app.origin_y + hit.y(),
+                        hit.width() as i32,
+                        hit.height() as i32,
+                    );
+                }
             }
             next.push(rect);
             app.note_committed();

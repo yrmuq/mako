@@ -5,7 +5,7 @@
 
 #[cfg(test)]
 use tiny_skia::PremultipliedColorU8;
-use tiny_skia::{Pixmap, PixmapPaint, Point, Rect, Transform};
+use tiny_skia::{IntRect, Pixmap, PixmapPaint, Point, Rect, Transform};
 
 use crate::pack::{is_builtin, BonePoint, Face, Pack, Pose, Sprite};
 #[cfg(test)]
@@ -59,6 +59,7 @@ pub struct Scene {
     pub cycle: f32,
     pub blink: Option<f32>,
     pub sad: bool,
+    pub grounded: f32,
     pub motion: Motion,
     pub tilt: f32,
     pub facing_left: bool,
@@ -76,6 +77,61 @@ pub struct Frame {
     pub shift: (i32, i32),
     pub anchor: Option<Point>,
     pub support: Option<f32>,
+}
+
+impl Frame {
+    pub fn input_rects(&self, scale: u32) -> Vec<IntRect> {
+        let scale = scale.max(1) as usize;
+        let width = self.width as usize;
+        let mut strips: Vec<(i32, i32, i32, u32)> = Vec::new();
+        let mut previous: Vec<usize> = Vec::new();
+        let mut current = Vec::new();
+        for (y, rows) in self.bgra.chunks_exact(width * scale * 4).enumerate() {
+            let row = &rows[width * (scale / 2) * 4..][..width * 4];
+            let mut start = None;
+            let mut last = 0;
+            for (x, alpha) in row
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .skip(scale / 2)
+                .step_by(scale)
+                .map(|pixel| pixel[3])
+                .chain(std::iter::once(0))
+                .enumerate()
+            {
+                if alpha >= 32 {
+                    start.get_or_insert(x as i32);
+                    continue;
+                }
+                let Some(left) = start.take() else {
+                    continue;
+                };
+                let right = x as i32;
+                while last < previous.len() && strips[previous[last]].0 < left {
+                    last += 1;
+                }
+                if let Some(&index) = previous.get(last) {
+                    let strip = &mut strips[index];
+                    if (strip.0, strip.1) == (left, right) {
+                        strip.3 += 1;
+                        current.push(index);
+                        continue;
+                    }
+                }
+                current.push(strips.len());
+                strips.push((left, right, y as i32, 1));
+            }
+            std::mem::swap(&mut previous, &mut current);
+            current.clear();
+        }
+        strips
+            .into_iter()
+            .filter_map(|(left, right, y, height)| {
+                IntRect::from_xywh(left, y, (right - left) as u32, height)
+            })
+            .collect()
+    }
 }
 
 pub struct Part {
@@ -444,6 +500,9 @@ fn pet_parts(scene: &Scene, pack: &Pack) -> (Vec<Part>, Option<Point>) {
             })
         })
         .collect();
+    if scene.grounded > 0.0 {
+        align_floor_contacts(&mut parts, pack, ground, scene.grounded);
+    }
     if scene.sad {
         if let Some(eyes) = parts.iter().find(|part| {
             part.joint
@@ -510,6 +569,43 @@ fn snowball_centre(parts: &[Part], pack: &Pack) -> Option<Point> {
     );
     hand.transform.map_point(&mut centre);
     Some(centre)
+}
+
+fn floor_group(pack: &Pack, mut index: usize) -> usize {
+    loop {
+        let bone = &pack.bones[index];
+        match bone.name.as_str() {
+            "head" => return 1,
+            "left-hand" => return 2,
+            "right-hand" => return 3,
+            "left-leg" => return 4,
+            "right-leg" => return 5,
+            _ => {}
+        }
+        let Some(parent) = bone.parent else { return 0 };
+        index = parent;
+    }
+}
+
+fn align_floor_contacts(parts: &mut [Part], pack: &Pack, floor: f32, amount: f32) {
+    let mut contacts = [f32::NEG_INFINITY; 6];
+    for part in parts.iter() {
+        if let Some(joint) = part.joint {
+            let group = floor_group(pack, joint.bone);
+            if let Some(edge) = part.sprite.lower_edge(part.transform) {
+                contacts[group] = contacts[group].max(edge);
+            }
+        }
+    }
+    for part in parts {
+        if let Some(joint) = part.joint {
+            let edge = contacts[floor_group(pack, joint.bone)];
+            if edge.is_finite() {
+                let offset = (floor - edge).clamp(0.0, floor * 0.24) * amount;
+                part.transform = part.transform.post_translate(0.0, offset);
+            }
+        }
+    }
 }
 
 fn wall_grips(
@@ -704,6 +800,7 @@ mod tests {
             cycle: 0.0,
             blink: None,
             sad: false,
+            grounded: 0.0,
             motion: Motion::Idle,
             tilt: 0.0,
             facing_left: false,
@@ -711,6 +808,26 @@ mod tests {
             pose: Vec::new(),
             anchor: None,
             effect_amount: 0.0,
+        }
+    }
+
+    #[test]
+    fn hit_regions_leave_gaps_and_use_logical_coordinates() {
+        let pack = Pack::builtin();
+        let mut frame = render(&still(), &pack, 1);
+        frame.width = 8;
+        frame.height = 4;
+        frame.bgra = vec![0; 8 * 4 * 4];
+        for y in 0..4 {
+            for x in [2, 3, 6, 7] {
+                frame.bgra[(y * 8 + x) * 4 + 3] = 255;
+            }
+        }
+        for scale in [1, 2] {
+            let rects = frame.input_rects(scale);
+            assert_eq!(rects.len(), 2);
+            assert_eq!(rects[0], IntRect::from_xywh(2 / scale as i32, 0, 2 / scale, 4 / scale).unwrap());
+            assert_eq!(rects[1].x(), 6 / scale as i32);
         }
     }
 

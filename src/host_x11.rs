@@ -192,7 +192,7 @@ fn present(
             .height(frame.height),
     )
     .map_err(x11)?;
-    let input = fullscreen.region(mode, app.origin_x, app.origin_y, frame.width, frame.height);
+    let input = fullscreen.chibi_region(mode, app.origin_x, app.origin_y, &frame);
     if window.input != input {
         input.apply(conn, window.id).map_err(input_error)?;
         window.input = input;

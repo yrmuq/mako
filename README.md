@@ -29,7 +29,7 @@
 
 | Input | Action |
 | --- | --- |
-| Left button | Grab any visible body part. Flick to throw and tumble or throw down for a series of diminishing bounces. |
+| Left button | Grab a chibi by its visible silhouette. Flick to throw and tumble or throw down for a series of diminishing bounces. |
 | Tray icon | Open the quick panel. Use `+` or `−` to add or remove one copy of a chibi. |
 | Gear and pin | Open Settings or keep the quick panel open when it loses focus. |
 | General | Choose the language, theme, interaction mode and tray layout (List or Tiles). Toggle precipitation to show or hide falling snow. The Size slider shows the chibi's base height in logical pixels, including its Dev height proportion. The default size is 115 × 108 px. |
@@ -43,11 +43,11 @@
 | Background | Clicks pass through the chibis and their props. |
 | Auto | Clicks pass through on monitors with a fullscreen window. |
 
-Bear girl randomly walks, sits or pauses on the upper edge of the bottom panel. Each walk lasts three to five animation cycles. She looks shocked while grabbed or flying, and a thrown chibi can send others tumbling on impact. After coming to rest, a knocked-down chibi lies for 1.5–3 seconds and then gets back up in 1–2 seconds. A chibi can be hit again after getting back up. She pushes herself into a seated position from her back or onto her knees from her front before standing. Her hands and legs use the same parts while she types. The laptop rests on the same edge with its screen facing her.
+Bear girl randomly walks, sits or pauses on the upper edge of the bottom panel. Each walk lasts three to five animation cycles. She looks shocked while grabbed or flying, and a thrown chibi can send others tumbling on impact. After landing on their front or back, a knocked-down chibi lies for 1.5–3 seconds and then gets back up in 1–2 seconds. A chibi can be hit again after getting back up. She pushes herself into a seated position from her back or onto her knees from her front before standing. Her hands and legs use the same parts while she types. The laptop rests on the same edge with its screen facing her.
 
 Chibis have a 10% chance to climb when they reach a screen edge. They grip the wall with hands and feet and pull themselves upward. When they reach the ceiling, they usually parachute down. In 5% of climbs that reach the ceiling, the chibi crawls to the center and a hand carries it down. Nearby chibis sometimes stop and take turns talking and gesturing.
 
-Snow falls to the top of the bottom panel in the festive period (November 20–January 13) and winter period (January 14–February 28), using local dates. Both periods have slippery walls, snow piles and a shared snowman. Chibis make snowballs from the piles and can knock each other over. Any chibi can work on the snowman for 3–5 seconds at a time, and it takes about ten minutes of active work to finish. Drag the snowman to move it along the panel, or flick it to break it. The chibis will continue building at the new spot after a gentle move. Turning off precipitation keeps the snow piles and winter activities available.
+Snow falls to the top of the bottom panel in the festive period (November 20–January 13) and winter period (January 14–February 28), using local dates. Both periods have slippery walls, snow piles and a shared snowman. Chibis make snowballs from the piles and can knock each other over. A hit chibi has a 50% chance of going for a snowball to throw back after getting up. Any chibi can work on the snowman for 3–5 seconds at a time, and it takes about ten minutes of active work to finish. Drag the snowman to lift it and move it. A short drop keeps it intact and the chibis resume building at the new spot. A hard landing or a flick breaks it. Turning off precipitation keeps the snow piles and winter activities available.
 
 The active chibis and snow objects are saved to `$XDG_STATE_HOME/mako/scene.json` (default `~/.local/state/mako/scene.json`). Chibis start on the floor. The piles and snowman, including its progress, keep their places until the snow season ends.
 

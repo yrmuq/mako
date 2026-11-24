@@ -35,6 +35,7 @@ pub struct Ragdoll {
     pub live: bool,
     planted: bool,
     rest_turn: f32,
+    settle_left: f32,
     joints: Vec<Joint>,
     turn: f32,
     turn_speed: f32,
@@ -87,6 +88,7 @@ impl Ragdoll {
             live: false,
             planted: false,
             rest_turn: 0.0,
+            settle_left: 0.0,
             joints,
             turn: 0.0,
             turn_speed: 0.0,
@@ -267,11 +269,27 @@ impl Ragdoll {
             Lying::Back
         }
         .tilt();
-        self.turn_speed *= 0.45;
-        for joint in &mut self.joints {
-            joint.target = joint.angle * 0.75;
-            joint.omega *= 0.45;
+        let deviation = wrap_angle(self.turn - self.rest_turn).clamp(-0.52, 0.52);
+        self.set_turn(self.rest_turn + deviation);
+        self.settle_left = 0.22;
+    }
+
+    pub fn settle(&mut self, dt: f32, pack: &Pack) {
+        if self.settle_left <= 0.0 {
+            return;
         }
+        let blend = (dt / self.settle_left).min(1.0);
+        self.settle_left = (self.settle_left - dt).max(0.0);
+        self.turn += (self.rest_turn - self.turn) * blend;
+        let rest = pack.rise_degrees(self.lying().rise_animation(), 0.0);
+        for (joint, degrees) in self.joints.iter_mut().zip(rest) {
+            joint.angle += (degrees.to_radians() - joint.angle) * blend;
+            joint.omega = 0.0;
+        }
+    }
+
+    pub fn floor_contact(&self) -> f32 {
+        1.0 - self.settle_left / 0.22
     }
 
     pub fn clear_plant(&mut self) {
@@ -450,6 +468,27 @@ mod tests {
             rag.step(1.0 / 60.0, 7000.0, 0.0, 1.0);
         }
         assert!(hand(&rag) > 0.2, "{}", hand(&rag));
+    }
+
+    #[test]
+    fn an_inverted_impact_settles_on_the_selected_side() {
+        let pack = Pack::builtin();
+        for turn in [-3.0, -0.2, 0.2, 3.0] {
+            let mut rag = Ragdoll::new(&pack);
+            rag.set_turn(turn);
+            rag.plant(0.0);
+            let side = rag.lying();
+            assert!(wrap_angle(rag.turn() - side.tilt()).abs() <= 0.521);
+            for _ in 0..16 {
+                rag.settle(1.0 / 60.0, &pack);
+            }
+            assert_eq!(rag.turn(), side.tilt());
+            assert_eq!(rag.floor_contact(), 1.0);
+            let rest = pack.rise_degrees(side.rise_animation(), 0.0);
+            for (actual, expected) in rag.degrees().into_iter().zip(rest) {
+                assert!((actual - expected).abs() < 0.01);
+            }
+        }
     }
 
     #[test]

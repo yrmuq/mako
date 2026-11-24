@@ -9,14 +9,14 @@ use tiny_skia::Point;
 use crate::season::OverlayImage;
 
 pub struct Grab {
-    offset: f32,
+    offset: Point,
     points: VecDeque<(Instant, Point)>,
 }
 
 impl Grab {
-    pub fn new(cursor: Point, centre: f32, now: Instant) -> Self {
+    pub fn new(cursor: Point, base: Point, now: Instant) -> Self {
         Self {
-            offset: cursor.x - centre,
+            offset: Point::from_xy(cursor.x - base.x, cursor.y - base.y),
             points: VecDeque::from([(now, cursor)]),
         }
     }
@@ -25,7 +25,7 @@ impl Grab {
         self.points.back().expect("grab position").1
     }
 
-    pub fn move_to(&mut self, cursor: Point, now: Instant) -> f32 {
+    pub fn move_to(&mut self, cursor: Point, now: Instant) -> Point {
         if self.cursor() != cursor {
             self.points.push_back((now, cursor));
             while self.points.len() > 1 && now.duration_since(self.points[0].0).as_secs_f32() > 0.13
@@ -33,7 +33,7 @@ impl Grab {
                 self.points.pop_front();
             }
         }
-        cursor.x - self.offset
+        Point::from_xy(cursor.x - self.offset.x, cursor.y - self.offset.y)
     }
 
     pub fn throw(&self, now: Instant) -> Option<Point> {
@@ -56,6 +56,51 @@ impl Grab {
                 (dy / dt).clamp(-1500.0, 1500.0),
             )
         })
+    }
+}
+
+#[derive(Default)]
+pub enum Motion {
+    #[default]
+    Grounded,
+    Held { grab: Grab, lift: f32 },
+    Falling(Fall),
+}
+
+impl Motion {
+    pub fn lift(&self) -> f32 {
+        match self {
+            Self::Grounded => 0.0,
+            Self::Held { lift, .. } => *lift,
+            Self::Falling(fall) => fall.lift,
+        }
+    }
+}
+
+pub struct Fall {
+    lift: f32,
+    speed: f32,
+}
+
+impl Fall {
+    const GRAVITY: f32 = 1450.0;
+    pub const BREAK_SPEED: f32 = 520.0;
+
+    pub fn new(lift: f32) -> Self {
+        Self { lift, speed: 0.0 }
+    }
+
+    pub fn step(&mut self, dt: f32) -> Option<f32> {
+        let dt = dt.clamp(0.0, 0.05);
+        let distance = (self.speed + Self::GRAVITY * dt * 0.5) * dt;
+        if distance >= self.lift {
+            let impact = (self.speed * self.speed + 2.0 * Self::GRAVITY * self.lift).sqrt();
+            self.lift = 0.0;
+            return Some(impact);
+        }
+        self.lift -= distance;
+        self.speed += Self::GRAVITY * dt;
+        None
     }
 }
 
@@ -115,12 +160,22 @@ mod tests {
     use std::time::Duration;
 
     #[test]
+    fn falling_from_low_and_high_up_crosses_the_impact_threshold() {
+        for (height, breaks) in [(20.0, false), (170.0, true)] {
+            let mut fall = Fall::new(height);
+            let impact = (0..90).find_map(|_| fall.step(1.0 / 60.0)).unwrap();
+            assert_eq!(fall.lift, 0.0);
+            assert_eq!(impact >= Fall::BREAK_SPEED, breaks);
+        }
+    }
+
+    #[test]
     fn gentle_drag_and_a_paused_flick_keep_the_snowman() {
         let t = Instant::now();
-        let mut grab = Grab::new(Point::from_xy(110.0, 450.0), 100.0, t);
+        let mut grab = Grab::new(Point::from_xy(110.0, 450.0), Point::from_xy(100.0, 470.0), t);
         assert_eq!(
             grab.move_to(Point::from_xy(127.0, 445.0), t + Duration::from_millis(100)),
-            117.0
+            Point::from_xy(117.0, 465.0)
         );
         assert!(grab.throw(t + Duration::from_millis(100)).is_none());
         grab.move_to(Point::from_xy(240.0, 370.0), t + Duration::from_millis(155));
