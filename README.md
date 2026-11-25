@@ -14,6 +14,10 @@
 
 `mako` is a desktop pet for KDE Plasma. Bear girl walks along the bottom edge of the screen in a three-quarter view. It is a native Wayland client on a Wayland session and a native X11 client on an X11 session, without using XWayland as a fallback. Each frame is drawn from separate parts on one skeleton, not from a sprite sheet.
 
+<p align="center">
+  <img src="assets/readme-poster.webp" alt="Lion girl, Bear girl and Turtle boy on a desktop ledge" width="620">
+</p>
+
 ---
 
 ## Features
