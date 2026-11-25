@@ -12,7 +12,7 @@
 - A quick-list entry is independent of active clones. Minus removes one clone.
 - Pass pointer input through transparent chibi pixels on both display systems.
 - Dragging pins the clicked point on the topmost visible body part. Gravity moves the rest of the pose around the pin, and the floor stops the body at contact.
-- A knocked-down chibi can still strike others during flight or a skid. Snowballs can hit a lying chibi again. Body-impact immunity lasts through recovery.
+- A knocked-down chibi can still strike others during flight or a skid. It becomes vulnerable to snowballs and body impacts once it finishes standing up.
 - Keep the snowball thrower immune to knockback propagated from its own throw. A batted snowball belongs to the chibi that struck it with the bat.
 - Auto mode passes pointer input through the scene only on the monitor showing a fullscreen window. Other monitors remain interactive.
 - Both snowy seasons make the walls slippery. A chibi cannot reach the ceiling while the walls are slippery.

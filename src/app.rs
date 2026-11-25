@@ -384,28 +384,7 @@ impl App {
         if !self.can_be_struck() {
             return false;
         }
-        self.apply_knockback(vx, vy, snowball_owner);
-        true
-    }
-
-    pub fn can_be_hit_by_snowball(&self) -> bool {
-        self.pet.activity == Activity::Down || self.can_be_struck()
-    }
-
-    pub fn hit_with_snowball(&mut self, vx: f32, vy: f32, owner: u64) -> bool {
-        if !self.can_be_hit_by_snowball() {
-            return false;
-        }
-        self.apply_knockback(vx, vy, Some(owner));
-        true
-    }
-
-    fn apply_knockback(&mut self, vx: f32, vy: f32, snowball_owner: Option<u64>) {
-        let degrees = if self.pet.activity == Activity::Down {
-            self.rag.degrees()
-        } else {
-            self.pack.local_degrees(self.motion_name(), self.pet.phase)
-        };
+        let degrees = self.pack.local_degrees(self.motion_name(), self.pet.phase);
         let tilt = self.pet.tilt();
         self.rag.seed(&degrees);
         if self.pet.activity == Activity::ClimbWall {
@@ -415,6 +394,7 @@ impl App {
             .impact((vx * self.pet.face / 85.0).clamp(-12.0, 12.0));
         self.pet.knock_back(vx, vy);
         self.snowball_owner = snowball_owner;
+        true
     }
 
     pub fn render(&mut self) -> Frame {

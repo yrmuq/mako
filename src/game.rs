@@ -716,7 +716,7 @@ mod tests {
         }
         let victim = &mut game.pets[1].app;
         victim.pet.y -= 15.0;
-        assert!(victim.hit_with_snowball(3600.0, -80.0, shooter));
+        assert!(victim.knock_back(3600.0, -80.0, Some(shooter)));
         game.tick(0.05);
         assert!(game.pets[0].app.pet.activity.routine());
         assert_eq!(game.pets[2].app.pet.activity, Activity::Fall);

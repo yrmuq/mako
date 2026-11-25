@@ -23,7 +23,7 @@ const BALL_RADIUS: f32 = 5.5;
 const BALL_KNOCKBACK: f32 = 0.68 * 2.0;
 const WALL_HEIGHT: f32 = 84.0;
 const WALL_HALF_WIDTH: f32 = 50.0;
-const HIT_WINDOW: f64 = 60.0;
+const HIT_WINDOW: f64 = 30.0;
 
 #[derive(Clone, Copy)]
 enum Task {
@@ -651,7 +651,7 @@ impl Interactions {
                 let other = &pets.iter().find(|pet| pet.id == target)?.app;
                 Some((
                     other.pet.x,
-                    other.can_be_hit_by_snowball(),
+                    other.can_be_struck(),
                     other.pet.activity == Activity::ClimbWall,
                 ))
             }
@@ -891,7 +891,7 @@ impl Interactions {
             .iter()
             .map(|pet| {
                 pet.app
-                    .can_be_hit_by_snowball()
+                    .can_be_struck()
                     .then(|| pet.app.collision_bounds())
                     .flatten()
             })
@@ -916,7 +916,7 @@ impl Interactions {
                 .iter()
                 .enumerate()
                 .filter_map(|(i, body)| {
-                    if pets[i].id == ball.owner || !pets[i].app.can_be_hit_by_snowball() {
+                    if pets[i].id == ball.owner || !pets[i].app.can_be_struck() {
                         return None;
                     }
                     if ball.counter == Some(pets[i].id)
@@ -964,10 +964,10 @@ impl Interactions {
                     }
                     return true;
                 }
-                if pets[index].app.hit_with_snowball(
+                if pets[index].app.knock_back(
                     (ball.vx * BALL_KNOCKBACK).clamp(-1450.0, 1450.0),
                     -310.0,
-                    ball.owner,
+                    Some(ball.owner),
                 ) {
                     let hits = snow_hits.entry(id).or_default();
                     hits.retain(|time| now - time <= HIT_WINDOW);
@@ -1405,7 +1405,7 @@ mod tests {
     fn three_recent_hits_arm_a_cannon_after_recovery() {
         let mut pets = [pet(0, 300.0), pet(1, 421.0), pet(2, 510.0)];
         let mut interactions = Interactions::new();
-        for time in [1.0, 62.0, 68.0, 72.0] {
+        for time in [1.0, 32.0, 38.0, 62.0] {
             interactions.time = time;
             pets[1] = pet(1, 421.0);
             interactions.balls.push(Snowball {
@@ -1420,7 +1420,7 @@ mod tests {
             }
             assert!(interactions.balls.is_empty());
             assert_eq!(pets[1].app.pet.activity, Activity::Fall);
-            assert_eq!(interactions.owes_cannon.contains(&1), time == 72.0);
+            assert_eq!(interactions.owes_cannon.contains(&1), time == 62.0);
         }
         interactions.start_cannons(&mut pets);
         assert_eq!(pets[1].app.pet.activity, Activity::Fall);
@@ -1436,9 +1436,9 @@ mod tests {
         for _ in 0..24 {
             interactions.fly(&mut pets, &[], 1000.0, 650.0, 0.02);
         }
-        assert_eq!(pets[0].app.pet.activity, Activity::Fall);
+        assert_eq!(pets[0].app.pet.activity, Activity::Down);
         assert_eq!(pets[1].app.pet.activity, Activity::Special(Special::Cannon));
-        assert_eq!(pets[2].app.pet.activity, Activity::Fall);
+        assert_eq!(pets[2].app.pet.activity, Activity::Down);
     }
 
     #[test]
