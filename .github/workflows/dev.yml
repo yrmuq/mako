@@ -1,0 +1,81 @@
+name: Development build
+run-name: Development ${{ github.sha }} / ${{ inputs.include_flatpak && 'appimage-flatpak' || 'appimage' }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      include_flatpak:
+        description: Include an x86_64 Flatpak test bundle
+        type: boolean
+        default: false
+  push:
+    branches: [dev]
+
+permissions:
+  contents: read
+
+jobs:
+  appimage:
+    if: github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    concurrency:
+      group: development-build
+      cancel-in-progress: true
+    env:
+      MAKO_DEV_DRAFT: "true"
+    steps:
+      - uses: actions/checkout@v7
+      - name: Flatpak is not implemented
+        if: inputs.include_flatpak
+        run: |
+          echo "Flatpak packages are not built"
+          exit 1
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            packaging/appimage/build/cache
+          key: mako-appimage-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            mako-appimage-${{ runner.os }}-${{ runner.arch }}-
+      - name: AppImage tools
+        run: sudo apt-get update && sudo apt-get install -y file curl libfontconfig1-dev
+      - run: sh packaging/check.sh
+      - run: sh packaging/appimage/build.sh
+      - run: sh packaging/appimage/check.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: development-appimage
+          path: |
+            dist/mako-x86_64.AppImage
+            dist/mako-x86_64.AppImage.sha256
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    needs: appimage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    concurrency:
+      group: development-draft
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v8
+        with:
+          name: development-appimage
+          path: dist
+      - name: Update the dev draft for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: sh packaging/draft.sh

@@ -1,0 +1,32 @@
+# Map
+
+- `src/sim.rs` — pet activity, floor and screen edges. No display code.
+- `src/pack.rs` — built-in packs, ZIP import and removal, and the archive format (`heart`, `body`, `anima`, `creature`, `pocket`). Bear girl supplies the fallback skeleton and animations.
+- `src/draw.rs` — draws the skeleton, builds face thumbnails and picks body parts using their rendered transforms.
+- `src/props.rs` — ceiling exit artwork, the talking mouth and snow object artwork.
+- `src/season.rs` — local and preview dates, seasons, autumn rain scheduling and precipitation drawing.
+- `src/sky.rs` and `src/event_art.rs` — falling stars, rainbows, space rifts and lightning effects.
+- `src/weather.rs` — Open-Meteo city search and hourly precipitation updates.
+- `src/festive.rs` — fir and gift dates, planting, watering, decoration, opening gifts and spring disposal.
+- `src/interactions.rs` — conversations, snowball combat, snowman and wall building, and ground snow rendering.
+- `src/sled.rs` — sled fetching, passenger and helper activities, the two-edge route, manual rope pulls, sliding impacts and sled rendering.
+- `src/ramps.rs` — snow wall window, slope, ladder and manual and automatic sliding.
+- `src/mounts.rs` — saved cargo slots for walls and sleds.
+- `src/lion.rs` — lion encounters, temporary holds and tosses.
+- `src/combat.rs` — dust-cloud scuffles and Bob’s laser volleys.
+- `src/visitors.rs`, `src/visitor_art.rs` and `src/visitors/` — Santa and UFO visits, visitor artwork, and presents and rewards from Santa’s bag.
+- `src/world.rs` — ordinary scene save, temporary test scene, chibi rosters, Bob’s unlock and persistent props.
+- `src/snowman.rs` — snowman drag speed and fragments.
+- `src/rag.rs` — suspended and free ragdoll motion, joint limits and landing pose.
+- `src/i18n.rs` — `languages/*.ini` catalogs and system-language detection.
+- `src/config.rs` — XDG preferences for appearance and tray order.
+- `src/desktop.rs` and `ui/app.slint` — tray, quick panel, preferences and ZIP import.
+- `src/icons.rs` — desktop icon-theme lookup and symbolic icon tint detection.
+- `src/place.rs` and `ui/place.js` — tray popup positioning and fullscreen output tracking on KWin.
+- `src/game.rs` — live chibi instances, pointer routing and swept body collisions.
+- `src/app.rs` — pointer gestures and geometry for one chibi.
+- `src/host_wayland.rs` — one anchored KWin layer, input limited to interactive chibis and props, shared-memory buffer.
+- `src/host_x11.rs` — one override-redirect ARGB window per chibi on X11.
+- `src/x11_input.rs` — EWMH/RandR fullscreen detection and X Shape input regions.
+- `packaging/appimage/` — `x86_64` AppImage build and draft checks.
+- `packaging/draft.sh` — updates the untagged-version `dev` draft after a dev build.

@@ -1,0 +1,765 @@
+// Copyright (C) 2026 yrmuq
+// SPDX-License-Identifier: GPL-3.0-only
+
+import { Button, CheckBox, ComboBox, LineEdit, Palette, ScrollView, Slider, SpinBox } from "std-widgets.slint";
+
+export global Translations {
+    in-out property <[string]> strings;
+    public pure function tr(index: int) -> string { return strings[index]; }
+}
+
+export struct Attribution {
+    name: string,
+    upstream: string,
+    detail: string,
+    url: string,
+}
+
+// Colors are filled from the active KDE scheme. Defaults are current Breeze Light.
+export global Breeze {
+    in-out property <bool> dark: false;
+    in-out property <color> window: #eff0f1;
+    in-out property <color> button: #fcfcfc;
+    in-out property <color> button-hover: #f6f6f7;
+    in-out property <color> fg: #232629;
+    in-out property <color> inactive: #707d8a;
+    in-out property <color> selection: #3daee9;
+    in-out property <color> selection-fg: #ffffff;
+    in-out property <color> frame: #c6c8c9;
+    // Breeze focusOutlineColor: 85% accent mixed with 15% text.
+    in-out property <color> outline: #399acc;
+    out property <length> radius: 5px;
+}
+
+component ToolButton inherits Rectangle {
+    in property <bool> active: false;
+    in property <bool> enabled: true;
+    in property <bool> flat: false;
+    callback clicked;
+    width: 32px;
+    height: 32px;
+    border-radius: Breeze.radius;
+    background: flat || !root.enabled ? transparent : (active ? Breeze.selection : (hover.has-hover || keys.has-focus ? Breeze.button-hover : transparent));
+    border-width: active || keys.has-focus ? 1px : 0;
+    border-color: Breeze.outline;
+    VerticalLayout {
+        alignment: center;
+        HorizontalLayout {
+            alignment: center;
+            @children
+        }
+    }
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { if (root.enabled) { root.clicked(); } }
+    in property <string> label;
+    forward-focus: keys;
+    keys := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if (event.text == "\n" || event.text == " ") {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+    hover := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+component BreezeIcon inherits Rectangle {
+    in property <image> source;
+    in property <bool> tint: true;
+    in property <color> ink;
+    width: 22px;
+    height: 22px;
+    background: transparent;
+    if root.tint: Image {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        source: root.source;
+        colorize: root.ink;
+    }
+    if !root.tint: Image {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        source: root.source;
+    }
+}
+
+
+component SettingRow inherits HorizontalLayout {
+    in property <string> label;
+    in property <length> label-width: 260px;
+    spacing: 16px;
+    Text {
+        text: root.label;
+        color: Breeze.fg;
+        width: root.label-width;
+        vertical-alignment: center;
+        wrap: word-wrap;
+    }
+    @children
+}
+
+component AboutLink inherits Rectangle {
+    in property <string> label;
+    callback activate;
+    background: transparent;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.activate(); }
+    forward-focus: keys;
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (event.text == "\n" || event.text == " ") { root.activate(); return accept; }
+            return reject;
+        }
+    }
+    border-width: keys.has-focus ? 1px : 0px;
+    border-color: Breeze.outline;
+    VerticalLayout {
+        spacing: 0px;
+        Text { text: root.label; color: Breeze.selection; }
+        Rectangle { height: 1px; background: Breeze.selection; }
+    }
+    TouchArea {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        mouse-cursor: pointer;
+        clicked => { keys.focus(); root.activate(); }
+    }
+}
+
+component PageTabs inherits Rectangle {
+    in property <[string]> labels;
+    in-out property <int> selected;
+    height: 32px;
+    accessible-role: tab-list;
+    accessible-item-count: root.labels.length;
+    accessible-delegate-focus: root.selected;
+    forward-focus: keys;
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.LeftArrow || event.text == Key.Home) {
+                root.selected = event.text == Key.Home ? 0 : Math.max(0, root.selected - 1);
+                return accept;
+            }
+            if (event.text == Key.RightArrow || event.text == Key.End) {
+                root.selected = event.text == Key.End ? root.labels.length - 1 : Math.min(root.labels.length - 1, root.selected + 1);
+                return accept;
+            }
+            return reject;
+        }
+    }
+    HorizontalLayout {
+        spacing: 2px;
+        for label[index] in root.labels: Rectangle {
+            accessible-role: tab;
+            accessible-label: label;
+            accessible-item-index: index;
+            accessible-item-selectable: true;
+            accessible-item-selected: root.selected == index;
+            accessible-action-default => { root.selected = index; keys.focus(); }
+            preferred-width: 0px; min-width: 0px; horizontal-stretch: 1;
+            background: touch.has-hover ? Breeze.button-hover : transparent;
+            border-radius: Breeze.radius;
+            border-width: 1px;
+            border-color: root.selected == index ? Breeze.outline : Breeze.frame;
+            Text {
+                x: 8px; width: parent.width - 16px; height: parent.height;
+                text: label; color: Breeze.fg;
+                font-weight: root.selected == index ? 600 : 400;
+                vertical-alignment: center; horizontal-alignment: center; overflow: elide;
+            }
+            touch := TouchArea { mouse-cursor: pointer; clicked => { root.selected = index; keys.focus(); } }
+        }
+    }
+}
+
+component PartRow inherits VerticalLayout {
+    in property <Attribution> part;
+    callback open-link(string);
+    spacing: 0px;
+    HorizontalLayout {
+        spacing: 8px;
+        padding-top: 6px; padding-bottom: 6px;
+        Text { text: root.part.name; width: 90px; wrap: word-wrap; color: Breeze.fg; vertical-alignment: center; }
+        VerticalLayout {
+            width: 145px; alignment: center;
+            AboutLink { label: root.part.upstream; activate => { root.open-link(root.part.url); } }
+        }
+        Text { text: root.part.detail; horizontal-stretch: 1; wrap: word-wrap; color: Breeze.fg; vertical-alignment: center; }
+    }
+    Rectangle { height: 1px; background: Breeze.frame; }
+}
+
+export struct ChibiRow {
+    id: string,
+    name: string,
+    face: image,
+    count: int,
+    added: bool,
+    builtin: bool,
+}
+
+component InstanceControls inherits HorizontalLayout {
+    in property <int> count;
+    in property <image> add-icon;
+    in property <bool> tint-add;
+    in property <image> remove-icon;
+    in property <bool> tint-remove;
+    callback add();
+    callback remove();
+    private property <length> button-width: 24px;
+    spacing: 2px;
+    alignment: center;
+    VerticalLayout {
+        alignment: center;
+        width: root.button-width;
+        minus := ToolButton {
+            width: root.button-width;
+            height: root.button-width;
+            enabled: root.count > 0;
+            label: Translations.tr(20);
+            clicked => { root.remove(); }
+            if root.remove-icon.width > 0: BreezeIcon {
+                source: root.remove-icon; tint: root.tint-remove;
+                ink: minus.enabled ? Breeze.fg : Breeze.inactive;
+                opacity: !minus.enabled && !root.tint-remove ? 0.45 : 1;
+            }
+            if root.remove-icon.width == 0: Text {
+                text: "−"; font-size: 20px; color: minus.enabled ? Breeze.fg : Breeze.inactive;
+            }
+        }
+    }
+    Text {
+        text: "\{root.count}"; color: Breeze.fg; vertical-alignment: center;
+        horizontal-alignment: center; min-width: 0px; overflow: elide;
+    }
+    VerticalLayout {
+        alignment: center;
+        width: root.button-width;
+        ToolButton {
+            width: root.button-width;
+            height: root.button-width;
+            label: Translations.tr(19);
+            clicked => { root.add(); }
+            if root.add-icon.width > 0: BreezeIcon { source: root.add-icon; tint: root.tint-add; ink: Breeze.fg; }
+            if root.add-icon.width == 0: Text { text: "+"; font-size: 20px; color: Breeze.fg; }
+        }
+    }
+}
+
+export component Popup inherits Window {
+    title: "mako-popup";
+    icon: @image-url("../assets/icon.svg");
+    no-frame: true;
+    always-on-top: true;
+    background: transparent;
+    width: 300px;
+    in property <float> reveal: 1;
+    private property <int> tile-columns: 3;
+    private property <length> tile-height: 106px;
+    private property <length> tile-grid-height: Math.max(0px, Math.ceil(root.rows.length * 1.0 / root.tile-columns) * (root.tile-height + 6px) - 6px);
+    height: 52px + Math.min(420px, Math.max(88px, root.tile-grid-height));
+    in property <image> configure-icon: @image-url("icons/configure.svg");
+    in property <bool> tint-configure: true;
+    in property <image> pin-icon: @image-url("icons/window-pin.svg");
+    in property <bool> tint-pin: true;
+    in property <image> add-icon;
+    in property <bool> tint-add: true;
+    in property <image> remove-icon;
+    in property <bool> tint-remove: true;
+    in property <[ChibiRow]> rows;
+    in-out property <bool> pinned;
+    callback configure(bool);
+    in property <bool> dark;
+    changed dark => { Palette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light; }
+    callback pin-toggled();
+    callback add-instance(string);
+    callback remove-instance(string);
+    default-font-size: 13.333px;
+    Rectangle {
+        y: (1 - root.reveal) * root.height;
+        width: parent.width;
+        height: parent.height;
+        opacity: root.reveal;
+        background: Breeze.window;
+        border-radius: Breeze.radius;
+        border-width: 1px; border-color: Breeze.frame;
+        VerticalLayout {
+            padding: 8px; spacing: 4px;
+            Rectangle {
+                height: 32px;
+                Text { x: 8px; height: parent.height; text: Translations.tr(13); color: Breeze.fg; vertical-alignment: center; font-weight: 600; }
+                ToolButton {
+                    x: parent.width - 68px; label: Translations.tr(16);
+                    clicked => { root.configure(false); }
+                    BreezeIcon { source: root.configure-icon; tint: root.tint-configure; ink: Breeze.fg; }
+                }
+                pin := ToolButton {
+                    x: parent.width - 32px; label: Translations.tr(17); active: root.pinned;
+                    clicked => { root.pin-toggled(); }
+                    BreezeIcon { source: root.pin-icon; tint: root.tint-pin; ink: pin.active ? Breeze.selection-fg : Breeze.fg; }
+                }
+            }
+            if root.rows.length == 0: VerticalLayout {
+                alignment: center;
+                HorizontalLayout { alignment: center; Button { text: Translations.tr(18); clicked => { root.configure(true); } } }
+            }
+            if root.rows.length > 0: tile-scroll := ScrollView {
+                content-width: self.visible-width;
+                content-height: root.tile-grid-height;
+                Rectangle {
+                    width: tile-scroll.visible-width;
+                    height: root.tile-grid-height;
+                    for row[index] in root.rows: Rectangle {
+                        width: (parent.width - (root.tile-columns - 1) * 6px) / root.tile-columns;
+                        height: root.tile-height;
+                        x: Math.mod(index, root.tile-columns) * (self.width + 6px);
+                        y: Math.floor(index * 1.0 / root.tile-columns) * (self.height + 6px);
+                        accessible-role: list-item;
+                        accessible-label: row.name;
+                        border-radius: Breeze.radius;
+                        border-width: 1px; border-color: Breeze.frame; background: Breeze.button;
+                        VerticalLayout {
+                            padding: 5px; spacing: 4px; alignment: center;
+                            HorizontalLayout {
+                                alignment: center;
+                                Image { source: row.face; width: 68px; height: 68px; image-fit: contain; }
+                            }
+                            InstanceControls {
+                                height: 24px;
+                                count: row.count;
+                                add-icon: root.add-icon; tint-add: root.tint-add;
+                                remove-icon: root.remove-icon; tint-remove: root.tint-remove;
+                                add => { root.add-instance(row.id); }
+                                remove => { root.remove-instance(row.id); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component SettingsWindow inherits Window {
+    title: "mako";
+    icon: @image-url("../assets/icon.svg");
+    width: 600px; height: 630px;
+    background: Breeze.window;
+    default-font-size: 13.333px;
+    in-out property <int> tab;
+    in-out property <bool> dev-open;
+    in-out property <int> language-index;
+    in-out property <int> theme-index;
+    in-out property <int> input-mode-index;
+    in-out property <int> precipitation-mode: 1;
+    in-out property <string> city-query;
+    in property <[string]> city-suggestions;
+    in property <string> weather-status;
+    in property <bool> weather-ready;
+    in-out property <float> snow-size: 100;
+    in-out property <float> snow-speed: 100;
+    in property <float> size-minimum;
+    in property <float> size-maximum;
+    in-out property <float> size-value;
+    in-out property <int> width-value: 100;
+    in-out property <int> height-value: 100;
+    in property <string> version;
+    in property <int> favorite-count;
+    in property <[ChibiRow]> installed;
+    in property <[Attribution]> parts;
+    in property <bool> importing;
+    in property <string> status;
+    in property <string> update-status;
+    in property <bool> update-available;
+    in property <bool> checking;
+    in-out property <bool> preview-date;
+    in-out property <int> date-day: 1;
+    in-out property <int> date-month: 1;
+    in-out property <int> date-year: 2026;
+    in property <int> date-days: 31;
+    private property <string> deleting-id;
+    private property <string> deleting-name;
+    private property <int> tile-columns: 4;
+    private property <length> tile-height: 146px;
+    private property <length> tile-grid-height: Math.max(0px, Math.ceil(root.installed.length * 1.0 / root.tile-columns) * (root.tile-height + 8px) - 8px);
+    private property <int> drag-from: -1;
+    private property <int> drag-to: -1;
+    callback language-selected(int);
+    callback theme-selected(int);
+    callback input-mode-selected(int);
+    callback precipitation-selected(int);
+    callback city-edited(string);
+    callback city-selected(int);
+    callback snow-selected(int, int);
+    callback size-selected(float);
+    callback proportions-selected(int, int);
+    callback add-favorite(string);
+    callback remove-favorite(string);
+    callback move-favorite(int, int);
+    callback uninstall-chibi(string);
+    callback preview-selected(bool);
+    callback call-santa();
+    callback call-ufo();
+    callback call-event(int);
+    callback date-selected(int, int, int);
+    callback import-zip();
+    callback logo-tapped();
+    callback check-update();
+    callback open-link(string);
+    changed tab => {
+        if root.tab == 2 { root.check-update(); }
+    }
+    public function open-chibis() { root.tab = 1; }
+    VerticalLayout {
+        padding: 8px; spacing: 8px;
+        PageTabs {
+            labels: root.dev-open ? [Translations.tr(12), Translations.tr(13), Translations.tr(14), Translations.tr(15)] : [Translations.tr(12), Translations.tr(13), Translations.tr(14)];
+            selected <=> root.tab;
+        }
+        if root.tab == 0: VerticalLayout {
+            padding: 12px; spacing: 14px; alignment: start;
+            SettingRow {
+                label: Translations.tr(2);
+                ComboBox {
+                    model: [Translations.tr(4), Translations.tr(5), Translations.tr(6)];
+                    current-index <=> root.language-index;
+                    selected => { root.language-selected(self.current-index); }
+                }
+            }
+            SettingRow {
+                label: Translations.tr(3);
+                ComboBox {
+                    model: [Translations.tr(4), Translations.tr(7), Translations.tr(8)];
+                    current-index <=> root.theme-index;
+                    selected => { root.theme-selected(self.current-index); }
+                }
+            }
+            SettingRow {
+                label: Translations.tr(46);
+                ComboBox {
+                    model: [Translations.tr(47), Translations.tr(48), Translations.tr(49)];
+                    current-index <=> root.input-mode-index;
+                    selected => { root.input-mode-selected(self.current-index); }
+                }
+            }
+            SettingRow {
+                label: Translations.tr(52);
+                ComboBox {
+                    model: [Translations.tr(69), Translations.tr(70), Translations.tr(71)];
+                    current-index <=> root.precipitation-mode;
+                    selected => { root.precipitation-selected(self.current-index); }
+                }
+            }
+            if root.precipitation-mode == 2: SettingRow {
+                label: Translations.tr(72);
+                VerticalLayout {
+                    spacing: 6px;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        LineEdit {
+                            text <=> root.city-query;
+                            placeholder-text: Translations.tr(73);
+                            accessible-label: Translations.tr(72);
+                            edited(value) => { root.city-edited(value); }
+                            accepted => {
+                                if root.city-suggestions.length > 0 { root.city-selected(0); }
+                            }
+                        }
+                        if root.weather-ready: VerticalLayout {
+                            alignment: center;
+                            Rectangle {
+                                width: 22px; height: 22px; border-radius: 11px;
+                                background: #25834c; accessible-role: text;
+                                accessible-label: root.weather-status;
+                                Text { text: "✓"; color: white; horizontal-alignment: center; vertical-alignment: center; }
+                            }
+                        }
+                    }
+                    for city[index] in root.city-suggestions: Button {
+                        text: city;
+                        clicked => { root.city-selected(index); }
+                    }
+                    if root.weather-status != "" && !root.weather-ready: Text {
+                        text: root.weather-status;
+                        color: Breeze.fg; wrap: word-wrap;
+                    }
+                }
+            }
+            SettingRow {
+                label: Translations.tr(11);
+                Slider {
+                    minimum: root.size-minimum; maximum: root.size-maximum; step: 1;
+                    value <=> root.size-value;
+                    changed(value) => { root.size-selected(value); }
+                }
+                Text { text: "\{Math.round(root.size-value)} px"; width: 56px; vertical-alignment: center; color: Breeze.fg; }
+            }
+        }
+        if root.tab == 1: VerticalLayout {
+            padding: 8px; spacing: 10px;
+            grid-scroll := ScrollView {
+                content-width: self.visible-width;
+                content-height: root.tile-grid-height;
+                Rectangle {
+                    width: grid-scroll.visible-width;
+                    height: root.tile-grid-height;
+                    for row[i] in root.installed: tile := Rectangle {
+                        width: (parent.width - (root.tile-columns - 1) * 8px) / root.tile-columns;
+                        height: root.tile-height;
+                        x: Math.mod(i, root.tile-columns) * (self.width + 8px);
+                        y: Math.floor(i * 1.0 / root.tile-columns) * (self.height + 8px);
+                        border-radius: Breeze.radius;
+                        border-width: 1px;
+                        border-color: root.drag-to == i ? Breeze.selection : Breeze.frame;
+                        background: root.drag-from == i ? Breeze.button-hover : Breeze.button;
+                        accessible-role: list-item;
+                        accessible-label: row.name;
+                        Image {
+                            source: row.face; y: 5px;
+                            width: Math.min(parent.width - 10px, 110px); height: 108px;
+                            x: (parent.width - self.width) / 2;
+                            image-fit: contain;
+                        }
+                        if row.added: Rectangle {
+                            width: parent.width; height: 113px;
+                            forward-focus: reorder;
+                            reorder := FocusScope {
+                                key-pressed(event) => {
+                                    if event.text == Key.LeftArrow && i > 0 { root.move-favorite(i, i - 1); return accept; }
+                                    if event.text == Key.RightArrow && i + 1 < root.favorite-count { root.move-favorite(i, i + 1); return accept; }
+                                    if event.text == Key.UpArrow && i >= root.tile-columns { root.move-favorite(i, i - root.tile-columns); return accept; }
+                                    if event.text == Key.DownArrow && i + root.tile-columns < root.favorite-count { root.move-favorite(i, i + root.tile-columns); return accept; }
+                                    return reject;
+                                }
+                            }
+                            TouchArea {
+                                mouse-cursor: root.drag-from == i ? grabbing : grab;
+                                pointer-event(event) => {
+                                    if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                                        root.drag-from = i;
+                                        root.drag-to = i;
+                                        reorder.focus();
+                                    }
+                                    if event.kind == PointerEventKind.up && root.drag-from == i {
+                                        root.move-favorite(i, root.drag-to);
+                                        root.drag-from = -1;
+                                        root.drag-to = -1;
+                                    }
+                                    if event.kind == PointerEventKind.cancel {
+                                        root.drag-from = -1;
+                                        root.drag-to = -1;
+                                    }
+                                }
+                                moved => {
+                                    if root.drag-from == i {
+                                        root.drag-to = Math.clamp(i
+                                            + Math.round((self.mouse-x - self.pressed-x) / (tile.width + 8px))
+                                            + root.tile-columns * Math.round((self.mouse-y - self.pressed-y) / (tile.height + 8px)),
+                                            0, root.favorite-count - 1);
+                                    }
+                                }
+                            }
+                        }
+                        ToolButton {
+                            x: 5px; y: parent.height - self.height - 4px; width: 28px; height: 28px;
+                            label: Translations.tr(row.added ? 21 : 57) + " " + row.name;
+                            flat: true;
+                            clicked => {
+                                if row.added { root.remove-favorite(row.id); } else { root.add-favorite(row.id); }
+                            }
+                            Text { text: row.added ? "−" : "+"; font-size: 22px; color: Breeze.fg; }
+                        }
+                        ToolButton {
+                            x: parent.width - self.width - 5px; y: parent.height - self.height - 4px;
+                            width: 28px; height: 28px;
+                            enabled: !row.builtin;
+                            label: Translations.tr(row.builtin ? 65 : 58) + " " + row.name;
+                            flat: true;
+                            clicked => {
+                                root.deleting-id = row.id;
+                                root.deleting-name = row.name;
+                            }
+                            Text { text: "×"; font-size: 24px; color: row.builtin ? Breeze.inactive : #da4453; }
+                        }
+                    }
+                }
+            }
+            if root.status != "": Text { text: root.status; color: Breeze.fg; wrap: word-wrap; }
+            Button { text: Translations.tr(22); enabled: !root.importing; clicked => { root.import-zip(); } }
+        }
+        if root.tab == 2: ScrollView {
+            VerticalLayout {
+                padding: 23px; spacing: 8px;
+                HorizontalLayout {
+                    spacing: 20px;
+                    VerticalLayout {
+                        horizontal-stretch: 1; alignment: center; spacing: 8px;
+                        HorizontalLayout {
+                            alignment: center;
+                            ToolButton {
+                                width: 100px; height: 100px; flat: true; label: "mako";
+                                clicked => { root.logo-tapped(); }
+                                Image { source: @image-url("../assets/icon.svg"); width: 100%; height: 100%; image-fit: contain; }
+                            }
+                        }
+                        Text { text: "mako"; font-size: 16px; font-weight: 700; color: Breeze.fg; horizontal-alignment: center; }
+                    }
+                    VerticalLayout {
+                        horizontal-stretch: 1; alignment: center; spacing: 8px;
+                        HorizontalLayout {
+                            alignment: start; spacing: 6px;
+                            Text { text: Translations.tr(27); color: Breeze.fg; vertical-alignment: center; }
+                            AboutLink { label: "github"; activate => { root.open-link("https://github.com/yrmuq/mako"); } }
+                        }
+                        HorizontalLayout {
+                            alignment: start; spacing: 6px;
+                            Text { text: Translations.tr(28); color: Breeze.fg; vertical-alignment: center; }
+                            AboutLink { label: "GPL-3.0-only"; activate => { root.open-link("https://github.com/yrmuq/mako/blob/main/LICENSE"); } }
+                        }
+                        Text { text: Translations.tr(29) + " " + root.version; color: Breeze.fg; }
+                        if root.update-status != "": Text { text: root.update-status; color: Breeze.fg; wrap: word-wrap; }
+                        HorizontalLayout {
+                            alignment: start; spacing: 6px;
+                            if !root.update-available: Button { text: Translations.tr(35); enabled: !root.checking; clicked => { root.check-update(); } }
+                            if root.update-available: Button { text: Translations.tr(34); clicked => { root.open-link("https://github.com/yrmuq/mako/releases/latest"); } }
+                        }
+                    }
+                }
+                Rectangle { min-height: 26px; background: transparent; }
+                VerticalLayout {
+                    spacing: 0px;
+                    HorizontalLayout {
+                        spacing: 8px; padding-bottom: 4px;
+                        Text { text: Translations.tr(30); font-weight: 700; color: Breeze.fg; width: 90px; }
+                        Text { text: Translations.tr(31); font-weight: 700; color: Breeze.fg; width: 145px; }
+                        Text { text: Translations.tr(32); font-weight: 700; color: Breeze.fg; horizontal-stretch: 1; }
+                    }
+                    Rectangle { height: 1px; background: Breeze.frame; }
+                    for part in root.parts: PartRow { part: part; open-link(url) => { root.open-link(url); } }
+                }
+            }
+        }
+        if root.tab == 3 && root.dev-open: VerticalLayout {
+            padding: 12px; spacing: 14px; alignment: start;
+            SettingRow {
+                label: Translations.tr(25) + " (%)";
+                SpinBox {
+                    minimum: 25; maximum: 200; value <=> root.width-value;
+                    edited(value) => { root.proportions-selected(value, root.height-value); }
+                }
+            }
+            SettingRow {
+                label: Translations.tr(26) + " (%)";
+                SpinBox {
+                    minimum: 25; maximum: 200; value <=> root.height-value;
+                    edited(value) => { root.proportions-selected(root.width-value, value); }
+                }
+            }
+            SettingRow {
+                label: Translations.tr(50);
+                Slider {
+                    minimum: 25; maximum: 200; step: 1;
+                    value <=> root.snow-size;
+                    changed(value) => { root.snow-selected(Math.round(value), Math.round(root.snow-speed)); }
+                }
+                Text { text: "\{Math.round(root.snow-size)}%"; width: 56px; vertical-alignment: center; color: Breeze.fg; }
+            }
+            SettingRow {
+                label: Translations.tr(51);
+                Slider {
+                    minimum: 25; maximum: 200; step: 1;
+                    value <=> root.snow-speed;
+                    changed(value) => { root.snow-selected(Math.round(root.snow-size), Math.round(value)); }
+                }
+                Text { text: "\{Math.round(root.snow-speed)}%"; width: 56px; vertical-alignment: center; color: Breeze.fg; }
+            }
+            SettingRow {
+                label: Translations.tr(53);
+                CheckBox {
+                    checked <=> root.preview-date;
+                    toggled => { root.preview-selected(self.checked); }
+                }
+            }
+            HorizontalLayout {
+                spacing: 10px;
+                VerticalLayout {
+                    spacing: 4px;
+                    Text { text: Translations.tr(54); color: Breeze.fg; }
+                    SpinBox {
+                        enabled: root.preview-date; minimum: 1; maximum: root.date-days; value <=> root.date-day;
+                        edited(value) => { root.date-selected(value, root.date-month, root.date-year); }
+                    }
+                }
+                VerticalLayout {
+                    spacing: 4px;
+                    Text { text: Translations.tr(55); color: Breeze.fg; }
+                    SpinBox {
+                        enabled: root.preview-date; minimum: 1; maximum: 12; value <=> root.date-month;
+                        edited(value) => { root.date-selected(root.date-day, value, root.date-year); }
+                    }
+                }
+                VerticalLayout {
+                    spacing: 4px;
+                    Text { text: Translations.tr(56); color: Breeze.fg; }
+                    SpinBox {
+                        enabled: root.preview-date; minimum: 1; maximum: 9999; value <=> root.date-year;
+                        edited(value) => { root.date-selected(root.date-day, root.date-month, value); }
+                    }
+                }
+            }
+            HorizontalLayout {
+                spacing: 10px;
+                Button { text: Translations.tr(66); clicked => { root.call-santa(); } }
+                Button { text: Translations.tr(67); clicked => { root.call-ufo(); } }
+            }
+            HorizontalLayout {
+                spacing: 10px;
+                Button { text: Translations.tr(80); clicked => { root.call-event(0); } }
+                Button { text: Translations.tr(81); clicked => { root.call-event(1); } }
+                Button { text: Translations.tr(82); clicked => { root.call-event(2); } }
+            }
+        }
+    }
+    if root.deleting-id != "": Rectangle {
+        width: root.width; height: root.height; background: #00000077;
+        TouchArea {}
+        Rectangle {
+            width: Math.min(parent.width - 32px, 380px); height: 160px;
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            background: Breeze.window; border-color: Breeze.frame; border-radius: Breeze.radius; border-width: 1px;
+            VerticalLayout {
+                padding: 16px; spacing: 12px;
+                Text { text: Translations.tr(58) + " " + root.deleting-name + "?"; font-weight: 600; color: Breeze.fg; wrap: word-wrap; }
+                Text { text: Translations.tr(59); color: Breeze.fg; wrap: word-wrap; vertical-stretch: 1; }
+                HorizontalLayout {
+                    spacing: 8px; alignment: end;
+                    Button { text: Translations.tr(60); clicked => { root.deleting-id = ""; } }
+                    Button {
+                        text: Translations.tr(61);
+                        clicked => {
+                            root.uninstall-chibi(root.deleting-id);
+                            root.deleting-id = "";
+                        }
+                    }
+                }
+            }
+        }
+    }
+    in property <bool> dark;
+    changed dark => { Palette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light; }
+}

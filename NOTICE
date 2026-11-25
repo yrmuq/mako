@@ -1,0 +1,12 @@
+mako
+Copyright (C) 2026 yrmuq
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, version 3 of the License.
+
+The settings and tray panel layout incorporate code from shinpi
+(https://github.com/yrmuq/shinpi), Copyright (C) 2026 yrmuq, GPL-3.0-only.
+
+KDE Breeze icons are provided under the LGPL-3.0-or-later.
+See ui/icons/COPYING in the source tree or Breeze-LICENSE.txt in the AppImage.

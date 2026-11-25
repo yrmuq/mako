@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=mako
+Comment=Desktop pet for KDE Plasma
+Exec=mako
+Icon=mako
+Categories=Utility;
+Terminal=false
+StartupNotify=false
