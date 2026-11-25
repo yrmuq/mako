@@ -9,6 +9,7 @@ use tiny_skia::{Point, Rect};
 
 use crate::app::Pointer;
 use crate::game::Instance;
+use crate::mounts::Cargo;
 use crate::props;
 use crate::season::{Date, OverlayImage};
 use crate::sim::{Activity, Special};
@@ -247,6 +248,18 @@ impl Festive {
         }
     }
 
+    pub fn base(&self) -> Option<Point> {
+        self.tree_at
+    }
+
+    pub fn sync_mount(&mut self, base: Option<Point>, floor: f32) {
+        self.motion
+            .sync_mount(base.map(|at| (floor - at.y).max(0.0)));
+        if let Some(at) = base.filter(|_| !matches!(self.motion, Motion::Held { .. })) {
+            self.tree_at = Some(at);
+        }
+    }
+
     pub fn grabbed_at(&self) -> Option<Point> {
         match &self.motion {
             Motion::Held { grab, .. } => Some(grab.cursor()),
@@ -391,6 +404,7 @@ impl Festive {
         if let Some(tree) = world.tree() {
             if season.is_some_and(|year| year > tree.year) {
                 *world.tree_mut() = None;
+                world.winter_mut().mounts.remove(Cargo::Fir);
                 self.motion = Motion::Grounded;
                 world.changed();
             } else if holiday && tree.gifts_started && tree.gifts != GIFTS {
@@ -409,7 +423,10 @@ impl Festive {
             .map(|tree| Point::from_xy(tree.position * width as f32, floor - self.motion.lift()));
         self.advance_job(pets, world, &info, dt);
         self.choose_in -= dt;
-        if self.job.is_none() && self.choose_in <= 0.0 && matches!(self.motion, Motion::Grounded) {
+        if self.job.is_none()
+            && self.choose_in <= 0.0
+            && matches!(self.motion, Motion::Grounded | Motion::Mounted(_))
+        {
             let urgent = holiday && world.tree().is_none_or(|tree| !tree.gifts_started);
             self.choose_in = if urgent {
                 0.6

@@ -651,7 +651,7 @@ impl Interactions {
         };
         let speed = fall.step(dt)?;
         self.wall_motion[slot] = Motion::Grounded;
-        (speed >= Fall::BREAK_SPEED).then_some(speed)
+        Some(speed)
     }
 
     pub fn remove_wall(
@@ -1135,10 +1135,9 @@ impl Interactions {
                     if pets[i].id == ball.owner || !pets[i].app.can_be_struck() {
                         return None;
                     }
-                    if ball.counter == Some(pets[i].id)
+                    if pets[i].app.pet.activity == Activity::Special(Special::Hide)
                         && defences.get(&pets[i].id).is_some_and(|defence| {
-                            defence.attacker == ball.owner
-                                && matches!(defence.guard, Guard::Run { hidden: true, .. })
+                            matches!(defence.guard, Guard::Run { hidden: true, .. })
                         })
                     {
                         return None;
@@ -1147,19 +1146,30 @@ impl Interactions {
                     swept_contact(from, to, body, body).map(|time| (i, time))
                 })
                 .min_by(|a, b| a.1.total_cmp(&b.1));
-            let wall = wall_bounds
-                .iter()
-                .filter_map(|&(slot, rect)| Some((slot, swept_contact(from, to, rect, rect)?)))
-                .min_by(|a, b| a.1.total_cmp(&b.1));
-            if let Some((slot, _)) = wall.filter(|&(_, time)| target.is_none_or(|(_, hit)| time <= hit)) {
-                if let Some(defence) = ball.counter.and_then(|id| defences.get_mut(&id)) {
-                    if defence.attacker == ball.owner
-                        && matches!(defence.guard, Guard::Run { wall, hidden: true, .. } if wall == slot)
-                    {
+            let shield = ball
+                .counter
+                .filter(|id| {
+                    pets.iter().any(|pet| {
+                        pet.id == *id && pet.app.pet.activity == Activity::Special(Special::Hide)
+                    })
+                })
+                .and_then(|id| defences.get_mut(&id))
+                .filter(|defence| defence.attacker == ball.owner);
+            if let Some(defence) = shield {
+                if let Guard::Run {
+                    wall, hidden: true, ..
+                } = defence.guard
+                {
+                    let blocked = wall_bounds
+                        .iter()
+                        .filter(|&&(slot, _)| slot == wall)
+                        .filter_map(|&(_, rect)| swept_contact(from, to, rect, rect))
+                        .any(|time| target.is_none_or(|(_, hit)| time <= hit));
+                    if blocked {
                         defence.hold_until = now + COVER_AFTER_BLOCK;
+                        return false;
                     }
                 }
-                return false;
             }
             if let Some((index, time)) = target {
                 let id = pets[index].id;
@@ -1606,6 +1616,29 @@ mod tests {
         assert!((pets[1].app.pet.vx - 710.0 * 1.36).abs() < 0.01);
         assert_eq!(pets[1].app.pet.vy, -310.0);
         assert_eq!(pets[2].app.pet.activity, Activity::Idle);
+    }
+
+    #[test]
+    fn a_wall_does_not_block_a_shot_at_a_chibi_standing_next_to_it() {
+        let mut interactions = Interactions::new();
+        let mut pets = [pet(0, 290.0), pet(1, 565.0)];
+        let walls = [SnowWall {
+            position: 0.5,
+            seconds: SNOWMAN_SECONDS,
+            slope_right: false,
+        }];
+        let bounds = pets[1].app.collision_bounds().unwrap();
+        interactions.balls.push(Snowball {
+            owner: 0,
+            position: Point::from_xy(430.0, (bounds.top() + bounds.bottom()) * 0.5),
+            vx: 865.0,
+            vy: -70.0,
+            counter: None,
+        });
+        for _ in 0..14 {
+            interactions.fly(&mut pets, &walls, 1000.0, 650.0, 0.016);
+        }
+        assert_eq!(pets[1].app.pet.activity, Activity::Fall);
     }
 
     #[test]

@@ -13,6 +13,8 @@ mod host_x11;
 mod i18n;
 mod icons;
 mod interactions;
+mod lion;
+mod mounts;
 mod pack;
 mod place;
 mod props;

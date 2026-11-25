@@ -232,7 +232,7 @@ impl SledScene {
         }
     }
 
-    pub fn board_manual(&mut self, pets: &mut [Instance], id: u64, bag_mounted: bool) -> bool {
+    pub fn board_manual(&mut self, pets: &mut [Instance], id: u64, loaded: bool) -> bool {
         let Some(x) = self.at else { return false };
         let occupied = self.manual_rider.or(match self.journey {
             Journey::Wait { rider, .. } => Some(rider),
@@ -257,10 +257,10 @@ impl SledScene {
         self.pause_journey(pets);
         self.manual_rider = Some(id);
         let app = &mut pets[index].app;
-        app.sit_on_sled();
+        app.start_slide(Special::RideSled);
         seat(
             app,
-            rider_x(x, self.direction, bag_mounted),
+            rider_x(x, self.direction, loaded),
             self.floor,
             self.direction,
         );
@@ -290,7 +290,7 @@ impl SledScene {
         rider.filter(|&id| active(pets, id, Special::RideSled).is_some())
     }
 
-    pub fn bag_mount(&self) -> Option<Point> {
+    pub fn cargo_mount(&self) -> Option<Point> {
         let x = self.at?;
         let direction = if self.direction < 0.0 { -1.0 } else { 1.0 };
         Some(Point::from_xy(
@@ -299,8 +299,8 @@ impl SledScene {
         ))
     }
 
-    pub fn bag_target(&self, at: Point) -> Option<Point> {
-        let mount = self.bag_mount()?;
+    pub fn cargo_target(&self, at: Point) -> Option<Point> {
+        let mount = self.cargo_mount()?;
         let x = self.at?;
         ((at.x - x).abs() <= 50.0 && (mount.y - 42.0..=self.floor + 4.0).contains(&at.y))
             .then_some(mount)
@@ -314,7 +314,7 @@ impl SledScene {
         let dt = frame.elapsed.clamp(0.0, 0.05);
         self.floor = frame.floor;
         self.at = world.winter().sled.map(|sled| sled.position * width);
-        let bag_mounted = world.winter().santa_bag_on_sled;
+        let loaded = world.winter().mounts.sled.is_some();
         self.art.rope_origin = None;
         if let Some((x, rider)) = self.at.zip(
             self.manual_rider
@@ -322,7 +322,7 @@ impl SledScene {
         ) {
             seat(
                 &mut pets[rider].app,
-                rider_x(x, self.direction, bag_mounted),
+                rider_x(x, self.direction, loaded),
                 frame.floor,
                 self.direction,
             );
@@ -342,7 +342,7 @@ impl SledScene {
             }
             Journey::Parked => {
                 if let Some(x) = self.at {
-                    self.try_board(pets, x, bag_mounted)
+                    self.try_board(pets, x, loaded)
                 } else if self.broken.is_none() {
                     pets.iter_mut()
                         .filter(|pet| pet.app.pet.activity.routine())
@@ -428,7 +428,7 @@ impl SledScene {
                 rider,
                 helper,
                 seconds,
-            } => self.wait(pets, &frame, rider, helper, seconds, bag_mounted),
+            } => self.wait(pets, &frame, rider, helper, seconds, loaded),
             Journey::Ride(ride) => self.pull(pets, world, &frame, ride, &mut hand),
             Journey::StepOff { rider, goal } => {
                 if let Some(pet) = pets
@@ -454,7 +454,7 @@ impl SledScene {
         }
     }
 
-    fn try_board(&mut self, pets: &mut [Instance], x: f32, bag_mounted: bool) -> Journey {
+    fn try_board(&mut self, pets: &mut [Instance], x: f32, loaded: bool) -> Journey {
         self.nearby.retain(|id| {
             pets.iter().any(|pet| {
                 pet.id == *id && (pet.app.pet.x - x).abs() <= boarding_distance(&pet.app)
@@ -471,7 +471,7 @@ impl SledScene {
                 pet.app.pet.start(Activity::Special(Special::RideSled));
                 seat(
                     &mut pet.app,
-                    rider_x(x, self.direction, bag_mounted),
+                    rider_x(x, self.direction, loaded),
                     self.floor,
                     self.direction,
                 );
@@ -492,7 +492,7 @@ impl SledScene {
         rider: u64,
         helper: Option<u64>,
         seconds: f32,
-        bag_mounted: bool,
+        loaded: bool,
     ) -> Journey {
         let rider_index = active(pets, rider, Special::RideSled);
         let helper_index = helper.and_then(|id| active(pets, id, Special::FetchSled));
@@ -509,7 +509,7 @@ impl SledScene {
         };
         seat(
             &mut pets[rider_index].app,
-            rider_x(x, self.direction, bag_mounted),
+            rider_x(x, self.direction, loaded),
             frame.floor,
             self.direction,
         );
@@ -624,7 +624,7 @@ impl SledScene {
         self.direction = direction;
         seat(
             &mut pets[rider].app,
-            rider_x(x, direction, world.winter().santa_bag_on_sled),
+            rider_x(x, direction, world.winter().mounts.sled.is_some()),
             frame.floor,
             direction,
         );
@@ -706,8 +706,8 @@ fn active(pets: &[Instance], id: u64, special: Special) -> Option<usize> {
         .position(|pet| pet.id == id && pet.app.pet.activity == Activity::Special(special))
 }
 
-fn rider_x(x: f32, direction: f32, bag_mounted: bool) -> f32 {
-    if bag_mounted {
+fn rider_x(x: f32, direction: f32, loaded: bool) -> f32 {
+    if loaded {
         x + if direction < 0.0 { -18.0 } else { 18.0 }
     } else {
         x

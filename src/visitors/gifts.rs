@@ -7,6 +7,7 @@ use tiny_skia::{Point, Rect};
 
 use crate::app::Pointer;
 use crate::game::Instance;
+use crate::mounts::Cargo;
 use crate::props;
 use crate::season::OverlayImage;
 use crate::sim::{Activity, Special};
@@ -118,34 +119,15 @@ impl Gifts {
         self.dropped_bag_at.take()
     }
 
-    pub fn sync_mounted_bag(
-        &mut self,
-        world: &mut World,
-        seat: Option<Point>,
-        width: u32,
-        floor: f32,
-    ) {
-        if !world.winter().santa_bag_on_sled || matches!(self.bag_motion, Motion::Held { .. }) {
+    pub fn sync_mount(&mut self, lift: Option<f32>) {
+        if matches!(self.bag_motion, Motion::Held { .. }) {
             return;
         }
-        if let Some(seat) = seat {
-            let position = gift_position(seat.x, width.max(1) as f32);
-            self.bag_motion = Motion::Mounted((floor - seat.y).max(0.0));
-            if world.winter().santa_bag != Some(position) {
-                world.winter_mut().santa_bag = Some(position);
-                world.changed();
-            }
-        } else {
-            self.bag_motion = airborne(self.bag_motion.lift(), None);
-            world.winter_mut().santa_bag_on_sled = false;
-            world.save_now();
+        if let Some(lift) = lift {
+            self.bag_motion = Motion::Mounted(lift);
+        } else if let Motion::Mounted(lift) = self.bag_motion {
+            self.bag_motion = airborne(lift, None);
         }
-    }
-
-    pub fn mount_bag(&mut self, world: &mut World, seat: Point, width: u32, floor: f32) {
-        world.winter_mut().santa_bag_on_sled = true;
-        self.sync_mounted_bag(world, Some(seat), width, floor);
-        world.save_now();
     }
 
     fn held_slot(&self) -> Option<(usize, Point)> {
@@ -233,7 +215,7 @@ impl Gifts {
                 self.last_bag_click = None;
             }
             if self.bag_press.is_none() {
-                world.winter_mut().santa_bag_on_sled = false;
+                world.winter_mut().mounts.remove(Cargo::Bag);
                 let at = grab.move_to(point, now);
                 *lift = (floor - at.y).clamp(0.0, (floor - 47.0).max(0.0));
                 world.winter_mut().santa_bag = Some(gift_position(at.x, width));
@@ -297,7 +279,7 @@ impl Gifts {
             if self.bag_press.take().is_some() {
                 self.last_bag_click = None;
             }
-            self.bag_motion = if world.winter().santa_bag_on_sled {
+            self.bag_motion = if world.winter().mounts.contains(Cargo::Bag) {
                 Motion::Mounted(lift)
             } else {
                 airborne(lift, None)

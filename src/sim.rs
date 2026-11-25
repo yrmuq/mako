@@ -53,11 +53,14 @@ pub enum Special {
     RampWave,
     RampSlide,
     RampTumble,
+    RampLand,
     Captive,
     FoldPhone,
     LionCrouch,
     LionRun,
-    TurtleSpin,
+    TurtleBounce,
+    LionBite,
+    LionHeld,
 }
 
 impl Special {
@@ -79,7 +82,7 @@ impl Special {
             Self::FetchSled => "walk",
             Self::PullSled => "pull-sled",
             Self::RideSled => "ride-sled",
-            Self::WallRecover => "wall-recover",
+            Self::WallRecover | Self::RampLand => "wall-recover",
             Self::RampClimb | Self::RampScramble => "climb",
             Self::RampWave => "ramp-wave",
             Self::RampSlide => "ride-sled",
@@ -88,7 +91,9 @@ impl Special {
             Self::FoldPhone => "fold-phone",
             Self::LionCrouch => "lion-crouch",
             Self::LionRun => "lion-run",
-            Self::TurtleSpin => "turtle-spin",
+            Self::TurtleBounce => "turtle-bounce",
+            Self::LionBite => "lion-bite",
+            Self::LionHeld => "drag",
         }
     }
 
@@ -212,18 +217,26 @@ impl Pet {
                     self.start(Activity::Idle);
                 }
             }
-            Activity::Special(Special::WallRecover) => {
+            Activity::Special(action @ (Special::WallRecover | Special::RampLand)) => {
                 self.vx = 0.0;
                 self.vy = 0.0;
                 self.y = room.floor;
-                if self.time >= 1.18 {
-                    self.face = -self.face;
+                let end = if action == Special::RampLand {
+                    0.48
+                } else {
+                    1.18
+                };
+                if self.time >= end {
+                    if action == Special::WallRecover {
+                        self.face = -self.face;
+                    }
                     self.walk_for = 3.0 * self.walk_cycle;
                     self.start(Activity::Walk);
                 }
             }
             Activity::Special(
                 Special::Captive
+                | Special::LionHeld
                 | Special::RampClimb
                 | Special::RampScramble
                 | Special::RampWave

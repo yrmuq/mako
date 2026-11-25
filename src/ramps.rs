@@ -111,6 +111,45 @@ impl Ramps {
         self.near.clear();
     }
 
+    pub fn board(
+        &mut self,
+        pet: &mut Instance,
+        walls: &[SnowWall],
+        grounded: [bool; MAX_SNOW_WALLS],
+        width: u32,
+    ) -> bool {
+        if width == 0 {
+            return false;
+        }
+        let actor = &pet.app.pet;
+        let floor = pet.app.room.floor;
+        let Some((slot, centre, side)) = walls.iter().enumerate().find_map(|(slot, wall)| {
+            let centre = wall.position * width as f32;
+            let side = if wall.slope_right { 1.0 } else { -1.0 };
+            let summit = floor - HEIGHT;
+            (grounded[slot]
+                && wall.finished()
+                && self.rides[slot].is_none()
+                && (actor.x - centre).abs() <= HALF + 10.0
+                && (summit - 45.0..=summit + 12.0).contains(&actor.y))
+            .then_some((slot, centre, side))
+        }) else {
+            return false;
+        };
+        let offset = (side * (actor.x - centre)).clamp(0.0, HALF);
+        pet.app.start_slide(Special::RampSlide);
+        pet.app.pet.x = centre + side * offset;
+        pet.app.pet.y = floor - HEIGHT;
+        pet.app.pet.face = side;
+        pet.app.pet.vx = side * 150.0;
+        self.rides[slot] = Some(Ride {
+            id: pet.id,
+            centre,
+            phase: Phase::Slide(offset / (HALF + RUN)),
+        });
+        true
+    }
+
     pub fn tick(
         &mut self,
         pets: &mut [Instance],
@@ -271,8 +310,7 @@ impl Ride {
             }
         } else {
             if matches!(next, Phase::Slide(1.0)) {
-                pet.start(Activity::Special(Special::WallRecover));
-                pet.face = -side;
+                pet.start(Activity::Special(Special::RampLand));
                 return false;
             }
             if self.phase.pose() != next.pose() {
@@ -291,6 +329,40 @@ impl Ride {
 mod tests {
     use super::*;
     use crate::{app::App, config::Settings, pack::Pack, startup_room};
+
+    #[test]
+    fn dropping_on_the_summit_starts_a_slide_and_keeps_the_facing_when_walking() {
+        for slope_right in [true, false] {
+            let walls = [SnowWall {
+                position: 0.5,
+                slope_right,
+                seconds: crate::world::SNOWMAN_SECONDS,
+            }];
+            let mut ramps = Ramps::default();
+            let mut pets = [Instance {
+                id: 1,
+                app: App::new(
+                    startup_room(900.0, 600.0),
+                    Settings::default(),
+                    Pack::builtin(),
+                ),
+            }];
+            let floor = pets[0].app.room.floor;
+            pets[0].app.pet.x = 450.0;
+            pets[0].app.pet.y = floor - HEIGHT - 5.0;
+            assert!(ramps.board(&mut pets[0], &walls, [true; MAX_SNOW_WALLS], 900));
+            let direction = if slope_right { 1.0 } else { -1.0 };
+            let mut walked = false;
+            for _ in 0..95 {
+                pets[0].app.tick(0.02, true);
+                ramps.tick(&mut pets, &walls, [true; MAX_SNOW_WALLS], 900.0, 0.02);
+                assert_eq!(pets[0].app.pet.face, direction);
+                walked |= pets[0].app.pet.activity == Activity::Walk;
+            }
+            assert!(walked);
+            assert!(direction * (pets[0].app.pet.x - 450.0) > HALF + RUN);
+        }
+    }
 
     #[test]
     fn the_ladder_and_slope_mirror_and_the_scramble_slips_before_the_crest() {

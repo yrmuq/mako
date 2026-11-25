@@ -203,12 +203,16 @@ pub fn fold_phone(frame: usize) -> &'static Sprite {
                 p.close();
             });
             if frame > 1 {
-                paint(&mut art, [137, 203, 224, 255], None, |p| {
+                paint(&mut art, [91, 75, 107, 255], None, |p| {
                     p.move_to(12.0, 23.0);
                     p.line_to(14.0, top + 3.0);
                     p.line_to(31.0, top + 5.0);
                     p.line_to(30.0, 25.0);
                     p.close();
+                });
+                paint(&mut art, [150, 204, 222, 255], Some(1.6), |p| {
+                    p.move_to(13.0, top + 4.0);
+                    p.line_to(11.0, 23.0);
                 });
             }
             paint(&mut art, [191, 160, 207, 255], Some(1.5), |p| {

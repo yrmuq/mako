@@ -11,6 +11,8 @@ use crate::app::{App, Pointer};
 use crate::config::{InputMode, Settings};
 use crate::festive::{Festive, FrameInfo};
 use crate::interactions::{Interactions, WinterArt};
+use crate::lion::Lions;
+use crate::mounts::{Cargo, Support};
 use crate::pack::Pack;
 use crate::ramps::Ramps;
 use crate::season::{OverlayImage, Snow};
@@ -70,6 +72,7 @@ struct OrdinaryScene {
     ramps: Ramps,
     visitors: Visitors,
     gifts: Gifts,
+    lions: Lions,
 }
 
 pub struct Game {
@@ -82,6 +85,7 @@ pub struct Game {
     ramps: Ramps,
     visitors: Visitors,
     gifts: Gifts,
+    lions: Lions,
     sled_monitors: Vec<(f32, f32)>,
     winter_art: WinterArt,
     width: u32,
@@ -118,6 +122,7 @@ impl Game {
             ramps: Ramps::default(),
             visitors: Visitors::default(),
             gifts: Gifts::default(),
+            lions: Lions::default(),
             sled_monitors: Vec::new(),
             winter_art: WinterArt::default(),
             width: 0,
@@ -235,6 +240,7 @@ impl Game {
                     ramps: std::mem::take(&mut self.ramps),
                     visitors: std::mem::take(&mut self.visitors),
                     gifts: std::mem::take(&mut self.gifts),
+                    lions: std::mem::take(&mut self.lions),
                 });
             } else {
                 self.world.stop_preview();
@@ -247,6 +253,7 @@ impl Game {
                 self.ramps = scene.ramps;
                 self.visitors = scene.visitors;
                 self.gifts = scene.gifts;
+                self.lions = scene.lions;
                 for pet in &mut self.pets {
                     pet.app.set_bottom(self.bottom);
                     pet.app.set_room(self.room.clone());
@@ -448,6 +455,7 @@ impl Game {
                 .snowman_bounds(slot)
                 .map_or(8.0, |bounds| bounds.height());
             if let Some(man) = self.world.winter_mut().snowman_mut(slot).take() {
+                self.world.winter_mut().mounts.remove(Cargo::Snowman(slot));
                 let floor = (self.room.floor - self.bottom).max(0.0);
                 let at = Point::from_xy(man.position * self.width as f32, floor - lift);
                 self.interactions
@@ -458,6 +466,112 @@ impl Game {
                 .release_snowman(&mut self.pets, slot, false);
         }
         self.world.save_now();
+    }
+
+    fn wall_platform(&self, slot: usize, floor: f32) -> Option<Point> {
+        let wall = self
+            .world
+            .winter()
+            .walls
+            .get(slot)
+            .filter(|wall| wall.finished())?;
+        let ladder = if wall.slope_right { -1.0 } else { 1.0 };
+        let x = wall.position * self.width as f32 + ladder * 30.0;
+        let y = floor - crate::ramps::HEIGHT - self.interactions.wall_lift(slot);
+        Some(Point::from_xy(x, y))
+    }
+
+    fn try_mount(&mut self, cargo: Cargo, at: Point, floor: f32) -> bool {
+        let winter = self.world.winter();
+        let wall = winter.walls.iter().enumerate().find_map(|(slot, wall)| {
+            let centre = wall.position * self.width as f32;
+            let support = Support::Wall(slot);
+            let platform = self.wall_platform(slot, floor)?;
+            (self.interactions.wall_grounded(slot)
+                && (at.x - centre).abs() <= crate::ramps::HALF + 10.0
+                && (platform.y - 38.0..=platform.y + 16.0).contains(&at.y)
+                && winter
+                    .mounts
+                    .get(support)
+                    .is_none_or(|loaded| loaded == cargo))
+            .then_some(support)
+        });
+        let support = wall.or_else(|| {
+            (winter.sled.is_some() && self.sled.cargo_target(at).is_some()).then_some(Support::Sled)
+        });
+        let Some(support) = support else { return false };
+        if !self.world.winter_mut().mounts.attach(cargo, support) {
+            return false;
+        }
+        if let Cargo::Snowman(slot) = cargo {
+            self.snowman_motion[slot] = SnowmanMotion::Grounded;
+            self.interactions
+                .release_snowman(&mut self.pets, slot, false);
+        }
+        self.sync_mounts(floor);
+        self.world.save_now();
+        true
+    }
+
+    fn sync_mounts(&mut self, floor: f32) {
+        if self.width == 0 {
+            return;
+        }
+        let winter = self.world.winter();
+        let mut cargo = [(None, None); MAX_SNOW_WALLS + 1];
+        for (slot, mounted) in winter.mounts.walls.iter().copied().enumerate() {
+            cargo[slot] = (mounted, self.wall_platform(slot, floor));
+        }
+        cargo[MAX_SNOW_WALLS] = (
+            winter.mounts.sled,
+            winter.sled.and_then(|_| self.sled.cargo_mount()),
+        );
+        if winter.sled.is_none() && winter.mounts.sled.is_some() {
+            self.world.winter_mut().mounts.sled = None;
+            self.world.changed();
+        }
+        let mut tree = None;
+        let mut bag = None;
+        let mut snowmen = [None; MAX_SNOWMEN];
+        let mut changed = false;
+        let width = self.width as f32;
+        for (load, at) in cargo {
+            let Some((load, at)) = load.zip(at) else {
+                continue;
+            };
+            let position = (at.x / width).clamp(0.0, 1.0);
+            match load {
+                Cargo::Fir => {
+                    if let Some(item) = self.world.tree_mut() {
+                        tree = Some(at);
+                        changed |= item.position != position;
+                        item.position = position;
+                    }
+                }
+                Cargo::Bag => {
+                    if let Some(x) = &mut self.world.winter_mut().santa_bag {
+                        bag = Some((floor - at.y).max(0.0));
+                        changed |= *x != position;
+                        *x = position;
+                    }
+                }
+                Cargo::Snowman(slot) => {
+                    if let Some(item) = self.world.winter_mut().snowman_mut(slot) {
+                        snowmen[slot] = Some((floor - at.y).max(0.0));
+                        changed |= item.position != position;
+                        item.position = position;
+                    }
+                }
+            }
+        }
+        self.festive.sync_mount(tree, floor);
+        self.gifts.sync_mount(bag);
+        for (motion, lift) in self.snowman_motion.iter_mut().zip(snowmen) {
+            motion.sync_mount(lift);
+        }
+        if changed {
+            self.world.changed();
+        }
     }
 
     pub fn tick(&mut self, dt: f32) {
@@ -473,10 +587,23 @@ impl Game {
         let floor = (self.room.floor - self.bottom).max(0.0);
         for slot in (0..self.world.winter().walls.len()).rev() {
             if let Some(speed) = self.interactions.wall_impact(slot, dt) {
+                let load = self.world.winter().mounts.walls[slot];
+                if speed < Fall::BREAK_SPEED && !matches!(load, Some(Cargo::Snowman(_))) {
+                    if load.is_some() {
+                        self.world.winter_mut().mounts.walls[slot] = None;
+                        self.world.save_now();
+                    }
+                    continue;
+                }
                 let height = self
                     .wall_bounds(slot)
                     .map_or(crate::ramps::HEIGHT, |bounds| bounds.height());
                 let wall = self.world.winter_mut().walls.remove(slot);
+                self.world.winter_mut().mounts.remove_wall(slot);
+                if let Some(Cargo::Snowman(man)) = load {
+                    self.snowman_motion[man] = SnowmanMotion::Grounded;
+                    self.finish_snowman_drop(man, Some(Point::from_xy(0.0, speed.max(410.0))));
+                }
                 let at = Point::from_xy(wall.position * self.width as f32, floor);
                 self.interactions
                     .remove_wall(&mut self.pets, slot, at, speed, height);
@@ -504,6 +631,7 @@ impl Game {
         for pet in &mut self.pets {
             pet.app.tick(dt, self.snow.active());
         }
+        self.lions.tick(&mut self.pets, dt);
         self.sled.tick(
             &mut self.pets,
             &mut self.world,
@@ -530,6 +658,7 @@ impl Game {
         } else {
             self.contacts.clear();
         }
+        self.sync_mounts(floor);
         self.festive.tick(
             &mut self.pets,
             &mut self.world,
@@ -573,9 +702,6 @@ impl Game {
                 let _ = tx.send(LostChibi { pack, preview });
             }
         }
-        let mount = self.world.winter().sled.and_then(|_| self.sled.bag_mount());
-        self.gifts
-            .sync_mounted_bag(&mut self.world, mount, self.width, floor);
         self.gifts.tick(
             &mut self.pets,
             &mut self.world,
@@ -687,21 +813,19 @@ impl Game {
             self.gifts
                 .drag(&mut self.world, point, now, self.width, floor, kind);
             if let Some(at) = self.gifts.take_bag_drop() {
-                if let Some(mount) = self
-                    .world
-                    .winter()
-                    .sled
-                    .and_then(|_| self.sled.bag_target(at))
-                {
-                    self.gifts
-                        .mount_bag(&mut self.world, mount, self.width, floor);
-                }
+                self.try_mount(Cargo::Bag, at, floor);
             }
             return;
         }
         if self.festive.grabbed_at().is_some() {
+            let released = matches!(kind, Pointer::LeftUp);
             self.festive
                 .drag(&mut self.world, point, now, self.width, floor, kind);
+            if released {
+                if let Some(at) = self.festive.base() {
+                    self.try_mount(Cargo::Fir, at, floor);
+                }
+            }
             return;
         }
         if let Some((slot, _)) = self.interactions.grabbed_wall() {
@@ -745,7 +869,10 @@ impl Game {
                 }
                 if matches!(kind, Pointer::LeftUp) {
                     let velocity = grab.throw(now);
-                    self.release_snowman(slot, velocity);
+                    let at = Point::from_xy(base.x, floor - *lift);
+                    if !self.try_mount(Cargo::Snowman(slot), at, floor) {
+                        self.release_snowman(slot, velocity);
+                    }
                 }
             }
             return;
@@ -768,9 +895,20 @@ impl Game {
             let released = matches!(kind, Pointer::LeftUp);
             let id = pet.id;
             pet.app.pointer(x, y, kind);
-            if released && self.world.winter().sled.is_some() {
-                self.sled
-                    .board_manual(&mut self.pets, id, self.world.winter().santa_bag_on_sled);
+            if released {
+                let from_summit = self.ramps.board(
+                    pet,
+                    &self.world.winter().walls,
+                    std::array::from_fn(|slot| self.interactions.wall_grounded(slot)),
+                    self.width,
+                );
+                if !from_summit && self.world.winter().sled.is_some() {
+                    self.sled.board_manual(
+                        &mut self.pets,
+                        id,
+                        self.world.winter().mounts.sled.is_some(),
+                    );
+                }
             }
         } else if self.held.is_none() && matches!(kind, Pointer::LeftDown) && self.width > 0 {
             if let Some(dropped) =
@@ -802,6 +940,8 @@ impl Game {
                 return;
             }
             if self.festive.start_drag(&mut self.pets, point, now) {
+                self.world.winter_mut().mounts.remove(Cargo::Fir);
+                self.world.changed();
                 return;
             }
             let hit = |bounds: Rect| {
@@ -825,6 +965,8 @@ impl Game {
             {
                 let man = self.world.winter().snowman(slot).expect("drawn snowman");
                 let lift = self.snowman_motion[slot].lift();
+                self.world.winter_mut().mounts.remove(Cargo::Snowman(slot));
+                self.world.changed();
                 let base = Point::from_xy(man.position * self.width as f32, floor - lift);
                 self.snowman_motion[slot] = SnowmanMotion::Held {
                     grab: Grab::new(point, base, now),
@@ -1185,7 +1327,7 @@ mod tests {
         game.pointer(240.0, 779.0, Pointer::LeftDown);
         game.pointer(480.0, 757.0, Pointer::Motion);
         game.pointer(480.0, 757.0, Pointer::LeftUp);
-        assert!(game.world.winter().santa_bag_on_sled);
+        assert_eq!(game.world.winter().mounts.sled, Some(Cargo::Bag));
         assert!(game.sled.board_manual(&mut game.pets, 0, true));
         let rope = game.sled.rope_bounds().unwrap();
         let x = (rope.left() + rope.right()) * 0.5;
@@ -1204,6 +1346,158 @@ mod tests {
         assert!((game.pets[0].app.pet.x - 588.0).abs() < 0.1);
         let bag_x = game.world.winter().santa_bag.unwrap() * 1200.0;
         assert!((bag_x - 545.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn dragging_a_chibi_onto_the_top_starts_a_slide() {
+        use crate::{
+            ramps::HEIGHT,
+            season::Date,
+            sim::Special,
+            world::{SnowWall, SNOWMAN_SECONDS},
+        };
+        let (_tx, rx) = std::sync::mpsc::channel();
+        let mut game = Game::new(
+            crate::startup_room(1200.0, 800.0),
+            Settings::default(),
+            Startup::test(Pack::builtin()),
+            rx,
+        );
+        game.snow.set_date(Some(Date::new(30, 12, 2041)));
+        game.tick_snow(0.0, 1200);
+        game.world.winter_mut().walls.push(SnowWall {
+            position: 0.45,
+            seconds: SNOWMAN_SECONDS,
+            slope_right: true,
+        });
+        let app = &mut game.pets[0].app;
+        app.pet.x = 540.0;
+        app.prepare();
+        let frame = app.render();
+        let (index, _) = frame
+            .bgra
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .enumerate()
+            .find(|(_, pixel)| pixel[3] == 255)
+            .unwrap();
+        let (x, y) = (
+            app.origin_x as f32 + (index % frame.width as usize) as f32 + 0.5,
+            app.origin_y as f32 + (index / frame.width as usize) as f32 + 0.5,
+        );
+        app.note_committed();
+        game.pointer(x, y, Pointer::LeftDown);
+        assert_eq!(game.held, Some(0));
+        game.pointer(x, y - HEIGHT - 6.0, Pointer::Motion);
+        game.pointer(x, y - HEIGHT - 6.0, Pointer::LeftUp);
+        assert_eq!(
+            game.pets[0].app.pet.activity,
+            Activity::Special(Special::RampSlide)
+        );
+        assert_eq!(game.pets[0].app.pet.y, game.room.floor - HEIGHT);
+    }
+
+    #[test]
+    fn loaded_walls_drop_bags_intact_and_break_with_snowmen() {
+        use crate::{
+            ramps::HEIGHT,
+            season::Date,
+            world::{SnowWall, Snowman, SNOWMAN_SECONDS},
+        };
+        let (_tx, rx) = std::sync::mpsc::channel();
+        let mut game = Game::new(
+            crate::startup_room(1200.0, 800.0),
+            Settings::default(),
+            Startup::test(Pack::builtin()),
+            rx,
+        );
+        game.snow.set_date(Some(Date::new(30, 12, 2041)));
+        game.tick_snow(0.0, 1200);
+        let floor = game.room.floor;
+        game.world.winter_mut().walls.push(SnowWall {
+            position: 0.4,
+            seconds: SNOWMAN_SECONDS,
+            slope_right: true,
+        });
+        game.world.winter_mut().santa_bag = Some(0.2);
+        *game.world.winter_mut().snowman_mut(0) = Some(Snowman {
+            position: 0.25,
+            seconds: SNOWMAN_SECONDS,
+        });
+        game.tick(0.0);
+
+        let top = Point::from_xy(480.0, floor - HEIGHT);
+        assert!(game.try_mount(Cargo::Bag, top, floor));
+        assert!(!game.try_mount(Cargo::Snowman(0), top, floor));
+        assert_eq!(game.world.winter().mounts.walls[0], Some(Cargo::Bag));
+        assert_eq!(game.world.winter().santa_bag, Some(450.0 / 1200.0));
+
+        game.pointer(480.0, floor - 10.0, Pointer::LeftDown);
+        game.pointer(530.0, floor - 28.0, Pointer::Motion);
+        game.tick(0.02);
+        assert_eq!(game.world.winter().santa_bag, Some(500.0 / 1200.0));
+        game.pointer(530.0, floor - 28.0, Pointer::LeftUp);
+        for _ in 0..32 {
+            game.tick(0.02);
+        }
+        assert_eq!(game.world.winter().walls.len(), 1);
+        assert!(game.world.winter().mounts.walls[0].is_none());
+        assert!(game.world.winter().santa_bag.is_some());
+
+        assert!(game.try_mount(Cargo::Snowman(0), Point::from_xy(530.0, top.y), floor));
+        assert_eq!(game.snowman_motion[0].lift(), HEIGHT);
+        game.pointer(530.0, floor - 10.0, Pointer::LeftDown);
+        game.pointer(530.0, floor - 40.0, Pointer::LeftUp);
+        for _ in 0..30 {
+            game.tick(0.02);
+        }
+        assert!(game.world.winter().walls.is_empty());
+        assert!(game.world.winter().snowman(0).is_none());
+        assert!(game.world.winter().santa_bag.is_some());
+    }
+
+    #[test]
+    fn the_sled_can_carry_a_tree_or_snowman_and_drop_it_intact() {
+        use crate::{
+            festive::Tree,
+            season::Date,
+            world::{Sled, Snowman},
+        };
+        let (_tx, rx) = std::sync::mpsc::channel();
+        let mut game = Game::new(
+            crate::startup_room(1200.0, 800.0),
+            Settings::default(),
+            Startup::test(Pack::builtin()),
+            rx,
+        );
+        game.snow.set_date(Some(Date::new(30, 12, 2041)));
+        game.tick_snow(0.0, 1200);
+        let floor = game.room.floor;
+        game.world.winter_mut().sled = Some(Sled {
+            position: 0.4,
+            rides: 0,
+        });
+        *game.world.tree_mut() = Some(Tree::new(0.25, 2042, true));
+        *game.world.winter_mut().snowman_mut(0) = Some(Snowman {
+            position: 0.25,
+            seconds: 120.0,
+        });
+        game.tick(0.0);
+
+        let deck = Point::from_xy(480.0, floor - 20.0);
+        assert!(game.try_mount(Cargo::Fir, deck, floor));
+        assert_eq!(game.festive.base().unwrap().y, deck.y);
+        assert!(!game.try_mount(Cargo::Snowman(0), deck, floor));
+        game.world.winter_mut().mounts.remove(Cargo::Fir);
+        assert!(game.try_mount(Cargo::Snowman(0), deck, floor));
+        assert_eq!(game.snowman_motion[0].lift(), 20.0);
+        game.world.winter_mut().sled = None;
+        for _ in 0..30 {
+            game.tick(0.02);
+        }
+        assert_eq!(game.snowman_motion[0].lift(), 0.0);
+        assert!(game.world.winter().snowman(0).is_some());
     }
 
     #[test]

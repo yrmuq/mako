@@ -21,7 +21,10 @@ struct Grip {
 
 const LION_TRANSITION: f32 = 0.50;
 const LION_RACE: f32 = 0.46 * 7.0;
-const TURTLE_SPIN: f32 = 2.68;
+const TURTLE_FLIP: f32 = 0.55;
+const TURTLE_HOP: f32 = 0.38;
+const TURTLE_ROLL: f32 = TURTLE_FLIP + 4.0 * TURTLE_HOP;
+const TURTLE_STAND: f32 = TURTLE_ROLL + 0.56;
 
 pub struct App {
     pub pet: Pet,
@@ -174,6 +177,10 @@ impl App {
             } else if self.pet.activity == Activity::Special(Special::RampTumble) {
                 self.rag
                     .step(dt, 540.0 * self.pet.face, 870.0, self.settings.pet_scale());
+            } else if self.pet.activity == Activity::Special(Special::LionHeld) {
+                let shake = (self.pet.time * 32.0).sin();
+                self.rag
+                    .step(dt, shake * 2200.0, 690.0, self.settings.pet_scale());
             } else if self.pet.activity == Activity::Down {
                 self.rag.plant(vx * self.pet.face);
                 self.rag.settle(dt, &self.pack);
@@ -195,7 +202,7 @@ impl App {
         if self.pet.activity == Activity::Sit && before != Activity::Sit {
             let special = match self.pack.id.as_str() {
                 crate::pack::LION_ID => Some(Special::LionRun),
-                crate::pack::TURTLE_ID => Some(Special::TurtleSpin),
+                crate::pack::TURTLE_ID => Some(Special::TurtleBounce),
                 crate::pack::BUILTIN_ID if fastrand::bool() => Some(Special::FoldPhone),
                 _ => None,
             };
@@ -218,21 +225,51 @@ impl App {
                     }
                 }
             }
-            Activity::Special(Special::TurtleSpin) if self.pet.time >= TURTLE_SPIN => {
-                let degrees = self.pack.local_degrees("turtle-spin", 0.74);
-                self.rag.seed(&degrees);
-                self.rag.set_turn(turtle_angle(self.pet.time));
-                self.rag.impact(-10.0);
-                self.pet.knock_back(315.0 * self.pet.face, -160.0);
-                self.body_hits_left = Some(0);
+            Activity::Special(Special::TurtleBounce) => {
+                let t = self.pet.time;
+                if t >= TURTLE_STAND {
+                    self.pet.start(Activity::Idle);
+                } else if t >= TURTLE_ROLL {
+                    let roll = ((t - TURTLE_ROLL) / (TURTLE_STAND - TURTLE_ROLL)).min(1.0);
+                    self.pet.y = self.room.floor - (roll * std::f32::consts::PI).sin() * 17.0;
+                    self.pet.x = (self.pet.x + self.pet.face * 105.0 * dt)
+                        .clamp(self.room.left, self.room.right);
+                } else if t >= TURTLE_FLIP {
+                    let phase = ((t - TURTLE_FLIP) / TURTLE_HOP).fract();
+                    self.pet.y = self.room.floor - 69.0 * phase * (1.0 - phase);
+                }
             }
             _ => {}
         }
     }
 
-    pub fn sit_on_sled(&mut self) {
+    pub fn lion_running(&self) -> bool {
+        self.motion() == Motion::Special(Special::LionRun)
+    }
+
+    pub fn part_world(&self, bone: &str) -> Option<Point> {
+        let origin = Point::from_xy(self.pet.x - self.feet_x(), self.pet.y - self.feet_y());
+        draw::part_world(&self.scene(), &self.pack, origin, self.screen.0, bone)
+    }
+
+    pub fn lift_by_lion(&mut self, direction: f32) {
+        let degrees = self
+            .pack
+            .local_degrees(self.motion_name(), self.motion_phase());
+        self.rag.seed(&degrees);
+        self.rag.set_turn(-0.60);
+        self.rag.impact(-2.3);
+        self.pet.face = direction;
+        self.pet.vx = 0.0;
+        self.pet.vy = 0.0;
+        self.pet.start(Activity::Special(Special::LionHeld));
+    }
+
+    pub fn start_slide(&mut self, action: Special) {
         self.rag.stop();
-        self.pet.start(Activity::Special(Special::RideSled));
+        self.pet.vx = 0.0;
+        self.pet.vy = 0.0;
+        self.pet.start(Activity::Special(action));
     }
 
     pub fn prepare(&mut self) {
@@ -250,7 +287,10 @@ impl App {
         match kind {
             Pointer::LeftDown => {
                 if self.grip.is_some()
-                    || self.pet.activity == Activity::Special(Special::Captive)
+                    || matches!(
+                        self.pet.activity,
+                        Activity::Special(Special::Captive | Special::LionHeld)
+                    )
                     || self.occluded(lx + self.committed_x as f32, ly + self.committed_y as f32)
                 {
                     return;
@@ -342,7 +382,7 @@ impl App {
     fn scene(&self) -> Scene {
         let (tilt, pose) = if self.pet.activity == Activity::Rise {
             self.rise_pose()
-        } else if self.pet.activity == Activity::Special(Special::TurtleSpin) {
+        } else if self.pet.activity == Activity::Special(Special::TurtleBounce) {
             (turtle_angle(self.pet.time), Vec::new())
         } else if self.rag.live {
             (self.rag.turn(), self.rag.degrees())
@@ -355,7 +395,7 @@ impl App {
             sad: self.clock < self.sad_until
                 && !matches!(
                     self.pet.activity,
-                    Activity::Special(Special::RunCover | Special::Captive)
+                    Activity::Special(Special::RunCover | Special::Captive | Special::LionHeld)
                 ),
             grounded: match self.pet.activity {
                 Activity::Down => self.rag.floor_contact(),
@@ -451,7 +491,10 @@ impl App {
                         | Activity::ClimbWall
                         | Activity::Special(_)
                 ))
-            && self.pet.activity != Activity::Special(Special::Captive)
+            && !matches!(
+                self.pet.activity,
+                Activity::Special(Special::Captive | Special::LionHeld)
+            )
     }
 
     pub fn knock_back(&mut self, vx: f32, vy: f32, snowball_owner: Option<u64>) -> bool {
@@ -649,8 +692,10 @@ impl App {
 
     pub fn hit_body(&self, screen_x: f32, screen_y: f32) -> bool {
         let (x, y) = self.pointer_from_screen(screen_x, screen_y);
-        self.pet.activity != Activity::Special(Special::Captive)
-            && !self.occluded(screen_x, screen_y)
+        !matches!(
+            self.pet.activity,
+            Activity::Special(Special::Captive | Special::LionHeld)
+        ) && !self.occluded(screen_x, screen_y)
             && draw::pick(&self.committed_parts, x, y).is_some()
     }
 
@@ -702,8 +747,15 @@ impl App {
     fn motion_phase(&self) -> f32 {
         match self.pet.activity {
             Activity::SlideWall => 0.15,
+            Activity::Special(Special::RampLand) => self.pet.phase * 2.45,
             Activity::Special(Special::RunCover) => self.pet.phase * 1.8,
-            Activity::Special(Special::TurtleSpin) => self.pet.phase.min(0.74),
+            Activity::Special(Special::TurtleBounce) => {
+                if self.pet.time < TURTLE_ROLL {
+                    self.pet.phase.min(0.55)
+                } else {
+                    0.55 * (1.0 - ((self.pet.time - TURTLE_ROLL) / 0.56).clamp(0.0, 1.0))
+                }
+            }
             Activity::Special(Special::LionRun) => {
                 let time = self.pet.time;
                 if time < LION_TRANSITION {
@@ -772,7 +824,9 @@ impl App {
 }
 
 fn turtle_angle(time: f32) -> f32 {
-    -std::f32::consts::FRAC_PI_2 * smoothstep(time / 0.56) - (time - 0.56).max(0.0) * 8.2
+    let flip = smoothstep(time / TURTLE_FLIP);
+    let roll = smoothstep((time - TURTLE_ROLL) / (TURTLE_STAND - TURTLE_ROLL));
+    -std::f32::consts::PI * (flip + roll)
 }
 
 fn smoothstep(progress: f32) -> f32 {
@@ -880,20 +934,17 @@ mod tests {
         assert!((app.pet.x - start).abs() > 120.0);
         assert_eq!(app.pet.activity, Activity::Idle);
 
-        app.pet.start(Activity::Special(Special::TurtleSpin));
-        let mut hit_floor = false;
-        let mut rose = false;
-        for _ in 0..250 {
+        app.pet.start(Activity::Special(Special::TurtleBounce));
+        let mut bounced = false;
+        let floor = app.room.floor;
+        for _ in 0..60 {
             app.tick(0.05, false);
-            hit_floor |= app.pet.activity == Activity::Down;
-            rose |= app.pet.activity == Activity::Rise;
-            if rose && app.pet.activity == Activity::Idle {
-                break;
-            }
+            bounced |= app.pet.y <= floor - 12.0;
         }
-        assert!(hit_floor && rose);
+        assert!(bounced);
         assert!(!app.rag.live);
         assert_eq!(app.pet.activity, Activity::Idle);
+        assert_eq!(app.pet.y, floor);
 
         app.pet.start(Activity::Special(Special::FoldPhone));
         for _ in 0..95 {

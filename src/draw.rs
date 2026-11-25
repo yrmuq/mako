@@ -338,6 +338,31 @@ fn map_vector(transform: Transform, vector: Point) -> Point {
     Point::from_xy(end.x - start.x, end.y - start.y)
 }
 
+pub fn part_world(
+    scene: &Scene,
+    pack: &Pack,
+    origin: Point,
+    width: f32,
+    bone: &str,
+) -> Option<Point> {
+    let (parts, _) = pet_parts(scene, pack);
+    let (left, _, right, _) = frame_bounds(scene, &parts);
+    let part = parts.iter().find(|part| {
+        part.joint
+            .is_some_and(|joint| pack.bones[joint.bone].name == bone)
+    })?;
+    let mut centre = Point::from_xy(
+        part.sprite.image.width() as f32 * 0.5,
+        part.sprite.image.height() as f32 * 0.5,
+    );
+    part.transform.map_point(&mut centre);
+    let x = frame_world_x(scene, origin.x, left, (right - left) as f32, width);
+    Some(Point::from_xy(
+        centre.x + x - left as f32,
+        centre.y + origin.y.round(),
+    ))
+}
+
 pub fn scene_size((x, y): (f32, f32)) -> (u32, u32) {
     ((SPRITE_W * x).round() as u32, (SPRITE_H * y).round() as u32)
 }
@@ -469,9 +494,9 @@ fn pet_parts(scene: &Scene, pack: &Pack) -> (Vec<Part>, Option<Point>) {
             Motion::Fall
             | Motion::Drag
             | Motion::SlideWall
-            | Motion::Special(Special::RunCover | Special::Captive | Special::RampTumble) => {
-                Face::Shock
-            }
+            | Motion::Special(
+                Special::RunCover | Special::Captive | Special::RampTumble | Special::LionHeld,
+            ) => Face::Shock,
             _ => scene.blink.map_or(Face::Neutral, Face::Blink),
         }
     };
@@ -1022,10 +1047,10 @@ fn pose_contact(pack: &Pack, pose: &Pose, motion: Motion, view: Transform) -> Op
     let supports = |bone: &str| match motion {
         Motion::Sit
         | Motion::Special(
-            Special::RideSled | Special::RampSlide | Special::WallRecover | Special::FoldPhone,
+            Special::RideSled | Special::RampSlide | Special::WallRecover | Special::RampLand,
         ) => bone == "torso" || leg(bone),
-        Motion::Special(Special::RampTumble | Special::TurtleSpin) => true,
-        Motion::Special(Special::LionRun | Special::LionCrouch) => {
+        Motion::Special(Special::RampTumble | Special::TurtleBounce) => true,
+        Motion::Special(Special::LionRun | Special::LionCrouch | Special::LionBite) => {
             leg(bone) || bone.ends_with("hand")
         }
         Motion::Idle

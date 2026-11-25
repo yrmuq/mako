@@ -63,6 +63,7 @@ impl Grab {
 pub enum Motion {
     #[default]
     Grounded,
+    Mounted(f32),
     Held {
         grab: Grab,
         lift: f32,
@@ -71,9 +72,21 @@ pub enum Motion {
 }
 
 impl Motion {
+    pub fn sync_mount(&mut self, lift: Option<f32>) {
+        if matches!(self, Self::Held { .. }) {
+            return;
+        }
+        if let Some(lift) = lift {
+            *self = Self::Mounted(lift);
+        } else if let Self::Mounted(lift) = *self {
+            *self = Self::Falling(Fall::new(lift));
+        }
+    }
+
     pub fn lift(&self) -> f32 {
         match self {
             Self::Grounded => 0.0,
+            Self::Mounted(lift) => *lift,
             Self::Held { lift, .. } => *lift,
             Self::Falling(fall) => fall.lift,
         }

@@ -339,7 +339,7 @@ impl Visitors {
     fn drop_bag(&mut self, world: &mut World, x: f32, width: f32) {
         self.santa_dropped = true;
         world.winter_mut().santa_bag = Some(gift_position(x, width));
-        world.winter_mut().santa_bag_on_sled = false;
+        world.winter_mut().mounts.remove(crate::mounts::Cargo::Bag);
         world.save_now();
     }
 

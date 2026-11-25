@@ -9,7 +9,11 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{festive::Tree, pack};
+use crate::{
+    festive::Tree,
+    mounts::{Cargo, Mounts},
+    pack,
+};
 
 pub const SNOWMAN_SECONDS: f32 = 600.0;
 pub const MAX_SNOWMEN: usize = 2;
@@ -28,8 +32,10 @@ pub struct WinterObjects {
     pub sled: Option<Sled>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub santa_bag: Option<f32>,
-    #[serde(default)]
-    pub santa_bag_on_sled: bool,
+    #[serde(default, rename = "santa_bag_on_sled", skip_serializing)]
+    legacy_bag_on_sled: bool,
+    #[serde(default, skip_serializing_if = "Mounts::is_empty")]
+    pub mounts: Mounts,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub santa_gifts: Vec<VisitorGift>,
 }
@@ -143,8 +149,32 @@ impl Save {
             .sled
             .filter(|sled| (0.0..=1.0).contains(&sled.position) && sled.rides < 2);
         saved.winter.santa_bag = saved.winter.santa_bag.filter(|x| (0.0..=1.0).contains(x));
-        saved.winter.santa_bag_on_sled &=
-            saved.winter.santa_bag.is_some() && saved.winter.sled.is_some();
+        if saved.winter.legacy_bag_on_sled && saved.winter.mounts.sled.is_none() {
+            saved.winter.mounts.sled = Some(Cargo::Bag);
+        }
+        let mut mounts = std::mem::take(&mut saved.winter.mounts);
+        let valid = |cargo| match cargo {
+            Cargo::Bag => saved.winter.santa_bag.is_some(),
+            Cargo::Fir => saved.tree.is_some_and(Tree::valid),
+            Cargo::Snowman(slot) => slot < MAX_SNOWMEN && saved.winter.snowman(slot).is_some(),
+        };
+        mounts.sled = mounts
+            .sled
+            .filter(|&cargo| saved.winter.sled.is_some() && valid(cargo));
+        let mut loaded = vec![mounts.sled];
+        for (slot, cargo) in mounts.walls.iter_mut().enumerate() {
+            *cargo = cargo.filter(|&cargo| {
+                saved
+                    .winter
+                    .walls
+                    .get(slot)
+                    .is_some_and(|wall| wall.finished())
+                    && valid(cargo)
+                    && !loaded.contains(&Some(cargo))
+            });
+            loaded.push(*cargo);
+        }
+        saved.winter.mounts = mounts;
         saved.winter.santa_gifts.retain(|gift| {
             (0.0..=1.0).contains(&gift.position) && gift.box_color < 4 && gift.ribbon_color < 4
         });
@@ -363,6 +393,34 @@ fn scene_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_bag_on_sled_is_restored_as_the_sled_load() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("scene.json");
+        fs::write(
+            &path,
+            r#"{
+            "version": 1,
+            "chibis": ["bear-girl"],
+            "winter": {
+                "year": 2042,
+                "piles": [],
+                "sled": {"position": 0.4, "rides": 1},
+                "santa_bag": 0.38,
+                "santa_bag_on_sled": true
+            }
+        }"#,
+        )
+        .unwrap();
+        let save = Save::read(&path).unwrap();
+        assert_eq!(save.winter.mounts.sled, Some(Cargo::Bag));
+        save.write(&path).unwrap();
+        assert_eq!(
+            Save::read(&path).unwrap().winter.mounts.sled,
+            Some(Cargo::Bag)
+        );
+    }
 
     #[test]
     fn scene_survives_shutdown_and_melts_even_if_a_season_was_missed() {

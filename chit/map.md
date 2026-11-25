@@ -9,7 +9,9 @@
 - `src/festive.rs` — fir and gift dates, planting, watering, decoration, opening gifts and spring disposal.
 - `src/interactions.rs` — conversations, snowball combat, snowman and wall building, and ground snow rendering.
 - `src/sled.rs` — sled fetching, passenger and helper activities, the two-edge route, manual rope pulls and sled rendering.
-- `src/ramps.rs` — snow wall window, slope geometry, ladder and sliding activities.
+- `src/ramps.rs` — snow wall window, slope, ladder and manual and automatic sliding.
+- `src/mounts.rs` — saved cargo slots for walls and sleds.
+- `src/lion.rs` — lion encounters, temporary holds and tosses.
 - `src/visitors.rs`, `src/visitor_art.rs` and `src/visitors/` — Santa and UFO visits, visitor artwork, and presents and rewards from Santa’s bag.
 - `src/world.rs` — ordinary scene save, temporary test scene, chibi rosters and snow objects.
 - `src/snowman.rs` — snowman drag speed and fragments.
