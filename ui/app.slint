@@ -415,6 +415,7 @@ export component SettingsWindow inherits Window {
     callback preview-selected(bool);
     callback call-santa();
     callback call-ufo();
+    callback call-event(int);
     callback date-selected(int, int, int);
     callback import-zip();
     callback logo-tapped();
@@ -725,6 +726,12 @@ export component SettingsWindow inherits Window {
                 spacing: 10px;
                 Button { text: Translations.tr(66); clicked => { root.call-santa(); } }
                 Button { text: Translations.tr(67); clicked => { root.call-ufo(); } }
+            }
+            HorizontalLayout {
+                spacing: 10px;
+                Button { text: Translations.tr(80); clicked => { root.call-event(0); } }
+                Button { text: Translations.tr(81); clicked => { root.call-event(1); } }
+                Button { text: Translations.tr(82); clicked => { root.call-event(2); } }
             }
         }
     }

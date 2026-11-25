@@ -109,6 +109,10 @@ struct Save {
     winter: WinterObjects,
     #[serde(default)]
     tree: Option<Tree>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    star: Option<f32>,
+    #[serde(default)]
+    bob_unlocked: bool,
 }
 
 impl Save {
@@ -118,6 +122,8 @@ impl Save {
             chibis: vec![chibi.to_owned()],
             winter: WinterObjects::default(),
             tree: None,
+            star: None,
+            bob_unlocked: false,
         }
     }
 
@@ -179,6 +185,7 @@ impl Save {
             (0.0..=1.0).contains(&gift.position) && gift.box_color < 4 && gift.ribbon_color < 4
         });
         saved.tree = saved.tree.filter(|tree| tree.valid());
+        saved.star = saved.star.filter(|x| (0.0..=1.0).contains(x));
         Ok(saved)
     }
 
@@ -257,6 +264,8 @@ impl World {
             chibis: self.save.chibis.clone(),
             winter: WinterObjects::default(),
             tree: None,
+            star: None,
+            bob_unlocked: false,
         });
     }
 
@@ -316,6 +325,26 @@ impl World {
 
     pub fn tree_mut(&mut self) -> &mut Option<Tree> {
         &mut self.active_mut().tree
+    }
+
+    pub fn star(&self) -> Option<f32> {
+        self.preview.as_ref().unwrap_or(&self.save).star
+    }
+
+    pub fn set_star(&mut self, position: Option<f32>) {
+        self.active_mut().star = position.map(|x| x.clamp(0.0, 1.0));
+        self.save_now();
+    }
+
+    pub fn bob_unlocked(&self) -> bool {
+        self.save.bob_unlocked
+    }
+
+    pub fn discover_bob(&mut self) {
+        self.save.bob_unlocked = true;
+        self.active_mut().chibis.push(pack::BOB_ID.to_owned());
+        self.save_at = self.path.as_ref().map(|_| Instant::now());
+        self.flush();
     }
 
     pub fn changed(&mut self) {
@@ -393,6 +422,24 @@ fn scene_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_falling_star_and_discovered_bob_survive_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("scene.json");
+        {
+            let mut world = World::open(path.clone(), pack::BUILTIN_ID);
+            world.set_star(Some(0.38));
+            world.start_preview();
+            assert_eq!(world.star(), None);
+            world.discover_bob();
+            assert!(world.chibis().iter().any(|id| id == pack::BOB_ID));
+        }
+        let world = World::open(path, pack::BUILTIN_ID);
+        assert_eq!(world.star(), Some(0.38));
+        assert!(world.bob_unlocked());
+        assert_eq!(world.chibis(), [pack::BUILTIN_ID]);
+    }
 
     #[test]
     fn legacy_bag_on_sled_is_restored_as_the_sled_load() {

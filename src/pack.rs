@@ -21,9 +21,10 @@ pub const BUILTIN_ID: &str = "bear-girl";
 pub const LION_ID: &str = "builtin.lion-girl";
 // Keep the saved ID from the first version of this pack.
 pub const TURTLE_ID: &str = "builtin.kazuki-yasaka";
+pub const BOB_ID: &str = "builtin.bob";
 
 pub fn is_builtin(id: &str) -> bool {
-    matches!(id, BUILTIN_ID | LION_ID | TURTLE_ID)
+    matches!(id, BUILTIN_ID | LION_ID | TURTLE_ID | BOB_ID)
 }
 const MAX_FILE: u64 = 4_000_000;
 const MAX_TOTAL: u64 = 24_000_000;
@@ -454,6 +455,12 @@ fn sample_step<T>(samples: &[Sample<T>], time: f32) -> Option<&T> {
     chosen.or_else(|| samples.first().map(|sample| &sample.value))
 }
 
+pub fn bob() -> Pack {
+    static PACK: OnceLock<Pack> = OnceLock::new();
+    PACK.get_or_init(|| load_builtin(BOB_ID).unwrap_or_else(|error| panic!("{error}")))
+        .clone()
+}
+
 pub fn installed() -> Vec<Pack> {
     let mut found = vec![Pack::builtin(), lion_pack().clone(), turtle_pack().clone()];
     let Ok(entries) = fs::read_dir(chibi_dir()) else {
@@ -552,6 +559,7 @@ fn load_builtin(id: &str) -> Result<Pack, Fault> {
     let art = match id {
         LION_ID => artwork!("lion-girl", LION_IMAGES),
         TURTLE_ID => artwork!("kazuki-yasaka", TURTLE_IMAGES),
+        BOB_ID => artwork!("bob", BOB_IMAGES),
         _ => artwork!("bear-girl", BUILTIN_IMAGES),
     };
     let mut images = HashMap::new();
@@ -682,6 +690,11 @@ const LION_IMAGES: &[(&str, &[u8])] = costume_images!("lion-girl";
 const TURTLE_IMAGES: &[(&str, &[u8])] = costume_images!("kazuki-yasaka";
     "head", "eyes-open", "eyes-closed", "eyes-shock", "mouth", "mouth-shock",
     "mouth-talk", "torso", "shell",
+);
+
+const BOB_IMAGES: &[(&str, &[u8])] = costume_images!("bob";
+    "head", "eyes-open", "eyes-closed", "eyes-shock", "mouth", "mouth-shock",
+    "mouth-talk", "torso",
 );
 
 fn from_path(path: &Path, id: &str) -> Result<Pack, Fault> {
@@ -1477,7 +1490,11 @@ fn builtins_are_protected_and_costumes_render_the_core_poses() {
     for id in [BUILTIN_ID, LION_ID, TURTLE_ID, "../outside"] {
         assert_eq!(uninstall(id).unwrap_err().code, "MAKO-IMPORT-0004");
     }
+    let bob = bob();
+    assert!(is_builtin(BOB_ID));
+    assert!(!installed().iter().any(|pack| pack.id == BOB_ID));
     for (pack, id, detail) in [
+        (&bob, BOB_ID, "eyes-open"),
         (lion_pack(), LION_ID, "tail"),
         (turtle_pack(), TURTLE_ID, "shell"),
     ] {

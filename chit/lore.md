@@ -22,7 +22,8 @@
 - Keep each sled ride on its starting output. Save the sled location and count only completed rides.
 - Choose the fir and gift dates from the system date format, independently of the UI language.
 - Keep the fir separate from the melting snow objects so a chibi can visibly discard it at the start of March.
-- The Dev date uses a separate temporary scene. Restore the ordinary scene when returning to the system date and keep its winter objects out of the test scene.
+- The Dev date uses a separate temporary scene. Restore the ordinary scene when returning to the system date and keep its props and roster out of the test scene.
+- Bob’s discovery unlocks him globally, including when the UFO appears in the Dev test scene. The dropped clone belongs to the active scene and the quick-panel list remains independent.
 - The Chibis tab uninstalls a custom ZIP only after confirmation and removes every live and saved copy of that pack. Keep built-in packs installed.
 
 ## External Compatibility Constraints

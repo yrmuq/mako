@@ -70,6 +70,7 @@ pub struct Scene {
     pub cycle: f32,
     pub blink: Option<f32>,
     pub sad: bool,
+    pub scorched: bool,
     pub grounded: f32,
     pub motion: Motion,
     pub tilt: f32,
@@ -397,6 +398,44 @@ pub fn render(scene: &Scene, pack: &Pack, scale: u32) -> Frame {
             part.transform.post_scale(scale as f32, scale as f32),
             None,
         );
+    }
+    if scene.scorched {
+        for pixel in pixmap.data_mut().as_chunks_mut::<4>().0 {
+            let bright = (u16::from(pixel[0]) + u16::from(pixel[1]) + u16::from(pixel[2])) / 17;
+            let soot = (u16::from(pixel[3]) * 7 / 255 + bright) as u8;
+            pixel[0] = soot;
+            pixel[1] = soot;
+            pixel[2] = soot.saturating_add(pixel[3] / 34);
+        }
+        for eyes in parts.iter().filter(|part| {
+            part.joint
+                .is_some_and(|joint| pack.bones[joint.bone].name == "eyes")
+        }) {
+            if scene.motion == Motion::Down {
+                let highlight = crate::props::soot_eyes();
+                let scale_x = eyes.sprite.image.width() as f32 / highlight.image.width() as f32;
+                let scale_y = eyes.sprite.image.height() as f32 / highlight.image.height() as f32;
+                pixmap.draw_pixmap(
+                    0,
+                    0,
+                    highlight.image.as_ref().as_ref(),
+                    &PixmapPaint::default(),
+                    eyes.transform
+                        .pre_scale(scale_x, scale_y)
+                        .post_scale(scale as f32, scale as f32),
+                    None,
+                );
+            } else {
+                pixmap.draw_pixmap(
+                    0,
+                    0,
+                    eyes.sprite.image.as_ref().as_ref(),
+                    &PixmapPaint::default(),
+                    eyes.transform.post_scale(scale as f32, scale as f32),
+                    None,
+                );
+            }
+        }
     }
     Frame {
         bgra: rgba_to_bgra(pixmap.data()),
@@ -990,6 +1029,39 @@ fn add_special(scene: &Scene, action: Special, parts: &mut Vec<Part>, pack: &Pac
             });
         }
     }
+    let bob_computer = matches!(
+        action,
+        Special::BobComputer | Special::BobCloak | Special::BobCall
+    );
+    if let Some(centre) = hand.filter(|_| {
+        (bob_computer && (0.28..2.48).contains(&scene.cycle))
+            || (action == Special::BobLaser && (0.15..1.36).contains(&scene.cycle))
+    }) {
+        let gear = if bob_computer {
+            crate::props::wrist_computer((scene.cycle * 10.0) as usize)
+        } else {
+            crate::props::ray_pistol()
+        };
+        let size = scene.scales.0 * if bob_computer { 83.0 } else { 136.0 };
+        let scale = size / gear.image.width() as f32;
+        let x = centre.x
+            + if bob_computer {
+                -size * 0.15
+            } else {
+                size * 0.29
+            } * direction;
+        let y = centre.y - size * if bob_computer { 0.26 } else { 0.14 };
+        parts.push(Part {
+            sprite: gear.clone(),
+            transform: Transform::from_translate(
+                -(gear.image.width() as f32) * 0.5,
+                -(gear.image.height() as f32) * 0.5,
+            )
+            .post_scale(scale * direction, scale)
+            .post_translate(x, y),
+            joint: None,
+        });
+    }
     if action != Special::EatCandy || scene.cycle >= 1.72 {
         return;
     }
@@ -1159,6 +1231,7 @@ mod tests {
             pose: Vec::new(),
             anchor: None,
             stuck_balls: Vec::new(),
+            scorched: false,
             effect_amount: 0.0,
         }
     }

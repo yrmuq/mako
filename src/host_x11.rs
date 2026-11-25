@@ -11,8 +11,8 @@ use x11rb::protocol::randr::ConnectionExt as _;
 use x11rb::protocol::shape::{ConnectionExt as _, SK, SO};
 use x11rb::protocol::xproto::{
     AtomEnum, ChangeWindowAttributesAux, ClipOrdering, ColormapAlloc, ConfigureWindowAux,
-    ConnectionExt, CreateGCAux, CreateWindowAux, EventMask, ImageFormat, PropMode, Rectangle,
-    Screen, StackMode, VisualClass, WindowClass,
+    ConnectionExt, CreateGCAux, CreateWindowAux, EventMask, Gcontext, ImageFormat, PropMode,
+    Rectangle, Screen, StackMode, VisualClass, Window, WindowClass,
 };
 use x11rb::protocol::Event;
 use x11rb::wrapper::ConnectionExt as _;
@@ -216,24 +216,41 @@ fn present(
         input.apply(conn, window.id).map_err(input_error)?;
         window.input = input;
     }
-    let stride = frame.width as usize * 4;
+    let rect = Rectangle {
+        x: 0,
+        y: 0,
+        width: frame.width as u16,
+        height: frame.height as u16,
+    };
+    put_bgra(conn, window.id, window.gc, rect, &frame.bgra)?;
+    app.note_committed();
+    Ok(())
+}
+
+fn put_bgra(
+    conn: &impl Connection,
+    id: Window,
+    gc: Gcontext,
+    rect: Rectangle,
+    bgra: &[u8],
+) -> Result<(), Fault> {
+    let stride = usize::from(rect.width) * 4;
     let rows = (conn.maximum_request_bytes().saturating_sub(64) / stride).max(1);
-    for (index, stripe) in frame.bgra.chunks(rows * stride).enumerate() {
+    for (index, stripe) in bgra.chunks(rows * stride).enumerate() {
         conn.put_image(
             ImageFormat::Z_PIXMAP,
-            window.id,
-            window.gc,
-            frame.width as u16,
+            id,
+            gc,
+            rect.width,
             (stripe.len() / stride) as u16,
-            0,
-            (index * rows) as i16,
+            rect.x,
+            rect.y + (index * rows) as i16,
             0,
             32,
             stripe,
         )
         .map_err(x11)?;
     }
-    app.note_committed();
     Ok(())
 }
 
@@ -344,19 +361,7 @@ impl OverlayWindow {
                 width: image.width as u16,
                 height: image.height as u16,
             };
-            conn.put_image(
-                ImageFormat::Z_PIXMAP,
-                self.id,
-                self.gc,
-                rect.width,
-                rect.height,
-                rect.x,
-                rect.y,
-                0,
-                32,
-                &image.bgra,
-            )
-            .map_err(x11)?;
+            put_bgra(conn, self.id, self.gc, rect, &image.bgra)?;
             self.shown.push(rect);
         }
         Ok(())

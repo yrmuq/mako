@@ -16,7 +16,7 @@ use slint::{
 
 use crate::about::LogoTaps;
 use crate::config::{InputMode, LanguagePref, PrecipitationMode, Settings, ThemePref};
-use crate::game::{Command, Startup};
+use crate::game::{Command, Startup, TestEvent};
 use crate::i18n::{Catalog, ID_NAME, ID_QUIT};
 use crate::icons;
 use crate::pack::{self, Pack};
@@ -85,6 +85,7 @@ enum Action {
     Proportions(i32, i32),
     Preview(bool),
     CallVisitor(VisitorKind),
+    TestEvent(i32),
     Date(i32, i32, i32),
     Logo,
     Check,
@@ -241,6 +242,23 @@ struct Desktop {
 }
 
 impl Desktop {
+    fn discover_bob(&mut self, preview: u64) {
+        if !self
+            .entries
+            .iter()
+            .any(|entry| entry.pack.id == pack::BOB_ID)
+        {
+            self.entries.push(Entry::new(pack::bob()));
+        }
+        if preview == 0 {
+            let counts = self.ordinary_counts.as_mut().unwrap_or(&mut self.counts);
+            *counts.entry(pack::BOB_ID.into()).or_default() += 1;
+        } else if self.ordinary_counts.is_some() && preview == self.preview_generation {
+            *self.counts.entry(pack::BOB_ID.into()).or_default() += 1;
+        }
+        self.refresh_rows();
+    }
+
     fn lose_chibi(&mut self, lost: LostChibi) {
         if lost.preview == 0 {
             if let Some(counts) = &mut self.ordinary_counts {
@@ -483,6 +501,15 @@ impl Desktop {
             }
             Action::CallVisitor(guest) => {
                 let _ = self.commands.send(Command::Visit(guest));
+            }
+            Action::TestEvent(id) => {
+                let event = match id {
+                    0 => TestEvent::Hand,
+                    1 => TestEvent::Star,
+                    2 => TestEvent::Rift,
+                    _ => return,
+                };
+                let _ = self.commands.send(Command::Test(event));
             }
             Action::Preview(enabled) => {
                 if enabled != self.config.preview_date.is_some() {
@@ -775,6 +802,7 @@ impl Desktop {
             connect!(on_preview_selected, Action::Preview(enabled), enabled);
             connect!(on_call_santa, Action::CallVisitor(VisitorKind::Santa));
             connect!(on_call_ufo, Action::CallVisitor(VisitorKind::Ufo));
+            connect!(on_call_event, Action::TestEvent(id), id);
             let date_tx = tx.clone();
             window.on_date_selected(move |day, month, year| {
                 let _ = date_tx.send(Action::Date(day, month, year));
@@ -932,7 +960,7 @@ impl Desktop {
     }
 
     fn translations(&self) -> ModelRc<SharedString> {
-        model((0..=79).map(|id| self.catalog.text(id).into()).collect())
+        model((0..=82).map(|id| self.catalog.text(id).into()).collect())
     }
 
     fn refresh_style(&self) {
@@ -1108,13 +1136,16 @@ pub(crate) fn run(session: Session, open_settings: bool) -> Result<(), Fault> {
     let config = Settings::load();
     let catalog = Catalog::load(&config.code());
     let tray_icons = TrayIcons::load(icons::Theme::load());
-    let entries: Vec<_> = pack::installed().into_iter().map(Entry::new).collect();
+    let mut entries: Vec<_> = pack::installed().into_iter().map(Entry::new).collect();
     let first = entries
         .iter()
         .find(|entry| entry.pack.id == config.chibi)
         .map(|entry| entry.pack.clone())
         .unwrap_or_else(Pack::builtin);
     let world = crate::world::World::load(&first.id);
+    if world.bob_unlocked() {
+        entries.push(Entry::new(pack::bob()));
+    }
     let packs: Vec<_> = world
         .chibis()
         .iter()
@@ -1146,10 +1177,12 @@ pub(crate) fn run(session: Session, open_settings: bool) -> Result<(), Fault> {
         *counts.entry(pack.id.clone()).or_default() += 1;
     }
     let (lost_tx, lost_rx) = mpsc::channel();
+    let (bob_tx, bob_rx) = mpsc::channel();
     let startup = Startup {
         packs,
         world,
         lost_chibi: Some(lost_tx),
+        bob_arrival: Some(bob_tx),
     };
     let game_config = config.clone();
     let game_tx = tx.clone();
@@ -1203,6 +1236,9 @@ pub(crate) fn run(session: Session, open_settings: bool) -> Result<(), Fault> {
         move || {
             if let Some(state) = weak.upgrade() {
                 let mut state = state.borrow_mut();
+                while let Ok(preview) = bob_rx.try_recv() {
+                    state.discover_bob(preview);
+                }
                 while let Ok(lost) = lost_rx.try_recv() {
                     state.lose_chibi(lost);
                 }

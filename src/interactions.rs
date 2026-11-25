@@ -213,7 +213,7 @@ impl Interactions {
         self.fragments
             .retain_mut(|fragment| fragment.tick(dt, floor));
         if winter && width > 0 {
-            self.drop_pile(world, dt);
+            self.drop_pile(world, width as f32, dt);
             self.start_cannons(pets);
             self.retaliate(pets, world.winter(), width as f32);
             self.tasks
@@ -826,7 +826,7 @@ impl Interactions {
         }
     }
 
-    fn drop_pile(&mut self, world: &mut World, dt: f32) {
+    fn drop_pile(&mut self, world: &mut World, width: f32, dt: f32) {
         self.pile_in -= dt;
         if self.pile_in > 0.0 {
             return;
@@ -837,7 +837,37 @@ impl Interactions {
             17.0 + 17.0 * fastrand::f32()
         };
         if world.winter().piles.len() < 5 {
-            if let Some(position) = free_spot(world.winter(), world.tree(), 0.17, 0.83) {
+            let objects = world.winter();
+            let tree = world.tree();
+            let cluster = if !objects.piles.is_empty() && fastrand::f32() < 0.52 {
+                Some(objects.piles[fastrand::usize(..objects.piles.len())].position)
+            } else {
+                None
+            };
+            let gap = (48.0 / width.max(1.0)).min(0.24);
+            let position = (0..24).find_map(|attempt| {
+                let spread = gap * (1.15 + 1.3 * fastrand::f32());
+                let side = if fastrand::bool() { -1.0 } else { 1.0 };
+                let at = cluster.filter(|_| attempt < 9).map_or_else(
+                    || 0.07 + fastrand::f32() * 0.86,
+                    |near| near + spread * side,
+                );
+                ((0.06..0.94).contains(&at)
+                    && objects
+                        .piles
+                        .iter()
+                        .all(|pile| (pile.position - at).abs() > gap)
+                    && objects
+                        .snowmen()
+                        .all(|(_, man)| (man.position - at).abs() > gap * 1.5)
+                    && objects
+                        .walls
+                        .iter()
+                        .all(|wall| (wall.position - at).abs() > gap * 2.0)
+                    && tree.is_none_or(|tree| (tree.position - at).abs() > gap * 1.25))
+                .then_some(at)
+            });
+            if let Some(position) = position {
                 world.winter_mut().piles.push(Pile {
                     position,
                     servings: fastrand::u8(2..=5),
@@ -1206,7 +1236,8 @@ impl Interactions {
                     (ball.vx * BALL_KNOCKBACK).clamp(-1450.0, 1450.0),
                     -310.0,
                     ball.owner,
-                ) {
+                ) && !pets[index].app.is_bob()
+                {
                     let hits = snow_hits.entry(id).or_default();
                     hits.retain(|time| now - time <= HIT_WINDOW);
                     hits.push_back(now);

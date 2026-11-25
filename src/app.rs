@@ -54,6 +54,11 @@ pub struct App {
     pub origin_y: i32,
     clock: f32,
     sad_until: f32,
+    scorched_until: f32,
+    cloaked_until: f32,
+    bob_call: bool,
+    laser_target: Option<u64>,
+    rift_fade: Option<f32>,
     blink_at: f32,
     blink_length: f32,
     stuck_balls: Vec<(draw::SnowMark, f32)>,
@@ -93,6 +98,11 @@ impl App {
             origin_y: 0,
             clock: 0.0,
             sad_until: 0.0,
+            scorched_until: 0.0,
+            cloaked_until: 0.0,
+            bob_call: false,
+            laser_target: None,
+            rift_fade: None,
             blink_at: next_blink(0.0),
             blink_length,
             stuck_balls: Vec::new(),
@@ -134,6 +144,9 @@ impl App {
 
     pub fn tick(&mut self, dt: f32, slippery: bool) {
         self.clock += dt;
+        if self.pet.activity != Activity::Special(Special::Captive) {
+            self.rift_fade = None;
+        }
         self.stuck_balls.retain(|(_, until)| self.clock < *until);
         if self.clock >= self.blink_at + self.blink_length {
             self.blink_at = next_blink(self.clock);
@@ -204,6 +217,11 @@ impl App {
                 crate::pack::LION_ID => Some(Special::LionRun),
                 crate::pack::TURTLE_ID => Some(Special::TurtleBounce),
                 crate::pack::BUILTIN_ID if fastrand::bool() => Some(Special::FoldPhone),
+                crate::pack::BOB_ID => Some(match fastrand::u32(0..100) {
+                    0..=9 => Special::BobCall,
+                    10..=34 => Special::BobCloak,
+                    _ => Special::BobComputer,
+                }),
                 _ => None,
             };
             if let Some(action) = special {
@@ -211,6 +229,22 @@ impl App {
             }
         }
         match self.pet.activity {
+            Activity::Special(
+                action @ (Special::BobComputer | Special::BobCloak | Special::BobCall),
+            ) if self.pet.time >= 2.74 => match action {
+                Special::BobCloak => {
+                    self.cloaked_until = self.clock + 8.0;
+                    self.pet.walk_for(8.0);
+                }
+                Special::BobCall => {
+                    self.bob_call = true;
+                    self.pet.start(Activity::Special(Special::BobWait));
+                }
+                _ => self.pet.start(Activity::Idle),
+            },
+            Activity::Special(Special::BobWait) if self.pet.time >= 38.0 => {
+                self.pet.start(Activity::Idle);
+            }
             Activity::Special(Special::FoldPhone) if self.pet.time >= 4.14 => {
                 self.pet.start(Activity::Idle);
             }
@@ -241,6 +275,37 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    pub fn is_bob(&self) -> bool {
+        self.pack.id == crate::pack::BOB_ID
+    }
+
+    pub fn take_bob_call(&mut self) -> bool {
+        std::mem::take(&mut self.bob_call)
+    }
+
+    pub fn take_laser_target(&mut self) -> Option<u64> {
+        if self.pet.activity.routine()
+            || matches!(
+                self.pet.activity,
+                Activity::Special(
+                    Special::BobComputer | Special::BobCloak | Special::BobCall | Special::BobWait
+                )
+            )
+        {
+            self.laser_target.take()
+        } else {
+            None
+        }
+    }
+
+    pub fn aim_laser(&mut self, towards: f32) {
+        self.cloaked_until = 0.0;
+        if (towards - self.pet.x).abs() > 0.1 {
+            self.pet.face = (towards - self.pet.x).signum();
+        }
+        self.pet.start(Activity::Special(Special::BobLaser));
     }
 
     pub fn lion_running(&self) -> bool {
@@ -408,6 +473,7 @@ impl App {
             scales: self.settings.scales(),
             pose,
             anchor: self.grip.as_ref().map(|grip| grip.point),
+            scorched: self.clock < self.scorched_until,
             stuck_balls: self.stuck_balls.iter().map(|(point, _)| *point).collect(),
             effect_amount: match self.pet.activity {
                 Activity::Parachute => smoothstep(self.pet.time / 0.28),
@@ -532,6 +598,15 @@ impl App {
         self.body_hits_left = Some(0);
     }
 
+    pub fn fade_into_rift(&mut self, opacity: f32) {
+        self.rift_fade = Some(opacity.clamp(0.0, 1.0));
+    }
+
+    pub fn lightning_hit(&mut self, direction: f32) {
+        self.scorched_until = self.clock + 15.0;
+        self.blast(direction * 1450.0, -485.0);
+    }
+
     pub fn blast(&mut self, vx: f32, vy: f32) {
         if self.grip.is_some() || self.pet.activity == Activity::Special(Special::Captive) {
             return;
@@ -580,6 +655,9 @@ impl App {
                 self.stuck_balls.push((anchor, self.clock + 5.0));
             }
             self.body_hits_left = Some(1);
+            if self.is_bob() {
+                self.laser_target = Some(owner);
+            }
             return true;
         }
         false
@@ -594,6 +672,21 @@ impl App {
 
     pub fn render(&mut self) -> Frame {
         let mut frame = draw::render(&self.scene(), &self.pack, self.scale);
+        let opacity = if self.clock < self.cloaked_until
+            && matches!(
+                self.pet.activity,
+                Activity::Walk | Activity::Idle | Activity::ClimbWall
+            ) {
+            63
+        } else {
+            self.rift_fade
+                .map_or(255, |fade| (fade * 255.0).round() as u16)
+        };
+        if opacity < 255 {
+            for channel in &mut frame.bgra {
+                *channel = (u16::from(*channel) * opacity / 255) as u8;
+            }
+        }
         self.parts = std::mem::take(&mut frame.parts);
         self.logical_w = frame.width / self.scale.max(1);
         self.logical_h = frame.height / self.scale.max(1);

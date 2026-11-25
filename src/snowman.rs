@@ -36,6 +36,13 @@ impl Grab {
         Point::from_xy(cursor.x - self.offset.x, cursor.y - self.offset.y)
     }
 
+    pub fn motion_time(&self) -> f32 {
+        match (self.points.front(), self.points.back()) {
+            (Some((first, _)), Some((last, _))) => last.duration_since(*first).as_secs_f32(),
+            _ => 0.0,
+        }
+    }
+
     pub fn throw(&self, now: Instant) -> Option<Point> {
         let &(end, last) = self.points.back()?;
         let &(start, first) = self

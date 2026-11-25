@@ -169,18 +169,25 @@ pub fn coal() -> &'static Sprite {
 
 pub fn cross_eyes() -> &'static Sprite {
     static SPRITE: OnceLock<Sprite> = OnceLock::new();
-    SPRITE.get_or_init(|| {
-        let mut art = Pixmap::new(38, 13).unwrap();
-        paint(&mut art, [56, 39, 54, 255], Some(2.9), |p| {
-            for x in [7.0, 31.0] {
-                p.move_to(x - 4.8, 2.4);
-                p.line_to(x + 4.8, 10.6);
-                p.move_to(x - 4.8, 10.6);
-                p.line_to(x + 4.8, 2.4);
-            }
-        });
-        crop(art).unwrap()
-    })
+    SPRITE.get_or_init(|| crossed_eyes([56, 39, 54, 255]))
+}
+
+pub fn soot_eyes() -> &'static Sprite {
+    static SPRITE: OnceLock<Sprite> = OnceLock::new();
+    SPRITE.get_or_init(|| crossed_eyes([248, 236, 219, 255]))
+}
+
+fn crossed_eyes(color: [u8; 4]) -> Sprite {
+    let mut art = Pixmap::new(38, 13).unwrap();
+    paint(&mut art, color, Some(2.9), |p| {
+        for x in [7.0, 31.0] {
+            p.move_to(x - 4.8, 2.4);
+            p.line_to(x + 4.8, 10.6);
+            p.move_to(x - 4.8, 10.6);
+            p.line_to(x + 4.8, 2.4);
+        }
+    });
+    crop(art).unwrap()
 }
 
 pub fn fold_phone(frame: usize) -> &'static Sprite {
@@ -939,4 +946,74 @@ pub fn sled_rope(dx: i32, dy: i32, scale: u32) -> Pixmap {
         );
     });
     resize_art(image, scale)
+}
+
+pub fn wrist_computer(frame: usize) -> &'static Sprite {
+    static FRAMES: OnceLock<[Sprite; 3]> = OnceLock::new();
+    &FRAMES.get_or_init(|| {
+        std::array::from_fn(|frame| {
+            let mut art = Pixmap::new(39, 36).unwrap();
+            oval(&mut art, (0.0, 0.0, 39.0, 36.0), [61, 235, 163, 37]);
+            paint(&mut art, [30, 49, 60, 255], None, |p| {
+                p.move_to(9.0, 25.0);
+                p.line_to(5.0, 14.0);
+                p.line_to(14.0, 6.0);
+                p.line_to(34.0, 5.0);
+                p.line_to(34.0, 23.0);
+                p.line_to(31.0, 30.0);
+                p.close();
+            });
+            paint(&mut art, [61, 164, 134, 255], None, |p| {
+                p.move_to(11.0, 15.0);
+                p.line_to(16.0, 9.0);
+                p.line_to(30.0, 8.0);
+                p.line_to(30.0, 21.0);
+                p.line_to(15.0, 23.0);
+                p.close();
+            });
+            for row in 0..3 {
+                let offset = (row * 3) as f32;
+                paint(
+                    &mut art,
+                    [170, 255, 210, if row == frame { 255 } else { 135 }],
+                    Some(1.25),
+                    |p| {
+                        p.move_to(16.0, 13.0 + offset);
+                        p.line_to(24.0 + (row % 2) as f32 * 3.0, 12.0 + offset);
+                    },
+                );
+            }
+            crop(art).unwrap()
+        })
+    })[frame % 3]
+}
+
+pub fn ray_pistol() -> &'static Sprite {
+    static SPRITE: OnceLock<Sprite> = OnceLock::new();
+    SPRITE.get_or_init(|| {
+        let mut art = Pixmap::new(58, 44).unwrap();
+        paint(&mut art, [45, 51, 79, 255], None, |p| {
+            p.move_to(3.0, 12.0);
+            p.quad_to(13.0, 2.0, 26.0, 7.0);
+            p.line_to(46.0, 12.0);
+            p.line_to(54.0, 16.0);
+            p.line_to(54.0, 22.0);
+            p.line_to(43.0, 26.0);
+            p.line_to(27.0, 23.0);
+            p.line_to(20.0, 38.0);
+            p.line_to(10.0, 37.0);
+            p.line_to(13.0, 25.0);
+            p.quad_to(0.0, 23.0, 3.0, 12.0);
+            p.close();
+        });
+        oval(&mut art, (6.0, 9.0, 27.0, 14.0), [129, 150, 181, 255]);
+        oval(&mut art, (10.0, 11.0, 14.0, 7.0), [119, 248, 173, 255]);
+        for x in [32.0, 38.0, 44.0] {
+            paint(&mut art, [110, 255, 153, 255], Some(2.4), |p| {
+                p.move_to(x, 14.0);
+                p.line_to(x + 2.0, 20.0);
+            });
+        }
+        crop(art).unwrap()
+    })
 }

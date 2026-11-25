@@ -3,9 +3,11 @@
 
 mod about;
 mod app;
+mod combat;
 mod config;
 mod desktop;
 mod draw;
+mod event_art;
 mod festive;
 mod game;
 mod host_wayland;
@@ -22,6 +24,7 @@ mod rag;
 mod ramps;
 mod season;
 mod sim;
+mod sky;
 mod sled;
 mod snowman;
 mod updates;

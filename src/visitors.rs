@@ -54,6 +54,7 @@ enum Scene {
         x: f32,
         height: f32,
         flight: UfoFlight,
+        caller: Option<u64>,
     },
     Santa {
         x: f32,
@@ -93,6 +94,8 @@ pub struct Visitors {
     floor: f32,
     santa_clicks: Option<(Instant, u8)>,
     santa_dropped: bool,
+    bob_calls: VecDeque<u64>,
+    ufo_clicks: Option<(Instant, u8)>,
 }
 
 impl Default for Visitors {
@@ -106,6 +109,8 @@ impl Default for Visitors {
             floor: 0.0,
             santa_clicks: None,
             santa_dropped: false,
+            bob_calls: VecDeque::new(),
+            ufo_clicks: None,
         }
     }
 }
@@ -117,8 +122,14 @@ impl Visitors {
         }
     }
 
+    pub fn call_from_bob(&mut self, id: u64) {
+        if !self.bob_calls.contains(&id) {
+            self.bob_calls.push_back(id);
+        }
+    }
+
     pub fn active(&self) -> bool {
-        self.scene.is_some() || !self.pending.is_empty()
+        self.scene.is_some() || !self.pending.is_empty() || !self.bob_calls.is_empty()
     }
 
     pub fn tick(
@@ -154,7 +165,19 @@ impl Visitors {
             } else {
                 None
             };
-            let guest = if let Some(guest) = self.pending.pop_front() {
+            let bob = loop {
+                let Some(id) = self.bob_calls.pop_front() else {
+                    break None;
+                };
+                if let Some(pet) = pets.iter().find(|pet| {
+                    pet.id == id && pet.app.pet.activity == Activity::Special(Special::BobWait)
+                }) {
+                    break Some(pet);
+                }
+            };
+            let guest = if bob.is_some() {
+                Some(Kind::Ufo)
+            } else if let Some(guest) = self.pending.pop_front() {
                 Some(guest)
             } else {
                 if let Some(guest) = automatic {
@@ -176,10 +199,12 @@ impl Visitors {
                     }
                 }
                 Kind::Ufo => {
-                    let candidate = pets
-                        .iter()
-                        .find(|pet| pet.app.pet.activity == Activity::Walk)
-                        .or_else(|| pets.iter().find(|pet| pet.app.pet.activity.routine()));
+                    self.ufo_clicks = None;
+                    let candidate = bob.or_else(|| {
+                        pets.iter()
+                            .find(|pet| pet.app.pet.activity == Activity::Walk)
+                            .or_else(|| pets.iter().find(|pet| pet.app.pet.activity.routine()))
+                    });
                     let margin = (visitor_art::BEAM_WIDTH * 0.5).min(width * 0.5);
                     let x = candidate.map_or(width * 0.5, |pet| {
                         let actor = &pet.app.pet;
@@ -194,6 +219,7 @@ impl Visitors {
                         x: x.clamp(margin, width - margin),
                         height: (floor * 0.19).clamp(65.0, 190.0).min(floor * 0.65),
                         flight: UfoFlight::Arrive(0.0),
+                        caller: bob.map(|pet| pet.id),
                     }
                 }
             });
@@ -206,7 +232,12 @@ impl Visitors {
         }
         let dt = dt.clamp(0.0, 0.05);
         match self.scene.take()? {
-            Scene::Ufo { x, height, flight } => {
+            Scene::Ufo {
+                x,
+                height,
+                flight,
+                caller,
+            } => {
                 if self.art.ufo.is_none() {
                     self.art.ufo = Some(visitor_art::ufo(scale).into());
                 }
@@ -222,7 +253,15 @@ impl Visitors {
                         let target = pets
                             .iter_mut()
                             .filter(|pet| {
-                                pet.app.pet.activity.routine()
+                                let available = caller.map_or_else(
+                                    || pet.app.pet.activity.routine(),
+                                    |id| {
+                                        pet.id == id
+                                            && pet.app.pet.activity
+                                                == Activity::Special(Special::BobWait)
+                                    },
+                                );
+                                available
                                     && pet.app.grab_position().is_none()
                                     && (pet.app.pet.x - x).abs() <= visitor_art::BEAM_WIDTH * 0.48
                             })
@@ -238,6 +277,12 @@ impl Visitors {
                                 time: 0.0,
                             }
                         } else if time + dt >= 7.0 {
+                            if let Some(pet) = pets.iter_mut().find(|pet| {
+                                Some(pet.id) == caller
+                                    && pet.app.pet.activity == Activity::Special(Special::BobWait)
+                            }) {
+                                pet.app.pet.start(Activity::Idle);
+                            }
                             UfoFlight::Depart {
                                 time: 0.0,
                                 picked_up: None,
@@ -280,7 +325,12 @@ impl Visitors {
                 if matches!(flight, UfoFlight::Beam(_)) && self.art.beam.is_none() {
                     self.art.beam = Some((ray_height, visitor_art::beam(ray_height, scale).into()));
                 }
-                self.scene = Some(Scene::Ufo { x, height, flight });
+                self.scene = Some(Scene::Ufo {
+                    x,
+                    height,
+                    flight,
+                    caller,
+                });
             }
             Scene::Santa {
                 x,
@@ -351,6 +401,7 @@ impl Visitors {
         width: u32,
     ) -> Option<bool> {
         if width == 0
+            || !matches!(self.scene, Some(Scene::Santa { .. }))
             || !self.input_rects().any(|rect| {
                 (rect.left()..rect.right()).contains(&point.x)
                     && (rect.top()..rect.bottom()).contains(&point.y)
@@ -379,25 +430,100 @@ impl Visitors {
         Some(dropped)
     }
 
-    pub fn input_rects(&self) -> impl Iterator<Item = Rect> + '_ {
-        self.santa_image()
-            .into_iter()
-            .flat_map(move |(x, y, image)| {
-                let scale = self.art.scale.max(1) as i32;
-                let s = scale as f32;
-                image.ink.iter().filter_map(move |&(left, top, width)| {
-                    (i32::from(top) % scale == scale / 2)
-                        .then(|| {
-                            Rect::from_xywh(
-                                (x + i32::from(left)) as f32 / s,
-                                (y + i32::from(top) - scale / 2) as f32 / s,
-                                f32::from(width) / s,
-                                1.0,
-                            )
-                        })
-                        .flatten()
-                })
+    pub fn click_ufo(
+        &mut self,
+        pets: &mut [Instance],
+        point: Point,
+        now: Instant,
+    ) -> Option<Option<Point>> {
+        let Some(Scene::Ufo {
+            x,
+            height,
+            flight,
+            caller: None,
+        }) = self.scene
+        else {
+            return None;
+        };
+        if !self.ufo_input_rects().any(|rect| {
+            (rect.left()..rect.right()).contains(&point.x)
+                && (rect.top()..rect.bottom()).contains(&point.y)
+        }) {
+            return None;
+        }
+        let (first, taps) = self
+            .ufo_clicks
+            .filter(|(first, _)| {
+                now.saturating_duration_since(*first) <= Duration::from_millis(850)
             })
+            .unwrap_or((now, 0));
+        self.ufo_clicks = Some((first, taps + 1));
+        if taps < 2 {
+            return Some(None);
+        }
+        self.ufo_clicks = None;
+        let captive_id = match flight {
+            UfoFlight::Lift { id, .. } => Some(id),
+            UfoFlight::Depart { picked_up, .. } => picked_up,
+            _ => None,
+        };
+        if let Some(pet) = captive_id.and_then(|id| captive(pets, id)) {
+            pet.app.pet.release(&pet.app.room, 0.0, 0.0);
+        }
+        self.scene = Some(Scene::Ufo {
+            x,
+            height,
+            flight: UfoFlight::Depart {
+                time: 0.0,
+                picked_up: None,
+            },
+            caller: None,
+        });
+        Some(Some(Point::from_xy(x, ufo_y(height, flight) + 24.0)))
+    }
+
+    pub fn input_rects(&self) -> impl Iterator<Item = Rect> + '_ {
+        self.ink_rects(self.santa_image())
+    }
+
+    pub fn ufo_input_rects(&self) -> impl Iterator<Item = Rect> + '_ {
+        self.ink_rects(self.ufo_image())
+    }
+
+    fn ink_rects<'a>(
+        &'a self,
+        guest: Option<(i32, i32, &'a OverlayImage)>,
+    ) -> impl Iterator<Item = Rect> + 'a {
+        guest.into_iter().flat_map(move |(x, y, image)| {
+            let scale = self.art.scale.max(1) as i32;
+            let s = scale as f32;
+            image.ink.iter().filter_map(move |&(left, top, width)| {
+                (i32::from(top) % scale == scale / 2)
+                    .then(|| {
+                        Rect::from_xywh(
+                            (x + i32::from(left)) as f32 / s,
+                            (y + i32::from(top) - scale / 2) as f32 / s,
+                            f32::from(width) / s,
+                            1.0,
+                        )
+                    })
+                    .flatten()
+            })
+        })
+    }
+
+    fn ufo_image(&self) -> Option<(i32, i32, &OverlayImage)> {
+        let Scene::Ufo {
+            x, height, flight, ..
+        } = self.scene?
+        else {
+            return None;
+        };
+        Some(image_at(
+            Point::from_xy(x, ufo_y(height, flight)),
+            self.art.ufo.as_ref()?,
+            self.art.scale as f32,
+        ))
     }
 
     fn santa_image(&self) -> Option<(i32, i32, &OverlayImage)> {
@@ -423,11 +549,8 @@ impl Visitors {
         let scale = self.art.scale as f32;
         let (mut guest, mut ray) = (None, None);
         match self.scene {
-            Some(Scene::Ufo { x, height, flight }) => {
-                guest =
-                    self.art.ufo.as_ref().map(|image| {
-                        image_at(Point::from_xy(x, ufo_y(height, flight)), image, scale)
-                    });
+            Some(Scene::Ufo { x, flight, .. }) => {
+                guest = self.ufo_image();
                 if flight.beam_on() {
                     ray =
                         self.art.beam.as_ref().map(|(_, image)| {
@@ -475,6 +598,50 @@ fn image_at(point: Point, image: &OverlayImage, scale: f32) -> (i32, i32, &Overl
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_called_ufo_only_takes_the_bob_that_summoned_it() {
+        use crate::{app::App, config::Settings, pack, startup_room};
+
+        let mut world = World::test(pack::BUILTIN_ID);
+        let room = startup_room(900.0, 600.0);
+        let mut pets = [
+            Instance {
+                id: 10,
+                app: App::new(room.clone(), Settings::default(), pack::Pack::builtin()),
+            },
+            Instance {
+                id: 21,
+                app: App::new(room.clone(), Settings::default(), pack::bob()),
+            },
+            Instance {
+                id: 22,
+                app: App::new(room, Settings::default(), pack::bob()),
+            },
+        ];
+        for pet in &mut pets {
+            pet.app.pet.x = 400.0;
+        }
+        pets[2].app.pet.start(Activity::Special(Special::BobWait));
+        let mut visitors = Visitors::default();
+        visitors.call_from_bob(22);
+        let lost = (0..100).find_map(|_| {
+            visitors.tick(
+                &mut pets,
+                &mut world,
+                Frame {
+                    width: 900,
+                    floor: 600.0,
+                    scale: 1,
+                    elapsed: 0.05,
+                },
+                false,
+            )
+        });
+        assert_eq!(lost, Some(22));
+        assert_eq!(pets[0].app.pet.activity, Activity::Idle);
+        assert_eq!(pets[1].app.pet.activity, Activity::Idle);
+    }
 
     #[test]
     fn a_third_quick_click_on_santa_drops_the_bag_during_the_flight() {

@@ -884,6 +884,9 @@ mod tests {
             ),
         }];
         let mut step = |festive: &mut Festive, world: &mut World, date| {
+            if pets[0].app.pet.activity.routine() {
+                pets[0].app.pet.start(Activity::Idle);
+            }
             pets[0].app.tick(0.05, true);
             festive.tick(
                 &mut pets,

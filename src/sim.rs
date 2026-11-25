@@ -61,6 +61,12 @@ pub enum Special {
     TurtleBounce,
     LionBite,
     LionHeld,
+    Scuffle,
+    BobComputer,
+    BobCloak,
+    BobCall,
+    BobWait,
+    BobLaser,
 }
 
 impl Special {
@@ -94,6 +100,10 @@ impl Special {
             Self::TurtleBounce => "turtle-bounce",
             Self::LionBite => "lion-bite",
             Self::LionHeld => "drag",
+            Self::Scuffle => "scuffle",
+            Self::BobComputer | Self::BobCloak | Self::BobCall => "bob-computer",
+            Self::BobWait => "idle",
+            Self::BobLaser => "bob-laser",
         }
     }
 
@@ -164,6 +174,7 @@ pub struct Pet {
     walk_for: f32,
     down_for: f32,
     sled_edge: Option<bool>,
+    relocation: Option<(f32, f32, f32)>,
 }
 
 impl Pet {
@@ -185,6 +196,7 @@ impl Pet {
             walk_for: 4.0 * walk_cycle,
             down_for: 2.6,
             sled_edge: None,
+            relocation: None,
         }
     }
 
@@ -326,7 +338,7 @@ impl Pet {
             Activity::ClimbWall => -0.19,
             Activity::SlideWall => -0.32,
             Activity::ClimbCeiling => std::f32::consts::PI,
-            Activity::Hand if self.time < HAND_REACH => {
+            Activity::Hand if self.relocation.is_none() && self.time < HAND_REACH => {
                 std::f32::consts::PI * (1.0 - self.time / HAND_REACH)
             }
             _ => 0.0,
@@ -334,6 +346,9 @@ impl Pet {
     }
 
     pub fn start(&mut self, activity: Activity) {
+        if activity != Activity::Hand {
+            self.relocation = None;
+        }
         self.activity = activity;
         self.time = 0.0;
         self.phase = 0.0;
@@ -564,7 +579,28 @@ impl Pet {
         }
     }
 
+    pub fn walk_for(&mut self, seconds: f32) {
+        self.walk_for = seconds;
+        self.start(Activity::Walk);
+    }
+
+    pub fn move_by_hand(&mut self, target: f32) {
+        self.start(Activity::Hand);
+        self.relocation = Some((self.x, self.y, target));
+    }
+
     fn hand(&mut self, room: &Room, dt: f32) {
+        if let Some((x, y, target)) = self.relocation {
+            let p = ((self.time - HAND_REACH) / 1.45).clamp(0.0, 1.0);
+            let travel = p * p * (3.0 - 2.0 * p);
+            self.x = (x + (target - x) * travel).clamp(room.left, room.right);
+            self.y = (y + (room.floor - y) * travel - (p * std::f32::consts::PI).sin() * 95.0)
+                .max(room.ceiling);
+            if p >= 1.0 {
+                self.start(Activity::HandRelease);
+            }
+            return;
+        }
         if self.time >= HAND_REACH {
             self.y = (self.y + HAND_SPEED * dt).min(room.floor);
             if self.y >= room.floor {

@@ -12,6 +12,7 @@ use crate::weather::Kind;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Season {
     Ordinary,
+    Autumn,
     Festive,
     Winter,
 }
@@ -64,12 +65,40 @@ impl Season {
         match (month, day) {
             (11, 20..=30) | (12, 1..=31) | (1, 1..=13) => Self::Festive,
             (1, 14..=31) | (2, 1..=28) => Self::Winter,
+            (9..=10, _) | (11, 1..=19) => Self::Autumn,
             _ => Self::Ordinary,
         }
     }
 
     fn winter_year(year: i32, month: i32, day: i32) -> Option<i32> {
-        (Self::for_date(month, day) != Self::Ordinary).then(|| year + i32::from(month >= 11))
+        matches!(Self::for_date(month, day), Self::Festive | Self::Winter)
+            .then(|| year + i32::from(month >= 11))
+    }
+}
+
+pub(crate) fn event_delay(hours: f64) -> Duration {
+    let uniform = fastrand::f64().max(f64::EPSILON);
+    Duration::from_secs_f64(-uniform.ln() * hours * 3600.0)
+}
+
+enum Rain {
+    Idle,
+    Waiting(Instant),
+    Falling(Instant),
+}
+
+impl Rain {
+    fn update(&mut self, enabled: bool, now: Instant) -> bool {
+        *self = match (&*self, enabled) {
+            (_, false) => Self::Idle,
+            (Self::Idle, true) => Self::Waiting(now + event_delay(48.0)),
+            (Self::Waiting(due), true) if now >= *due => {
+                Self::Falling(now + Duration::from_secs(fastrand::u64(180..=420)))
+            }
+            (Self::Falling(end), true) if now >= *end => Self::Waiting(now + event_delay(48.0)),
+            _ => return matches!(self, Self::Falling(_)),
+        };
+        matches!(self, Self::Falling(_))
     }
 }
 
@@ -84,6 +113,7 @@ pub struct Snow {
     art_scale: (u32, u32),
     observed: Kind,
     falling: Kind,
+    autumn_rain: Rain,
 }
 
 struct Flake {
@@ -147,6 +177,7 @@ impl Snow {
             art_scale: (0, 0),
             observed: Kind::Dry,
             falling: Kind::Dry,
+            autumn_rain: Rain::Idle,
         }
     }
 
@@ -165,6 +196,7 @@ impl Snow {
     pub fn set_date(&mut self, date: Option<Date>) {
         if self.date != date {
             self.date = date;
+            self.autumn_rain = Rain::Idle;
             self.refresh_date(Instant::now());
         }
     }
@@ -183,16 +215,27 @@ impl Snow {
         self.falling != Kind::Dry
     }
 
+    pub fn raining(&self) -> bool {
+        self.falling == Kind::Rain
+    }
+
     pub fn tick(&mut self, dt: f32, width: u32, floor: u32, scale: u32, settings: &Settings) {
         let now = Instant::now();
         if now >= self.check_at {
             self.refresh_date(now);
         }
+        let date = self.effective_date;
+        let autumn = Season::for_date(date.month, date.day) == Season::Autumn;
+        let calendar_rain = self.autumn_rain.update(
+            autumn && settings.precipitation == PrecipitationMode::On,
+            now,
+        );
         let desired = if width == 0 || floor == 0 {
             Kind::Dry
         } else {
             match settings.precipitation {
                 PrecipitationMode::On if self.active() => Kind::Snow,
+                PrecipitationMode::On if calendar_rain => Kind::Rain,
                 PrecipitationMode::Auto => self.observed,
                 _ => Kind::Dry,
             }
@@ -358,7 +401,9 @@ mod tests {
     #[test]
     fn the_season_uses_local_calendar_boundaries() {
         for (month, day, season) in [
-            (11, 19, Ordinary),
+            (8, 31, Ordinary),
+            (9, 1, Autumn),
+            (11, 19, Autumn),
             (11, 20, Festive),
             (12, 31, Festive),
             (1, 1, Festive),
@@ -374,6 +419,25 @@ mod tests {
         assert_eq!(Season::winter_year(2027, 1, 13), Some(2027));
         assert_eq!(Season::winter_year(2027, 1, 14), Some(2027));
         assert_eq!(Season::winter_year(2027, 3, 1), None);
+    }
+
+    #[test]
+    fn scheduled_autumn_rain_stops_when_precipitation_is_disabled() {
+        let mut snow = Snow::new();
+        snow.set_date(Some(Date::new(1, 9, 2040)));
+        snow.autumn_rain = Rain::Waiting(Instant::now());
+        let mut settings = Settings::default();
+        snow.tick(0.05, 800, 550, 1, &settings);
+        assert!(snow.raining());
+        assert!(!snow.active());
+        settings.precipitation = PrecipitationMode::Off;
+        snow.tick(0.05, 800, 550, 1, &settings);
+        assert!(!snow.raining());
+        settings.precipitation = PrecipitationMode::On;
+        snow.set_date(Some(Date::new(20, 11, 2040)));
+        snow.tick(0.05, 800, 550, 1, &settings);
+        assert!(!snow.raining());
+        assert!(snow.active());
     }
 
     #[test]

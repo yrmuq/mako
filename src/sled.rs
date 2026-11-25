@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use std::collections::HashSet;
+use std::time::Instant;
 
 use tiny_skia::{IntRect, Point, Rect};
 
@@ -10,6 +11,7 @@ use crate::game::Instance;
 use crate::props;
 use crate::season::OverlayImage;
 use crate::sim::{Activity, Special};
+use crate::snowman::Grab;
 use crate::world::{Sled, World};
 
 const SEAT_HEIGHT: f32 = 20.0;
@@ -120,14 +122,21 @@ enum Journey {
 }
 
 struct RopeGrip {
-    point: Point,
+    grab: Grab,
     span: Span,
+}
+
+struct Glide {
+    speed: f32,
+    span: Span,
+    hit: HashSet<u64>,
 }
 
 #[derive(Default)]
 pub struct SledScene {
     journey: Journey,
     rope_grip: Option<RopeGrip>,
+    glide: Option<Glide>,
     manual_rider: Option<u64>,
     nearby: HashSet<u64>,
     at: Option<f32>,
@@ -154,7 +163,7 @@ impl SledScene {
     }
 
     pub fn rope_cursor(&self) -> Option<Point> {
-        self.rope_grip.as_ref().map(|grip| grip.point)
+        self.rope_grip.as_ref().map(|grip| grip.grab.cursor())
     }
 
     fn rope_points(&self) -> Option<(Point, Point)> {
@@ -184,6 +193,7 @@ impl SledScene {
         cursor: Point,
         width: u32,
         monitors: &[(f32, f32)],
+        now: Instant,
     ) -> bool {
         let Some(x) = world.winter().sled.map(|sled| sled.position * width as f32) else {
             return false;
@@ -196,14 +206,15 @@ impl SledScene {
         }
         let rider = self.pause_journey(pets);
         self.manual_rider = self.manual_rider.or(rider);
+        self.glide = None;
         self.rope_grip = Some(RopeGrip {
-            point: cursor,
+            grab: Grab::new(cursor, cursor, now),
             span: Span::for_x(x, width as f32, monitors),
         });
         true
     }
 
-    pub fn pull_rope(&mut self, world: &mut World, cursor: Point, width: u32) {
+    pub fn pull_rope(&mut self, world: &mut World, cursor: Point, width: u32, now: Instant) {
         let Some((grip, sled)) = self
             .rope_grip
             .as_mut()
@@ -211,8 +222,8 @@ impl SledScene {
         else {
             return;
         };
-        let delta = cursor.x - grip.point.x;
-        grip.point = cursor;
+        let delta = cursor.x - grip.grab.cursor().x;
+        grip.grab.move_to(cursor, now);
         if delta.abs() <= 0.01 {
             return;
         }
@@ -226,8 +237,72 @@ impl SledScene {
         world.changed();
     }
 
-    pub fn release_rope(&mut self, world: &mut World) {
-        if self.rope_grip.take().is_some() {
+    pub fn release_rope(&mut self, world: &mut World, thrown_at: Option<Instant>) {
+        let Some(grip) = self.rope_grip.take() else {
+            return;
+        };
+        if let Some(velocity) = thrown_at
+            .filter(|_| grip.grab.motion_time() >= 0.02)
+            .and_then(|now| grip.grab.throw(now))
+        {
+            if velocity.x.abs() >= 650.0 {
+                self.glide = Some(Glide {
+                    speed: velocity.x,
+                    span: grip.span,
+                    hit: HashSet::new(),
+                });
+            }
+        }
+        world.save_now();
+    }
+
+    fn skate(&mut self, pets: &mut [Instance], world: &mut World, width: f32, dt: f32) {
+        let Some((mut glide, x)) = self.glide.take().zip(self.at) else {
+            return;
+        };
+        let inset = SLED_HALF.min((glide.span.right - glide.span.left) * 0.5);
+        let left = glide.span.left + inset;
+        let right = glide.span.right - inset;
+        let velocity = glide.speed;
+        let next = x + velocity * dt;
+        let position = if next < left {
+            glide.speed *= -0.36;
+            left + (left - next) * 0.36
+        } else if next > right {
+            glide.speed *= -0.36;
+            right - (next - right) * 0.36
+        } else {
+            next
+        }
+        .clamp(left, right);
+        if left < right && velocity.abs() >= 145.0 {
+            let side = velocity.signum();
+            let (from, to) = (x.min(position) - 45.0, x.max(position) + 45.0);
+            for pet in pets {
+                if Some(pet.id) != self.manual_rider
+                    && (from..=to).contains(&pet.app.pet.x)
+                    && pet.app.collision_bounds().is_some_and(|body| {
+                        body.bottom() > self.floor - 32.0 && body.top() < self.floor
+                    })
+                    && pet.app.can_be_struck()
+                    && glide.hit.insert(pet.id)
+                {
+                    pet.app
+                        .blast(side * velocity.abs().clamp(425.0, 1040.0), -235.0);
+                }
+            }
+        }
+        self.direction = glide.speed.signum();
+        self.at = Some(position);
+        if let Some(sled) = &mut world.winter_mut().sled {
+            sled.position = position / width;
+        }
+        let speed = glide.speed.signum() * (glide.speed.abs() - 330.0 * dt).max(0.0);
+        if speed.abs() > 28.0 && left < right {
+            glide.speed = speed;
+            self.glide = Some(glide);
+            world.changed();
+        } else {
             world.save_now();
         }
     }
@@ -314,6 +389,7 @@ impl SledScene {
         let dt = frame.elapsed.clamp(0.0, 0.05);
         self.floor = frame.floor;
         self.at = world.winter().sled.map(|sled| sled.position * width);
+        self.skate(pets, world, width, dt);
         let loaded = world.winter().mounts.sled.is_some();
         self.art.rope_origin = None;
         if let Some((x, rider)) = self.at.zip(
@@ -337,7 +413,11 @@ impl SledScene {
         }
         let mut hand = None;
         self.journey = match self.journey {
-            Journey::Parked if self.rope_grip.is_some() || self.manual_rider.is_some() => {
+            Journey::Parked
+                if self.rope_grip.is_some()
+                    || self.manual_rider.is_some()
+                    || self.glide.is_some() =>
+            {
                 Journey::Parked
             }
             Journey::Parked => {
@@ -806,6 +886,37 @@ mod tests {
             winter: true,
             monitors: &[(0.0, 600.0), (600.0, 1200.0)],
         }
+    }
+
+    #[test]
+    fn a_rope_flick_hits_multiple_chibis_and_rebounds_on_its_monitor() {
+        let mut world = World::test("bear-girl");
+        world.winter_mut().sled = Some(Sled {
+            position: 0.15,
+            rides: 0,
+        });
+        let mut scene = SledScene::default();
+        let mut pets = [pet(10, 389.0), pet(20, 505.0), pet(30, 675.0)];
+        scene.tick(&mut pets, &mut world, frame(0.0));
+        let bounds = scene.rope_bounds().unwrap();
+        let start = Point::from_xy(bounds.left() + 5.0, bounds.top() + 5.0);
+        let end = Point::from_xy(start.x + 90.0, start.y);
+        let time = Instant::now();
+        assert!(scene.grab_rope(&mut pets, &world, start, 1200, frame(0.0).monitors, time));
+        let released = time + std::time::Duration::from_millis(60);
+        scene.pull_rope(&mut world, end, 1200, released);
+        scene.release_rope(&mut world, Some(released));
+        let mut reversed = false;
+        for _ in 0..12 {
+            scene.tick(&mut pets, &mut world, frame(0.03));
+            reversed |= scene.direction < 0.0;
+            assert!(scene.at.unwrap() <= 600.0 - SLED_HALF);
+        }
+        assert!(reversed);
+        assert_eq!(pets[0].app.pet.activity, Activity::Fall);
+        assert_eq!(pets[1].app.pet.activity, Activity::Fall);
+        assert_eq!(pets[2].app.pet.activity, Activity::Idle);
+        assert_eq!(world.winter().sled.unwrap().rides, 0);
     }
 
     #[test]

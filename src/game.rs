@@ -8,6 +8,7 @@ use std::time::Instant;
 use tiny_skia::{Point, Rect};
 
 use crate::app::{App, Pointer};
+use crate::combat::Combat;
 use crate::config::{InputMode, Settings};
 use crate::festive::{Festive, FrameInfo};
 use crate::interactions::{Interactions, WinterArt};
@@ -18,6 +19,7 @@ use crate::ramps::Ramps;
 use crate::season::{OverlayImage, Snow};
 use crate::sim::Room;
 use crate::sim::{Activity, Special};
+use crate::sky::{Frame as SkyFrame, Sky};
 use crate::sled::{SledFrame, SledScene};
 use crate::snowman::{Fall, Grab, Motion as SnowmanMotion};
 use crate::visitors::{Frame as VisitorFrame, Gifts, Kind, LostChibi, Visitors};
@@ -30,6 +32,14 @@ pub enum Command {
     Appearance(Settings),
     Weather(crate::weather::Kind),
     Visit(Kind),
+    Test(TestEvent),
+}
+
+#[derive(Clone, Copy)]
+pub enum TestEvent {
+    Hand,
+    Star,
+    Rift,
 }
 
 pub struct Instance {
@@ -41,6 +51,7 @@ pub struct Startup {
     pub packs: Vec<Pack>,
     pub world: World,
     pub lost_chibi: Option<Sender<LostChibi>>,
+    pub bob_arrival: Option<Sender<u64>>,
 }
 
 #[cfg(test)]
@@ -51,6 +62,7 @@ impl Startup {
             packs: vec![pack],
             world,
             lost_chibi: None,
+            bob_arrival: None,
         }
     }
 }
@@ -73,6 +85,8 @@ struct OrdinaryScene {
     visitors: Visitors,
     gifts: Gifts,
     lions: Lions,
+    sky: Sky,
+    combat: Combat,
 }
 
 pub struct Game {
@@ -86,6 +100,8 @@ pub struct Game {
     visitors: Visitors,
     gifts: Gifts,
     lions: Lions,
+    sky: Sky,
+    combat: Combat,
     sled_monitors: Vec<(f32, f32)>,
     winter_art: WinterArt,
     width: u32,
@@ -97,6 +113,7 @@ pub struct Game {
     next_id: u64,
     preview_generation: u64,
     lost_chibi: Option<Sender<LostChibi>>,
+    bob_arrival: Option<Sender<u64>>,
     held: Option<u64>,
     snowman_motion: [SnowmanMotion; MAX_SNOWMEN],
     ordinary: Option<OrdinaryScene>,
@@ -123,6 +140,8 @@ impl Game {
             visitors: Visitors::default(),
             gifts: Gifts::default(),
             lions: Lions::default(),
+            sky: Sky::default(),
+            combat: Combat::default(),
             sled_monitors: Vec::new(),
             winter_art: WinterArt::default(),
             width: 0,
@@ -134,6 +153,7 @@ impl Game {
             next_id: 0,
             preview_generation: 0,
             lost_chibi: startup.lost_chibi,
+            bob_arrival: startup.bob_arrival,
             held: None,
             snowman_motion: Default::default(),
             ordinary: None,
@@ -183,6 +203,7 @@ impl Game {
                     }
                 }
                 Ok(Command::Visit(guest)) => self.visitors.call(guest),
+                Ok(Command::Test(event)) => self.test_event(event),
                 Ok(Command::Weather(kind)) => {
                     self.snow.set_weather(kind);
                     self.tick_snow(0.0, self.width);
@@ -241,6 +262,8 @@ impl Game {
                     visitors: std::mem::take(&mut self.visitors),
                     gifts: std::mem::take(&mut self.gifts),
                     lions: std::mem::take(&mut self.lions),
+                    sky: std::mem::take(&mut self.sky),
+                    combat: std::mem::take(&mut self.combat),
                 });
             } else {
                 self.world.stop_preview();
@@ -254,6 +277,8 @@ impl Game {
                 self.visitors = scene.visitors;
                 self.gifts = scene.gifts;
                 self.lions = scene.lions;
+                self.sky = scene.sky;
+                self.combat = scene.combat;
                 for pet in &mut self.pets {
                     pet.app.set_bottom(self.bottom);
                     pet.app.set_room(self.room.clone());
@@ -296,17 +321,70 @@ impl Game {
         self.settings.input_mode
     }
 
+    fn test_event(&mut self, event: TestEvent) {
+        match event {
+            TestEvent::Star => self.sky.call_star(),
+            TestEvent::Rift => self.sky.call_rift(),
+            TestEvent::Hand => {
+                let Some(pet) = self
+                    .pets
+                    .iter_mut()
+                    .find(|pet| pet.app.pet.activity.routine())
+                else {
+                    return;
+                };
+                let actor = &mut pet.app.pet;
+                let (left, right) = self
+                    .sled_monitors
+                    .iter()
+                    .copied()
+                    .find(|&(left, right)| (left..=right).contains(&actor.x))
+                    .unwrap_or((self.room.left, self.room.right));
+                let span = right - left;
+                let target = if actor.x < left + span * 0.5 {
+                    right - span * 0.19
+                } else {
+                    left + span * 0.19
+                };
+                actor.move_by_hand(target);
+            }
+        }
+    }
+
     pub fn wants_frames(&self) -> bool {
-        self.snow.active() || self.snow.falling() || self.visitors.active()
+        self.snow.active()
+            || self.snow.falling()
+            || self.visitors.active()
+            || self
+                .sky
+                .wants_frames(!self.pets.is_empty(), self.world.star().is_some())
     }
 
     pub fn cancel_grab(&mut self, input_at: impl Fn(f32, f32) -> bool) {
+        if self
+            .sky
+            .grab_at()
+            .is_some_and(|point| !input_at(point.x, point.y))
+        {
+            self.sky.release(
+                &mut self.world,
+                SkyFrame {
+                    width: self.width,
+                    floor: (self.room.floor - self.bottom).max(0.0),
+                    scale: self.scale,
+                    elapsed: 0.0,
+                    monitors: &self.sled_monitors,
+                    raining: false,
+                },
+                None,
+            );
+        }
         if self
             .sled
             .rope_cursor()
             .is_some_and(|point| !input_at(point.x, point.y))
         {
-            self.sled.release_rope(&mut self.world);
+            self.sled.release_rope(&mut self.world, None);
         }
         if self
             .gifts
@@ -368,8 +446,9 @@ impl Game {
 
     pub fn overlay_images(&self) -> impl Iterator<Item = (i32, i32, &OverlayImage)> + Clone {
         let floor = (self.room.floor - self.bottom).max(0.0);
-        self.snow
-            .images()
+        self.sky
+            .backdrops()
+            .chain(self.snow.images())
             .chain(self.winter_art.images(
                 self.world.winter(),
                 self.width,
@@ -383,6 +462,8 @@ impl Game {
             .chain(self.festive.images(self.world.tree()))
             .chain(self.gifts.images(&self.world, self.width, floor))
             .chain(self.visitors.images())
+            .chain(self.sky.images())
+            .chain(self.combat.images())
     }
 
     pub fn prop_input_bounds(&self) -> impl Iterator<Item = Rect> + '_ {
@@ -391,6 +472,13 @@ impl Game {
             .chain((0..MAX_SNOW_WALLS).flat_map(|slot| self.wall_ink(slot)))
             .chain(self.festive.input_rects())
             .chain(self.visitors.input_rects())
+            .chain(
+                (!self.world.bob_unlocked())
+                    .then(|| self.visitors.ufo_input_rects())
+                    .into_iter()
+                    .flatten(),
+            )
+            .chain(self.sky.input_bounds())
             .chain(
                 self.world
                     .winter()
@@ -678,6 +766,13 @@ impl Game {
             dt,
             self.snow.active(),
         );
+        self.combat
+            .tick(&mut self.pets, floor, self.width, self.scale, dt);
+        for pet in &mut self.pets {
+            if pet.app.take_bob_call() {
+                self.visitors.call_from_bob(pet.id);
+            }
+        }
         let kidnapped = self.visitors.tick(
             &mut self.pets,
             &mut self.world,
@@ -689,18 +784,22 @@ impl Game {
             },
             self.snow.active(),
         );
-        if let Some(index) = kidnapped.and_then(|id| self.pets.iter().position(|pet| pet.id == id))
-        {
-            let pack = self.pets.remove(index).app.pack_id().to_owned();
-            self.world.remove(&pack);
-            if let Some(tx) = &self.lost_chibi {
-                let preview = if self.settings.preview_date.is_some() {
-                    self.preview_generation
-                } else {
-                    0
-                };
-                let _ = tx.send(LostChibi { pack, preview });
-            }
+        if let Some(id) = kidnapped {
+            self.lose_chibi(id);
+        }
+        if let Some(id) = self.sky.tick(
+            &mut self.pets,
+            &mut self.world,
+            SkyFrame {
+                width: self.width,
+                floor,
+                scale: self.scale,
+                elapsed: dt,
+                monitors: &self.sled_monitors,
+                raining: self.snow.raining(),
+            },
+        ) {
+            self.lose_chibi(id);
         }
         self.gifts.tick(
             &mut self.pets,
@@ -712,6 +811,43 @@ impl Game {
         );
         if self.snow.active() && self.width != 0 {
             self.winter_art.update(self.world.winter(), self.scale);
+        }
+    }
+
+    fn discover_bob(&mut self, drop: Point) {
+        let pack = crate::pack::bob();
+        self.world.discover_bob();
+        self.add(pack);
+        if let Some(bob) = self.pets.last_mut() {
+            let actor = &mut bob.app.pet;
+            actor.x = drop.x.clamp(bob.app.room.left, bob.app.room.right);
+            actor.y = (drop.y + self.bottom).min(bob.app.room.floor);
+            actor.release(&bob.app.room, 0.0, 34.0);
+        }
+        if let Some(tx) = &self.bob_arrival {
+            let _ = tx.send(self.preview());
+        }
+    }
+
+    fn preview(&self) -> u64 {
+        if self.settings.preview_date.is_some() {
+            self.preview_generation
+        } else {
+            0
+        }
+    }
+
+    fn lose_chibi(&mut self, id: u64) {
+        let Some(index) = self.pets.iter().position(|pet| pet.id == id) else {
+            return;
+        };
+        let pack = self.pets.remove(index).app.pack_id().to_owned();
+        self.world.remove(&pack);
+        if let Some(tx) = &self.lost_chibi {
+            let _ = tx.send(LostChibi {
+                pack,
+                preview: self.preview(),
+            });
         }
     }
 
@@ -800,11 +936,28 @@ impl Game {
         let now = Instant::now();
         let point = Point::from_xy(screen_x, screen_y);
         let floor = (self.room.floor - self.bottom).max(0.0);
+        if self.sky.grab_at().is_some() {
+            self.sky.drag(
+                &mut self.world,
+                point,
+                now,
+                kind,
+                SkyFrame {
+                    width: self.width,
+                    floor,
+                    scale: self.scale,
+                    elapsed: 0.0,
+                    monitors: &self.sled_monitors,
+                    raining: self.snow.raining(),
+                },
+            );
+            return;
+        }
         if self.sled.rope_cursor().is_some() {
             if matches!(kind, Pointer::Motion | Pointer::LeftUp) {
-                self.sled.pull_rope(&mut self.world, point, self.width);
+                self.sled.pull_rope(&mut self.world, point, self.width, now);
                 if matches!(kind, Pointer::LeftUp) {
-                    self.sled.release_rope(&mut self.world);
+                    self.sled.release_rope(&mut self.world, Some(now));
                 }
             }
             return;
@@ -920,6 +1073,17 @@ impl Game {
                 }
                 return;
             }
+            if !self.world.bob_unlocked() {
+                if let Some(drop) = self.visitors.click_ufo(&mut self.pets, point, now) {
+                    if let Some(drop) = drop {
+                        self.discover_bob(drop);
+                    }
+                    return;
+                }
+            }
+            if self.sky.press(point, now) {
+                return;
+            }
             if self.gifts.click(
                 &mut self.pets,
                 &mut self.world,
@@ -936,6 +1100,7 @@ impl Game {
                 point,
                 self.width,
                 &self.sled_monitors,
+                now,
             ) {
                 return;
             }
@@ -1003,6 +1168,106 @@ pub(crate) fn swept_contact(a: Rect, next_a: Rect, b: Rect, next_b: Rect) -> Opt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_hand_relocates_one_chibi_and_the_rift_removes_only_that_active_scene_copy() {
+        let (_tx, rx) = std::sync::mpsc::channel();
+        let (report, lost) = std::sync::mpsc::channel();
+        let mut startup = Startup::test(Pack::builtin());
+        startup.lost_chibi = Some(report);
+        let mut game = Game::new(
+            crate::startup_room(1000.0, 650.0),
+            Settings::default(),
+            startup,
+            rx,
+        );
+        game.appearance(Settings {
+            preview_date: Some(crate::season::Date::new(13, 6, 2042)),
+            ..Settings::default()
+        });
+        game.tick_snow(0.0, 1000);
+        let id = game.pets[0].id;
+        game.pets[0].app.pet.x = 225.0;
+        game.set_sled_monitors(vec![(0.0, 500.0), (500.0, 1000.0)]);
+        game.test_event(TestEvent::Hand);
+        for _ in 0..45 {
+            game.tick(0.05);
+        }
+        assert_eq!(game.pets[0].id, id);
+        assert!(game.pets[0].app.pet.x > 350.0 && game.pets[0].app.pet.x < 500.0);
+        assert!(lost.try_recv().is_err());
+        game.pets[0].app.pet.start(Activity::Idle);
+        game.test_event(TestEvent::Rift);
+        let mut pulled_up = false;
+        for _ in 0..115 {
+            for pet in &mut game.pets {
+                if pet.app.pet.activity.routine() {
+                    pet.app.pet.start(Activity::Idle);
+                }
+                if pet.app.pet.activity == Activity::Special(Special::Captive) {
+                    pulled_up |= pet.app.pet.y < pet.app.room.floor - 65.0;
+                }
+            }
+            game.tick(0.05);
+        }
+        assert!(pulled_up);
+        assert!(game.pets.is_empty());
+        assert!(game.world.chibis().is_empty());
+        assert_eq!(lost.try_recv().unwrap().preview, 1);
+        assert!(lost.try_recv().is_err());
+        game.appearance(Settings::default());
+        assert_eq!(game.world.chibis().len(), 1);
+        assert_eq!(game.pets.len(), 1);
+    }
+
+    #[test]
+    fn three_craft_clicks_drop_and_unlock_bob_once() {
+        let (_tx, rx) = std::sync::mpsc::channel();
+        let (report, arrival) = std::sync::mpsc::channel();
+        let mut startup = Startup::test(Pack::builtin());
+        startup.bob_arrival = Some(report);
+        let mut game = Game::new(
+            crate::startup_room(1000.0, 650.0),
+            Settings::default(),
+            startup,
+            rx,
+        );
+        game.tick_snow(0.0, 1000);
+        game.pets[0].app.pet.x = 650.0;
+        game.visitors.call(Kind::Ufo);
+        for _ in 0..12 {
+            game.tick(0.05);
+        }
+        let ink = game
+            .visitors
+            .ufo_input_rects()
+            .find(|rect| rect.width() >= 10.0 && rect.top() > 4.0)
+            .unwrap();
+        let (x, y) = (ink.left() + 4.0, ink.top() + 0.5);
+        assert!(!game.world.bob_unlocked());
+        for _ in 0..2 {
+            game.pointer(x, y, Pointer::LeftDown);
+            assert!(!game.world.bob_unlocked());
+        }
+        game.pointer(x, y, Pointer::LeftDown);
+        let bob = game.pets.iter().find(|pet| pet.app.is_bob()).unwrap();
+        assert_eq!(bob.app.pet.activity, Activity::Fall);
+        assert!(bob.app.pet.y < 180.0);
+        assert_eq!(
+            game.world
+                .chibis()
+                .iter()
+                .filter(|id| *id == crate::pack::BOB_ID)
+                .count(),
+            1
+        );
+        assert_eq!(arrival.try_recv().unwrap(), 0);
+        for _ in 0..3 {
+            game.pointer(x, y, Pointer::LeftDown);
+        }
+        assert_eq!(game.pets.iter().filter(|pet| pet.app.is_bob()).count(), 1);
+        assert!(arrival.try_recv().is_err());
+    }
 
     #[test]
     fn manual_visitors_remove_one_instance_from_the_test_scene_and_report_its_pack() {
