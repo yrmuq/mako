@@ -15,7 +15,7 @@ use slint::{
 };
 
 use crate::about::LogoTaps;
-use crate::config::{InputMode, LanguagePref, Settings, ThemePref};
+use crate::config::{InputMode, LanguagePref, PrecipitationMode, Settings, ThemePref};
 use crate::game::{Command, Startup};
 use crate::i18n::{Catalog, ID_NAME, ID_QUIT};
 use crate::icons;
@@ -23,6 +23,7 @@ use crate::pack::{self, Pack};
 use crate::season::Date;
 use crate::updates::{self, Status};
 use crate::visitors::{Kind as VisitorKind, LostChibi};
+use crate::weather::{self, Weather};
 use crate::{Fault, Session};
 
 slint::include_modules!();
@@ -76,9 +77,10 @@ enum Action {
     Language(i32),
     Theme(i32),
     InputMode(i32),
-    Precipitation(bool),
+    Precipitation(i32),
+    SearchCity(String),
+    ChooseCity(i32),
     Snow(i32, i32),
-    Tiles(bool),
     Scale(f32),
     Proportions(i32, i32),
     Preview(bool),
@@ -213,6 +215,8 @@ struct Desktop {
     commands: Sender<Command>,
     session: Session,
     config: Settings,
+    weather: Weather,
+    dark: bool,
     catalog: Catalog,
     entries: Vec<Entry>,
     counts: HashMap<String, i32>,
@@ -416,6 +420,7 @@ impl Desktop {
                 self.refresh_style();
                 self.refresh_rows();
                 self.refresh_status();
+                self.refresh_weather();
             }
             Action::Theme(index) => {
                 self.config.theme = match index {
@@ -424,7 +429,7 @@ impl Desktop {
                     _ => ThemePref::System,
                 };
                 self.schedule_save();
-                self.refresh_style();
+                self.sync_theme();
             }
             Action::InputMode(index) => {
                 self.config.input_mode = match index {
@@ -434,24 +439,37 @@ impl Desktop {
                 };
                 self.apply_settings();
             }
-            Action::Precipitation(enabled) => {
-                self.config.precipitation = enabled;
+            Action::Precipitation(index) => {
+                self.config.precipitation = match index {
+                    0 => PrecipitationMode::Off,
+                    2 => PrecipitationMode::Auto,
+                    _ => PrecipitationMode::On,
+                };
+                self.weather
+                    .set_enabled(self.config.precipitation == PrecipitationMode::Auto);
                 self.apply_settings();
+                let _ = self.commands.send(Command::Weather(self.weather.kind()));
+                self.refresh_weather();
+            }
+            Action::SearchCity(query) => {
+                self.weather.edit(query);
+                self.refresh_weather();
+            }
+            Action::ChooseCity(index) => {
+                if let Some(place) = usize::try_from(index)
+                    .ok()
+                    .and_then(|index| self.weather.select(index))
+                {
+                    self.config.weather_location = Some(place);
+                    self.schedule_save();
+                    let _ = self.commands.send(Command::Weather(self.weather.kind()));
+                    self.refresh_weather();
+                }
             }
             Action::Snow(size, speed) => {
                 self.config.snow_size = size.clamp(25, 200) as u32;
                 self.config.snow_speed = speed.clamp(25, 200) as u32;
                 self.apply_settings();
-            }
-            Action::Tiles(tiles) => {
-                self.config.tiles = tiles;
-                if let Some(window) = &self.window {
-                    window.set_tiles(tiles);
-                }
-                if let Some(popup) = &self.popup {
-                    popup.set_tiles(tiles);
-                }
-                self.schedule_save();
             }
             Action::Scale(pixels) => {
                 self.config.set_size_px(pixels);
@@ -527,6 +545,13 @@ impl Desktop {
     }
 
     fn tick(&mut self) {
+        let previous = self.weather.kind();
+        if self.weather.tick(|| self.config.code()) {
+            if previous != self.weather.kind() {
+                let _ = self.commands.send(Command::Weather(self.weather.kind()));
+            }
+            self.refresh_weather();
+        }
         if self.save_at.is_some_and(|when| Instant::now() >= when) {
             self.save();
         }
@@ -559,10 +584,23 @@ impl Desktop {
                 self.refresh_date_controls();
             }
             self.next_icon_check = Instant::now() + Duration::from_secs(1);
+            self.sync_theme();
             let theme = icons::Theme::load();
             if theme != self.tray_icons.theme {
                 self.tray_icons = TrayIcons::load(theme);
             }
+        }
+    }
+
+    fn sync_theme(&mut self) {
+        let dark = self.config.dark();
+        if self.dark != dark {
+            self.dark = dark;
+            if let Some(tray) = &self.tray {
+                let icon = tray_icon(dark);
+                tray.update(|tray| tray.icon = icon);
+            }
+            self.refresh_style();
         }
     }
 
@@ -620,7 +658,6 @@ impl Desktop {
         let popup = Popup::new()?;
         popup.set_pinned(self.pinned);
         popup.set_reveal(0.0);
-        popup.set_tiles(self.config.tiles);
         self.tray_icons.apply(&popup);
         popup.set_rows(model(self.favorite_rows()));
         style_popup(&popup, self.translations(), self.config.dark());
@@ -713,11 +750,12 @@ impl Desktop {
             connect!(on_input_mode_selected, Action::InputMode(index), index);
             connect!(
                 on_precipitation_selected,
-                Action::Precipitation(enabled),
-                enabled
+                Action::Precipitation(index),
+                index
             );
+            connect!(on_city_edited, Action::SearchCity(query.to_string()), query);
+            connect!(on_city_selected, Action::ChooseCity(index), index);
             connect!(on_snow_selected, Action::Snow(size, speed), size, speed);
-            connect!(on_tiles_selected, Action::Tiles(value), value);
             connect!(on_size_selected, Action::Scale(value), value);
             connect!(
                 on_proportions_selected,
@@ -785,10 +823,9 @@ impl Desktop {
             InputMode::Background => 1,
             InputMode::Auto => 2,
         });
-        window.set_precipitation(self.config.precipitation);
+        window.set_precipitation_mode(self.config.precipitation.index());
         window.set_snow_size(self.config.snow_size as f32);
         window.set_snow_speed(self.config.snow_speed as f32);
-        window.set_tiles(self.config.tiles);
         window.set_width_value(self.config.width as i32);
         window.set_height_value(self.config.height as i32);
         self.refresh_size_controls();
@@ -796,6 +833,7 @@ impl Desktop {
         self.refresh_style();
         self.refresh_rows();
         self.refresh_status();
+        self.refresh_weather();
         window.show()?;
         window
             .window()
@@ -830,7 +868,7 @@ impl Desktop {
             name: match id.as_str() {
                 pack::BUILTIN_ID => self.catalog.text(ID_NAME).into(),
                 pack::LION_ID => self.catalog.text(64).into(),
-                pack::KAZUKI_ID => self.catalog.text(68).into(),
+                pack::TURTLE_ID => self.catalog.text(68).into(),
                 _ => entry.pack.name.as_str().into(),
             },
             face: entry.face.clone(),
@@ -869,13 +907,37 @@ impl Desktop {
         }
     }
 
+    fn refresh_weather(&self) {
+        let Some(window) = &self.window else { return };
+        window.set_city_query(self.weather.query().into());
+        window.set_city_suggestions(model(
+            self.weather
+                .matches()
+                .iter()
+                .map(|place| place.label().into())
+                .collect(),
+        ));
+        let status = self.weather.status();
+        let text = match status {
+            weather::Status::Idle => "",
+            weather::Status::Searching => self.catalog.text(74),
+            weather::Status::NoMatches => self.catalog.text(75),
+            weather::Status::SearchFailed => self.catalog.text(76),
+            weather::Status::Loading => self.catalog.text(77),
+            weather::Status::Ready => self.catalog.text(78),
+            weather::Status::WeatherFailed => self.catalog.text(79),
+        };
+        window.set_weather_status(text.into());
+        window.set_weather_ready(status == weather::Status::Ready);
+    }
+
     fn translations(&self) -> ModelRc<SharedString> {
-        model((0..=68).map(|id| self.catalog.text(id).into()).collect())
+        model((0..=79).map(|id| self.catalog.text(id).into()).collect())
     }
 
     fn refresh_style(&self) {
         let strings = self.translations();
-        let dark = self.config.dark();
+        let dark = self.dark;
         if let Some(popup) = &self.popup {
             style_popup(popup, strings.clone(), dark);
         }
@@ -957,26 +1019,60 @@ fn window_attributes(
     }
 }
 
-fn tray_icon() -> Vec<ksni::Icon> {
-    let Ok(icon) = tiny_skia::Pixmap::decode_png(ICON) else {
-        return Vec::new();
+fn tray_icon(dark: bool) -> Vec<ksni::Icon> {
+    let color = if dark {
+        [234, 238, 245, 255]
+    } else {
+        [38, 41, 51, 255]
     };
-    let (width, height) = (icon.width() as i32, icon.height() as i32);
-    let mut data = icon.take();
-    for pixel in data.as_chunks_mut::<4>().0 {
-        let alpha = u16::from(pixel[3]);
-        if alpha > 0 && alpha < 255 {
-            for channel in &mut pixel[..3] {
-                *channel = ((u16::from(*channel) * 255 + alpha / 2) / alpha).min(255) as u8;
+    [22, 32]
+        .map(|size| {
+            let mut icon = tiny_skia::Pixmap::new(32, 32).unwrap();
+            crate::props::oval(&mut icon, (5.0, 13.5, 22.0, 12.0), color);
+            crate::props::oval(&mut icon, (2.0, 11.0, 28.0, 11.0), color);
+            crate::props::oval(&mut icon, (9.0, 5.0, 14.0, 13.0), color);
+            let mut path = tiny_skia::PathBuilder::new();
+            path.move_to(6.0, 15.5);
+            path.quad_to(16.0, 19.0, 26.0, 15.5);
+            for x in [9.0, 16.0, 23.0] {
+                path.move_to(x - 0.15, 20.8);
+                path.line_to(x + 0.15, 20.8);
             }
-        }
-        pixel.rotate_right(1);
-    }
-    vec![ksni::Icon {
-        width,
-        height,
-        data,
-    }]
+            icon.stroke_path(
+                &path.finish().unwrap(),
+                &tiny_skia::Paint {
+                    blend_mode: tiny_skia::BlendMode::Clear,
+                    ..tiny_skia::Paint::default()
+                },
+                &tiny_skia::Stroke {
+                    width: 1.8,
+                    line_cap: tiny_skia::LineCap::Round,
+                    ..tiny_skia::Stroke::default()
+                },
+                tiny_skia::Transform::identity(),
+                None,
+            );
+            let mut scaled = tiny_skia::Pixmap::new(size, size).unwrap();
+            scaled.draw_pixmap(
+                0,
+                0,
+                icon.as_ref(),
+                &tiny_skia::PixmapPaint::default(),
+                tiny_skia::Transform::from_scale(size as f32 / 32.0, size as f32 / 32.0),
+                None,
+            );
+            let mut data = scaled.take();
+            for pixel in data.as_chunks_mut::<4>().0 {
+                let alpha = pixel[3];
+                *pixel = [alpha, color[0], color[1], color[2]];
+            }
+            ksni::Icon {
+                width: size as i32,
+                height: size as i32,
+                data,
+            }
+        })
+        .into()
 }
 
 pub(crate) fn run(session: Session, open_settings: bool) -> Result<(), Fault> {
@@ -1031,10 +1127,11 @@ pub(crate) fn run(session: Session, open_settings: bool) -> Result<(), Fault> {
         .collect();
     let (tx, rx) = mpsc::channel();
     let (commands, game_rx) = mpsc::channel();
+    let dark = config.dark();
     let tray = Tray {
         tx: tx.clone(),
         labels: [catalog.text(16).into(), catalog.text(ID_QUIT).into()],
-        icon: tray_icon(),
+        icon: tray_icon(dark),
     };
     let tray = match tray.assume_sni_available(true).spawn() {
         Ok(handle) => Some(handle),
@@ -1065,11 +1162,17 @@ pub(crate) fn run(session: Session, open_settings: bool) -> Result<(), Fault> {
         };
         let _ = game_tx.send(Action::HostFinished(result));
     });
+    let weather = Weather::new(
+        config.weather_location.clone(),
+        config.precipitation == PrecipitationMode::Auto,
+    );
     let state = Rc::new(RefCell::new(Desktop {
         action_tx: tx,
         commands,
         session,
         config,
+        weather,
+        dark,
         catalog,
         entries,
         counts,
@@ -1141,6 +1244,33 @@ pub(crate) fn run(session: Session, open_settings: bool) -> Result<(), Fault> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_tray_icon_uses_the_same_monochrome_silhouette_in_both_themes() {
+        let light = tray_icon(false);
+        let dark = tray_icon(true);
+        for (light, dark) in light.iter().zip(&dark) {
+            assert_eq!(light.width, dark.width);
+            assert!(light
+                .data
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .any(|pixel| pixel[0] == 255));
+            for (a, b) in light
+                .data
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(dark.data.as_chunks::<4>().0)
+            {
+                assert_eq!(a[0], b[0]);
+                if a[0] > 0 {
+                    assert!(a[1] < b[1]);
+                }
+            }
+        }
+    }
 
     #[test]
     fn reversing_the_popup_transition_keeps_its_current_reveal() {

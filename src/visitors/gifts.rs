@@ -21,6 +21,7 @@ use super::{gift_position, image_at};
 enum Motion {
     #[default]
     Ground,
+    Mounted(f32),
     Held {
         grab: Grab,
         lift: f32,
@@ -35,6 +36,7 @@ impl Motion {
     fn lift(&self) -> f32 {
         match self {
             Self::Ground => 0.0,
+            Self::Mounted(lift) => *lift,
             Self::Held { lift, .. } | Self::Air { lift, .. } => *lift,
         }
     }
@@ -73,6 +75,7 @@ pub struct Gifts {
     last_bag_click: Option<Instant>,
     bag_press: Option<Point>,
     bag_motion: Motion,
+    dropped_bag_at: Option<Point>,
     motion: Vec<Motion>,
     opening: Option<Opening>,
     eating: Vec<(u64, f32)>,
@@ -106,8 +109,43 @@ impl Gifts {
 
     pub fn bag_dropped(&mut self) {
         self.bag_motion = Motion::Ground;
+        self.dropped_bag_at = None;
         self.bag_press = None;
         self.last_bag_click = None;
+    }
+
+    pub fn take_bag_drop(&mut self) -> Option<Point> {
+        self.dropped_bag_at.take()
+    }
+
+    pub fn sync_mounted_bag(
+        &mut self,
+        world: &mut World,
+        seat: Option<Point>,
+        width: u32,
+        floor: f32,
+    ) {
+        if !world.winter().santa_bag_on_sled || matches!(self.bag_motion, Motion::Held { .. }) {
+            return;
+        }
+        if let Some(seat) = seat {
+            let position = gift_position(seat.x, width.max(1) as f32);
+            self.bag_motion = Motion::Mounted((floor - seat.y).max(0.0));
+            if world.winter().santa_bag != Some(position) {
+                world.winter_mut().santa_bag = Some(position);
+                world.changed();
+            }
+        } else {
+            self.bag_motion = airborne(self.bag_motion.lift(), None);
+            world.winter_mut().santa_bag_on_sled = false;
+            world.save_now();
+        }
+    }
+
+    pub fn mount_bag(&mut self, world: &mut World, seat: Point, width: u32, floor: f32) {
+        world.winter_mut().santa_bag_on_sled = true;
+        self.sync_mounted_bag(world, Some(seat), width, floor);
+        world.save_now();
     }
 
     fn held_slot(&self) -> Option<(usize, Point)> {
@@ -195,6 +233,7 @@ impl Gifts {
                 self.last_bag_click = None;
             }
             if self.bag_press.is_none() {
+                world.winter_mut().santa_bag_on_sled = false;
                 let at = grab.move_to(point, now);
                 *lift = (floor - at.y).clamp(0.0, (floor - 47.0).max(0.0));
                 world.winter_mut().santa_bag = Some(gift_position(at.x, width));
@@ -203,6 +242,8 @@ impl Gifts {
             if matches!(kind, Pointer::LeftUp) {
                 if self.bag_press.take().is_some() {
                     self.click_bag(world, now, width);
+                } else if let Some(x) = world.winter().santa_bag {
+                    self.dropped_bag_at = Some(Point::from_xy(x * width, floor - *lift));
                 }
                 self.release(world, None);
             }
@@ -256,7 +297,11 @@ impl Gifts {
             if self.bag_press.take().is_some() {
                 self.last_bag_click = None;
             }
-            self.bag_motion = airborne(lift, None);
+            self.bag_motion = if world.winter().santa_bag_on_sled {
+                Motion::Mounted(lift)
+            } else {
+                airborne(lift, None)
+            };
             world.save_now();
         } else if let Some((slot, _)) = self.held_slot() {
             let lift = self.motion[slot].lift();

@@ -4,10 +4,11 @@
 - `src/pack.rs` — built-in packs, ZIP import and removal, and the archive format (`heart`, `body`, `anima`, `creature`, `pocket`). Bear girl supplies the fallback skeleton and animations.
 - `src/draw.rs` — draws the skeleton, builds face thumbnails and picks body parts using their rendered transforms.
 - `src/props.rs` — ceiling exit artwork, the talking mouth and snow object artwork.
-- `src/season.rs` — local and preview dates, seasons and snowfall.
+- `src/season.rs` — local and preview dates, seasons, snow and rain drawing.
+- `src/weather.rs` — Open-Meteo city search and hourly precipitation updates.
 - `src/festive.rs` — fir and gift dates, planting, watering, decoration, opening gifts and spring disposal.
 - `src/interactions.rs` — conversations, snowball combat, snowman and wall building, and ground snow rendering.
-- `src/sled.rs` — sled fetching, passenger and helper activities, the two-edge route, and sled rendering.
+- `src/sled.rs` — sled fetching, passenger and helper activities, the two-edge route, manual rope pulls and sled rendering.
 - `src/ramps.rs` — snow wall window, slope geometry, ladder and sliding activities.
 - `src/visitors.rs`, `src/visitor_art.rs` and `src/visitors/` — Santa and UFO visits, visitor artwork, and presents and rewards from Santa’s bag.
 - `src/world.rs` — ordinary scene save, temporary test scene, chibi rosters and snow objects.

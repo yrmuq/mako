@@ -25,6 +25,7 @@ mod snowman;
 mod updates;
 mod visitor_art;
 mod visitors;
+mod weather;
 mod world;
 mod x11_input;
 

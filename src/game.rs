@@ -26,6 +26,7 @@ pub enum Command {
     Remove(String),
     Uninstall(String),
     Appearance(Settings),
+    Weather(crate::weather::Kind),
     Visit(Kind),
 }
 
@@ -177,6 +178,10 @@ impl Game {
                     }
                 }
                 Ok(Command::Visit(guest)) => self.visitors.call(guest),
+                Ok(Command::Weather(kind)) => {
+                    self.snow.set_weather(kind);
+                    self.tick_snow(0.0, self.width);
+                }
                 Ok(Command::Appearance(settings)) => {
                     self.appearance(settings);
                 }
@@ -285,10 +290,17 @@ impl Game {
     }
 
     pub fn wants_frames(&self) -> bool {
-        self.snow.active() || self.visitors.active()
+        self.snow.active() || self.snow.falling() || self.visitors.active()
     }
 
     pub fn cancel_grab(&mut self, input_at: impl Fn(f32, f32) -> bool) {
+        if self
+            .sled
+            .rope_cursor()
+            .is_some_and(|point| !input_at(point.x, point.y))
+        {
+            self.sled.release_rope(&mut self.world);
+        }
         if self
             .gifts
             .grabbed_at()
@@ -372,6 +384,12 @@ impl Game {
             .chain((0..MAX_SNOW_WALLS).flat_map(|slot| self.wall_ink(slot)))
             .chain(self.festive.input_rects())
             .chain(self.visitors.input_rects())
+            .chain(
+                self.world
+                    .winter()
+                    .sled
+                    .and_then(|_| self.sled.rope_bounds()),
+            )
             .chain(self.gifts.input_rects(
                 &self.world,
                 self.width,
@@ -555,6 +573,9 @@ impl Game {
                 let _ = tx.send(LostChibi { pack, preview });
             }
         }
+        let mount = self.world.winter().sled.and_then(|_| self.sled.bag_mount());
+        self.gifts
+            .sync_mounted_bag(&mut self.world, mount, self.width, floor);
         self.gifts.tick(
             &mut self.pets,
             &mut self.world,
@@ -653,9 +674,29 @@ impl Game {
         let now = Instant::now();
         let point = Point::from_xy(screen_x, screen_y);
         let floor = (self.room.floor - self.bottom).max(0.0);
+        if self.sled.rope_cursor().is_some() {
+            if matches!(kind, Pointer::Motion | Pointer::LeftUp) {
+                self.sled.pull_rope(&mut self.world, point, self.width);
+                if matches!(kind, Pointer::LeftUp) {
+                    self.sled.release_rope(&mut self.world);
+                }
+            }
+            return;
+        }
         if self.gifts.grabbed_at().is_some() {
             self.gifts
                 .drag(&mut self.world, point, now, self.width, floor, kind);
+            if let Some(at) = self.gifts.take_bag_drop() {
+                if let Some(mount) = self
+                    .world
+                    .winter()
+                    .sled
+                    .and_then(|_| self.sled.bag_target(at))
+                {
+                    self.gifts
+                        .mount_bag(&mut self.world, mount, self.width, floor);
+                }
+            }
             return;
         }
         if self.festive.grabbed_at().is_some() {
@@ -724,7 +765,13 @@ impl Game {
                 Pointer::LeftUp => self.held = None,
                 Pointer::Motion => {}
             }
+            let released = matches!(kind, Pointer::LeftUp);
+            let id = pet.id;
             pet.app.pointer(x, y, kind);
+            if released && self.world.winter().sled.is_some() {
+                self.sled
+                    .board_manual(&mut self.pets, id, self.world.winter().santa_bag_on_sled);
+            }
         } else if self.held.is_none() && matches!(kind, Pointer::LeftDown) && self.width > 0 {
             if let Some(dropped) =
                 self.visitors
@@ -742,6 +789,15 @@ impl Game {
                 now,
                 self.width,
                 floor,
+            ) {
+                return;
+            }
+            if self.sled.grab_rope(
+                &mut self.pets,
+                &self.world,
+                point,
+                self.width,
+                &self.sled_monitors,
             ) {
                 return;
             }
@@ -997,7 +1053,13 @@ mod tests {
         victim.pet.y -= 15.0;
         let body = victim.collision_bounds().unwrap();
         let impact = Point::from_xy(body.left(), (body.top() + body.bottom()) * 0.5);
-        assert!(victim.hit_with_snowball(impact, 3600.0, -80.0, shooter));
+        assert!(victim.hit_with_snowball(
+            impact,
+            Point::from_xy(900.0, 0.0),
+            3600.0,
+            -80.0,
+            shooter
+        ));
         game.tick(0.05);
         assert!(game.pets[0].app.pet.activity.routine());
         assert_eq!(game.pets[2].app.pet.activity, Activity::Fall);
@@ -1099,6 +1161,49 @@ mod tests {
             .fragment_images(&game.winter_art)
             .next()
             .is_some());
+    }
+
+    #[test]
+    fn a_bag_and_chibi_move_together_when_the_user_pulls_the_sled_rope() {
+        use crate::{season::Date, sim::Special, world::Sled};
+        let (_tx, rx) = std::sync::mpsc::channel();
+        let mut game = Game::new(
+            crate::startup_room(1200.0, 800.0),
+            Settings::default(),
+            Startup::test(Pack::builtin()),
+            rx,
+        );
+        game.snow.set_date(Some(Date::new(12, 1, 2041)));
+        game.tick_snow(0.0, 1200);
+        game.world.winter_mut().sled = Some(Sled {
+            position: 0.4,
+            rides: 0,
+        });
+        game.world.winter_mut().santa_bag = Some(0.2);
+        game.pets[0].app.pet.x = 480.0;
+        game.tick(0.02);
+        game.pointer(240.0, 779.0, Pointer::LeftDown);
+        game.pointer(480.0, 757.0, Pointer::Motion);
+        game.pointer(480.0, 757.0, Pointer::LeftUp);
+        assert!(game.world.winter().santa_bag_on_sled);
+        assert!(game.sled.board_manual(&mut game.pets, 0, true));
+        let rope = game.sled.rope_bounds().unwrap();
+        let x = (rope.left() + rope.right()) * 0.5;
+        let y = (rope.top() + rope.bottom()) * 0.5;
+        game.pointer(x, y, Pointer::LeftDown);
+        game.pointer(x + 90.0, y, Pointer::Motion);
+        game.pointer(x + 90.0, y, Pointer::LeftUp);
+        game.tick(0.02);
+        let sled = game.world.winter().sled.unwrap();
+        assert!((sled.position * 1200.0 - 570.0).abs() < 0.1);
+        assert_eq!(sled.rides, 0);
+        assert_eq!(
+            game.pets[0].app.pet.activity,
+            Activity::Special(Special::RideSled)
+        );
+        assert!((game.pets[0].app.pet.x - 588.0).abs() < 0.1);
+        let bag_x = game.world.winter().santa_bag.unwrap() * 1200.0;
+        assert!((bag_x - 545.0).abs() < 0.1);
     }
 
     #[test]

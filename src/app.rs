@@ -19,6 +19,10 @@ struct Grip {
     cursor: Point,
 }
 
+const LION_TRANSITION: f32 = 0.50;
+const LION_RACE: f32 = 0.46 * 7.0;
+const TURTLE_SPIN: f32 = 2.68;
+
 pub struct App {
     pub pet: Pet,
     pub room: Room,
@@ -49,7 +53,7 @@ pub struct App {
     sad_until: f32,
     blink_at: f32,
     blink_length: f32,
-    stuck_balls: Vec<(BonePoint, f32)>,
+    stuck_balls: Vec<(draw::SnowMark, f32)>,
 }
 
 impl App {
@@ -156,6 +160,7 @@ impl App {
             let wall_pose =
                 (before == Activity::ClimbWall).then(|| (self.pet.tilt(), self.pet.phase));
             self.pet.step(&self.room, dt, slippery);
+            self.character_activity(before, dt);
             if self.pet.activity == Activity::Fall {
                 if let Some((tilt, phase)) = wall_pose {
                     let degrees = self.pack.local_degrees("climb", phase);
@@ -184,6 +189,50 @@ impl App {
             self.snowball_owner = None;
             self.body_hits_left = None;
         }
+    }
+
+    fn character_activity(&mut self, before: Activity, dt: f32) {
+        if self.pet.activity == Activity::Sit && before != Activity::Sit {
+            let special = match self.pack.id.as_str() {
+                crate::pack::LION_ID => Some(Special::LionRun),
+                crate::pack::TURTLE_ID => Some(Special::TurtleSpin),
+                crate::pack::BUILTIN_ID if fastrand::bool() => Some(Special::FoldPhone),
+                _ => None,
+            };
+            if let Some(action) = special {
+                self.pet.start(Activity::Special(action));
+            }
+        }
+        match self.pet.activity {
+            Activity::Special(Special::FoldPhone) if self.pet.time >= 4.14 => {
+                self.pet.start(Activity::Idle);
+            }
+            Activity::Special(Special::LionRun) => {
+                if self.pet.time >= LION_RACE + 2.0 * LION_TRANSITION {
+                    self.pet.start(Activity::Idle);
+                } else if (LION_TRANSITION..LION_TRANSITION + LION_RACE).contains(&self.pet.time) {
+                    let next = self.pet.x + self.pet.face * 158.0 * dt;
+                    self.pet.x = next.clamp(self.room.left, self.room.right);
+                    if self.pet.x != next {
+                        self.pet.face = -self.pet.face;
+                    }
+                }
+            }
+            Activity::Special(Special::TurtleSpin) if self.pet.time >= TURTLE_SPIN => {
+                let degrees = self.pack.local_degrees("turtle-spin", 0.74);
+                self.rag.seed(&degrees);
+                self.rag.set_turn(turtle_angle(self.pet.time));
+                self.rag.impact(-10.0);
+                self.pet.knock_back(315.0 * self.pet.face, -160.0);
+                self.body_hits_left = Some(0);
+            }
+            _ => {}
+        }
+    }
+
+    pub fn sit_on_sled(&mut self) {
+        self.rag.stop();
+        self.pet.start(Activity::Special(Special::RideSled));
     }
 
     pub fn prepare(&mut self) {
@@ -293,6 +342,8 @@ impl App {
     fn scene(&self) -> Scene {
         let (tilt, pose) = if self.pet.activity == Activity::Rise {
             self.rise_pose()
+        } else if self.pet.activity == Activity::Special(Special::TurtleSpin) {
+            (turtle_angle(self.pet.time), Vec::new())
         } else if self.rag.live {
             (self.rag.turn(), self.rag.degrees())
         } else {
@@ -347,6 +398,11 @@ impl App {
             Activity::PackSnow => Motion::PackSnow,
             Activity::ThrowSnow => Motion::ThrowSnow,
             Activity::Sculpt => Motion::Sculpt(self.sculpt_stage),
+            Activity::Special(Special::LionRun)
+                if !(LION_TRANSITION..LION_TRANSITION + LION_RACE).contains(&self.pet.time) =>
+            {
+                Motion::Special(Special::LionCrouch)
+            }
             Activity::Special(action) => Motion::Special(action),
         }
     }
@@ -456,12 +512,26 @@ impl App {
         self.body_hits_left = Some(0);
     }
 
-    pub fn hit_with_snowball(&mut self, at: Point, vx: f32, vy: f32, owner: u64) -> bool {
+    pub fn hit_with_snowball(
+        &mut self,
+        at: Point,
+        incoming: Point,
+        vx: f32,
+        vy: f32,
+        owner: u64,
+    ) -> bool {
         if !self.can_be_struck() {
             return false;
         }
         let origin = Point::from_xy(self.pet.x - self.feet_x(), self.pet.y - self.feet_y());
-        let anchor = draw::hit_anchor(&self.scene(), &self.pack, origin, self.screen.0, at);
+        let anchor = draw::hit_mark(
+            &self.scene(),
+            &self.pack,
+            origin,
+            self.screen.0,
+            at,
+            incoming,
+        );
         if self.knock_back(vx, vy, Some(owner)) {
             if let Some(anchor) = anchor {
                 self.stuck_balls.push((anchor, self.clock + 5.0));
@@ -633,6 +703,17 @@ impl App {
         match self.pet.activity {
             Activity::SlideWall => 0.15,
             Activity::Special(Special::RunCover) => self.pet.phase * 1.8,
+            Activity::Special(Special::TurtleSpin) => self.pet.phase.min(0.74),
+            Activity::Special(Special::LionRun) => {
+                let time = self.pet.time;
+                if time < LION_TRANSITION {
+                    time
+                } else if time < LION_TRANSITION + LION_RACE {
+                    time - LION_TRANSITION
+                } else {
+                    (LION_RACE + 2.0 * LION_TRANSITION - time).max(0.0)
+                }
+            }
             _ => self.pet.phase,
         }
     }
@@ -688,6 +769,10 @@ impl App {
         self.origin_x = (self.pet.x - self.feet_x()).round() as i32;
         self.origin_y = (self.pet.y - self.feet_y()).round() as i32;
     }
+}
+
+fn turtle_angle(time: f32) -> f32 {
+    -std::f32::consts::FRAC_PI_2 * smoothstep(time / 0.56) - (time - 0.56).max(0.0) * 8.2
 }
 
 fn smoothstep(progress: f32) -> f32 {
@@ -753,7 +838,7 @@ mod tests {
         );
         let bounds = app.collision_bounds().unwrap();
         let at = Point::from_xy(bounds.left(), (bounds.top() + bounds.bottom()) * 0.5);
-        assert!(app.hit_with_snowball(at, 750.0, -310.0, 1));
+        assert!(app.hit_with_snowball(at, Point::from_xy(600.0, 40.0), 750.0, -310.0, 1));
         assert_eq!(app.scene().stuck_balls.len(), 1);
         app.tick(4.99, false);
         assert_eq!(app.scene().stuck_balls.len(), 1);
@@ -785,6 +870,39 @@ mod tests {
     }
 
     #[test]
+    fn the_new_idle_activities_end_without_leaving_a_chibi_stuck() {
+        let mut app = test_app(startup_room(1000.0, 650.0));
+        let start = app.pet.x;
+        app.pet.start(Activity::Special(Special::LionRun));
+        for _ in 0..100 {
+            app.tick(0.05, false);
+        }
+        assert!((app.pet.x - start).abs() > 120.0);
+        assert_eq!(app.pet.activity, Activity::Idle);
+
+        app.pet.start(Activity::Special(Special::TurtleSpin));
+        let mut hit_floor = false;
+        let mut rose = false;
+        for _ in 0..250 {
+            app.tick(0.05, false);
+            hit_floor |= app.pet.activity == Activity::Down;
+            rose |= app.pet.activity == Activity::Rise;
+            if rose && app.pet.activity == Activity::Idle {
+                break;
+            }
+        }
+        assert!(hit_floor && rose);
+        assert!(!app.rag.live);
+        assert_eq!(app.pet.activity, Activity::Idle);
+
+        app.pet.start(Activity::Special(Special::FoldPhone));
+        for _ in 0..95 {
+            app.tick(0.05, false);
+        }
+        assert_eq!(app.pet.activity, Activity::Idle);
+    }
+
+    #[test]
     fn a_small_size_shrinks_the_frame() {
         let mut app = test_app(startup_room(800.0, 600.0));
         let (minimum, _) = app.settings.size_range_px();
@@ -792,8 +910,8 @@ mod tests {
         app.fit_room();
         app.pet.y = app.room.floor;
         app.sync_geometry();
-        assert_eq!(app.logical_w, 46);
-        assert_eq!(app.logical_h, 43);
+        assert_eq!(app.logical_w, 58);
+        assert_eq!(app.logical_h, 54);
     }
 
     #[test]

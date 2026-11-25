@@ -28,6 +28,8 @@ pub struct WinterObjects {
     pub sled: Option<Sled>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub santa_bag: Option<f32>,
+    #[serde(default)]
+    pub santa_bag_on_sled: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub santa_gifts: Vec<VisitorGift>,
 }
@@ -141,6 +143,8 @@ impl Save {
             .sled
             .filter(|sled| (0.0..=1.0).contains(&sled.position) && sled.rides < 2);
         saved.winter.santa_bag = saved.winter.santa_bag.filter(|x| (0.0..=1.0).contains(x));
+        saved.winter.santa_bag_on_sled &=
+            saved.winter.santa_bag.is_some() && saved.winter.sled.is_some();
         saved.winter.santa_gifts.retain(|gift| {
             (0.0..=1.0).contains(&gift.position) && gift.box_color < 4 && gift.ribbon_color < 4
         });

@@ -1,7 +1,7 @@
 // Copyright (C) 2026 yrmuq
 // SPDX-License-Identifier: GPL-3.0-only
 
-import { Button, CheckBox, ComboBox, Palette, ScrollView, Slider, SpinBox } from "std-widgets.slint";
+import { Button, CheckBox, ComboBox, LineEdit, Palette, ScrollView, Slider, SpinBox } from "std-widgets.slint";
 
 export global Translations {
     in-out property <[string]> strings;
@@ -213,35 +213,17 @@ export struct ChibiRow {
     builtin: bool,
 }
 
-component ChibiName inherits HorizontalLayout {
-    in property <ChibiRow> entry;
-    spacing: 8px;
-    VerticalLayout {
-        alignment: center;
-        width: 36px;
-        Image { source: root.entry.face; width: 36px; height: 36px; image-fit: contain; }
-    }
-    Text {
-        text: root.entry.name; color: Breeze.fg; vertical-alignment: center;
-        overflow: elide; horizontal-stretch: 1; min-width: 0px;
-    }
-}
-
 component InstanceControls inherits HorizontalLayout {
     in property <int> count;
-    in property <bool> compact: false;
     in property <image> add-icon;
     in property <bool> tint-add;
     in property <image> remove-icon;
     in property <bool> tint-remove;
     callback add();
     callback remove();
-    property <length> button-width: root.compact ? 24px : 32px;
+    private property <length> button-width: 24px;
     spacing: 2px;
     alignment: center;
-    if !root.compact: Text {
-        text: "\{root.count}"; color: Breeze.fg; vertical-alignment: center;
-    }
     VerticalLayout {
         alignment: center;
         width: root.button-width;
@@ -261,7 +243,7 @@ component InstanceControls inherits HorizontalLayout {
             }
         }
     }
-    if root.compact: Text {
+    Text {
         text: "\{root.count}"; color: Breeze.fg; vertical-alignment: center;
         horizontal-alignment: center; min-width: 0px; overflow: elide;
     }
@@ -286,12 +268,11 @@ export component Popup inherits Window {
     always-on-top: true;
     background: transparent;
     width: 300px;
-    in property <bool> tiles: false;
     in property <float> reveal: 1;
     private property <int> tile-columns: 3;
     private property <length> tile-height: 106px;
     private property <length> tile-grid-height: Math.max(0px, Math.ceil(root.rows.length * 1.0 / root.tile-columns) * (root.tile-height + 6px) - 6px);
-    height: 52px + Math.min(420px, Math.max(88px, root.tiles ? root.tile-grid-height : root.rows.length * 46px));
+    height: 52px + Math.min(420px, Math.max(88px, root.tile-grid-height));
     in property <image> configure-icon: @image-url("icons/configure.svg");
     in property <bool> tint-configure: true;
     in property <image> pin-icon: @image-url("icons/window-pin.svg");
@@ -337,29 +318,7 @@ export component Popup inherits Window {
                 alignment: center;
                 HorizontalLayout { alignment: center; Button { text: Translations.tr(18); clicked => { root.configure(true); } } }
             }
-            if root.rows.length > 0 && !root.tiles: ScrollView {
-                content-width: self.visible-width;
-                VerticalLayout {
-                    spacing: 4px;
-                    for row in root.rows: Rectangle {
-                        height: 42px; border-radius: Breeze.radius;
-                        border-width: 1px; border-color: Breeze.frame; background: Breeze.button;
-                        HorizontalLayout {
-                            padding-left: 6px; padding-right: 4px; spacing: 2px;
-                            ChibiName { entry: row; horizontal-stretch: 1; }
-                            InstanceControls {
-                                horizontal-stretch: 0;
-                                count: row.count;
-                                add-icon: root.add-icon; tint-add: root.tint-add;
-                                remove-icon: root.remove-icon; tint-remove: root.tint-remove;
-                                add => { root.add-instance(row.id); }
-                                remove => { root.remove-instance(row.id); }
-                            }
-                        }
-                    }
-                }
-            }
-            if root.rows.length > 0 && root.tiles: tile-scroll := ScrollView {
+            if root.rows.length > 0: tile-scroll := ScrollView {
                 content-width: self.visible-width;
                 content-height: root.tile-grid-height;
                 Rectangle {
@@ -378,15 +337,11 @@ export component Popup inherits Window {
                             padding: 5px; spacing: 4px; alignment: center;
                             HorizontalLayout {
                                 alignment: center;
-                                Image { source: row.face; width: 38px; height: 38px; image-fit: contain; }
-                            }
-                            Text {
-                                text: row.name; color: Breeze.fg; horizontal-alignment: center;
-                                overflow: elide; min-width: 0px;
+                                Image { source: row.face; width: 68px; height: 68px; image-fit: contain; }
                             }
                             InstanceControls {
                                 height: 24px;
-                                count: row.count; compact: true;
+                                count: row.count;
                                 add-icon: root.add-icon; tint-add: root.tint-add;
                                 remove-icon: root.remove-icon; tint-remove: root.tint-remove;
                                 add => { root.add-instance(row.id); }
@@ -411,10 +366,13 @@ export component SettingsWindow inherits Window {
     in-out property <int> language-index;
     in-out property <int> theme-index;
     in-out property <int> input-mode-index;
-    in-out property <bool> precipitation: true;
+    in-out property <int> precipitation-mode: 1;
+    in-out property <string> city-query;
+    in property <[string]> city-suggestions;
+    in property <string> weather-status;
+    in property <bool> weather-ready;
     in-out property <float> snow-size: 100;
     in-out property <float> snow-speed: 100;
-    in-out property <bool> tiles;
     in property <float> size-minimum;
     in property <float> size-maximum;
     in-out property <float> size-value;
@@ -444,9 +402,10 @@ export component SettingsWindow inherits Window {
     callback language-selected(int);
     callback theme-selected(int);
     callback input-mode-selected(int);
-    callback precipitation-selected(bool);
+    callback precipitation-selected(int);
+    callback city-edited(string);
+    callback city-selected(int);
     callback snow-selected(int, int);
-    callback tiles-selected(bool);
     callback size-selected(float);
     callback proportions-selected(int, int);
     callback add-favorite(string);
@@ -499,17 +458,45 @@ export component SettingsWindow inherits Window {
             }
             SettingRow {
                 label: Translations.tr(52);
-                CheckBox {
-                    checked <=> root.precipitation;
-                    toggled => { root.precipitation-selected(self.checked); }
+                ComboBox {
+                    model: [Translations.tr(69), Translations.tr(70), Translations.tr(71)];
+                    current-index <=> root.precipitation-mode;
+                    selected => { root.precipitation-selected(self.current-index); }
                 }
             }
-            SettingRow {
-                label: Translations.tr(43);
-                ComboBox {
-                    model: [Translations.tr(44), Translations.tr(45)];
-                    current-index: root.tiles ? 1 : 0;
-                    selected => { root.tiles-selected(self.current-index == 1); }
+            if root.precipitation-mode == 2: SettingRow {
+                label: Translations.tr(72);
+                VerticalLayout {
+                    spacing: 6px;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        LineEdit {
+                            text <=> root.city-query;
+                            placeholder-text: Translations.tr(73);
+                            accessible-label: Translations.tr(72);
+                            edited(value) => { root.city-edited(value); }
+                            accepted => {
+                                if root.city-suggestions.length > 0 { root.city-selected(0); }
+                            }
+                        }
+                        if root.weather-ready: VerticalLayout {
+                            alignment: center;
+                            Rectangle {
+                                width: 22px; height: 22px; border-radius: 11px;
+                                background: #25834c; accessible-role: text;
+                                accessible-label: root.weather-status;
+                                Text { text: "✓"; color: white; horizontal-alignment: center; vertical-alignment: center; }
+                            }
+                        }
+                    }
+                    for city[index] in root.city-suggestions: Button {
+                        text: city;
+                        clicked => { root.city-selected(index); }
+                    }
+                    if root.weather-status != "" && !root.weather-ready: Text {
+                        text: root.weather-status;
+                        color: Breeze.fg; wrap: word-wrap;
+                    }
                 }
             }
             SettingRow {
@@ -542,14 +529,10 @@ export component SettingsWindow inherits Window {
                         accessible-role: list-item;
                         accessible-label: row.name;
                         Image {
-                            source: row.face; y: 10px;
-                            width: 74px; height: 74px;
+                            source: row.face; y: 5px;
+                            width: Math.min(parent.width - 10px, 110px); height: 108px;
                             x: (parent.width - self.width) / 2;
                             image-fit: contain;
-                        }
-                        Text {
-                            text: row.name; color: Breeze.fg; horizontal-alignment: center;
-                            overflow: elide; y: 90px; x: 5px; width: parent.width - 10px;
                         }
                         if row.added: Rectangle {
                             width: parent.width; height: 113px;

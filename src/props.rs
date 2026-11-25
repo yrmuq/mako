@@ -167,22 +167,85 @@ pub fn coal() -> &'static Sprite {
     SPRITE.get_or_init(|| crop(crate::visitor_art::coal(1)).expect("coal artwork"))
 }
 
+pub fn cross_eyes() -> &'static Sprite {
+    static SPRITE: OnceLock<Sprite> = OnceLock::new();
+    SPRITE.get_or_init(|| {
+        let mut art = Pixmap::new(38, 13).unwrap();
+        paint(&mut art, [56, 39, 54, 255], Some(2.9), |p| {
+            for x in [7.0, 31.0] {
+                p.move_to(x - 4.8, 2.4);
+                p.line_to(x + 4.8, 10.6);
+                p.move_to(x - 4.8, 10.6);
+                p.line_to(x + 4.8, 2.4);
+            }
+        });
+        crop(art).unwrap()
+    })
+}
+
+pub fn fold_phone(frame: usize) -> &'static Sprite {
+    static FRAMES: OnceLock<[Sprite; 6]> = OnceLock::new();
+    &FRAMES.get_or_init(|| {
+        std::array::from_fn(|frame| {
+            let mut art = Pixmap::new(40, 42).unwrap();
+            let top = 20.0 - frame as f32 * 3.5;
+            paint(&mut art, [59, 49, 77, 255], None, |p| {
+                p.move_to(8.0, 21.0);
+                p.line_to(10.0, top);
+                p.quad_to(11.0, top - 1.0, 14.0, top);
+                p.line_to(32.0, top + 2.0);
+                p.quad_to(36.0, top + 2.0, 35.0, top + 6.0);
+                p.line_to(34.0, 24.0);
+                p.line_to(30.0, 38.0);
+                p.quad_to(29.0, 40.0, 25.0, 39.0);
+                p.line_to(8.0, 36.0);
+                p.quad_to(4.0, 36.0, 5.0, 32.0);
+                p.close();
+            });
+            if frame > 1 {
+                paint(&mut art, [137, 203, 224, 255], None, |p| {
+                    p.move_to(12.0, 23.0);
+                    p.line_to(14.0, top + 3.0);
+                    p.line_to(31.0, top + 5.0);
+                    p.line_to(30.0, 25.0);
+                    p.close();
+                });
+            }
+            paint(&mut art, [191, 160, 207, 255], Some(1.5), |p| {
+                p.move_to(8.0, 26.0);
+                p.line_to(29.0, 29.0);
+                p.move_to(12.0, 33.0);
+                p.line_to(23.0, 34.5);
+            });
+            crop(art).unwrap()
+        })
+    })[frame.min(5)]
+}
+
 pub fn snowball_splat() -> &'static Sprite {
     static SPRITE: OnceLock<Sprite> = OnceLock::new();
     SPRITE.get_or_init(|| {
-        let mut art = Pixmap::new(31, 17).expect("snowball splat dimensions");
-        oval(&mut art, (2.0, 3.0, 27.0, 12.0), [158, 199, 224, 255]);
-        oval(&mut art, (3.0, 2.0, 24.0, 10.0), [224, 241, 250, 255]);
-        for (x, y, w, h) in [
-            (0.0, 5.0, 10.0, 5.0),
-            (21.0, 5.0, 10.0, 6.0),
-            (11.0, 8.0, 7.0, 9.0),
-            (15.0, 0.0, 5.0, 6.0),
-        ] {
-            oval(&mut art, (x, y, w, h), [232, 246, 254, 255]);
-        }
-        oval(&mut art, (7.0, 4.0, 14.0, 4.0), [255, 255, 255, 255]);
-        crop(art).expect("snowball splat artwork")
+        let mut art = Pixmap::new(21, 27).unwrap();
+        paint(&mut art, [169, 210, 233, 255], None, |p| {
+            p.move_to(20.0, 0.0);
+            p.line_to(20.0, 26.0);
+            p.quad_to(14.0, 24.5, 13.0, 23.0);
+            p.cubic_to(2.0, 24.0, 0.0, 17.0, 0.6, 11.0);
+            p.cubic_to(1.0, 5.0, 6.0, 2.5, 12.0, 3.0);
+            p.quad_to(15.0, 0.5, 20.0, 0.0);
+            p.close();
+        });
+        paint(&mut art, [229, 244, 254, 255], None, |p| {
+            p.move_to(18.0, 2.0);
+            p.line_to(18.0, 21.0);
+            p.quad_to(15.0, 21.0, 12.0, 20.0);
+            p.cubic_to(1.5, 21.0, 0.5, 9.0, 6.0, 6.0);
+            p.quad_to(10.0, 3.2, 14.0, 4.0);
+            p.quad_to(16.0, 2.2, 18.0, 2.0);
+            p.close();
+        });
+        oval(&mut art, (4.0, 7.0, 7.0, 5.0), [252, 255, 255, 255]);
+        crop(art).expect("snowball impact artwork")
     })
 }
 

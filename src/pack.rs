@@ -19,10 +19,11 @@ use crate::Fault;
 pub const BUILTIN_ID: &str = "bear-girl";
 // The importer has always replaced dots, so existing imported IDs stay distinct.
 pub const LION_ID: &str = "builtin.lion-girl";
-pub const KAZUKI_ID: &str = "builtin.kazuki-yasaka";
+// Keep the saved ID from the first version of this pack.
+pub const TURTLE_ID: &str = "builtin.kazuki-yasaka";
 
 pub fn is_builtin(id: &str) -> bool {
-    matches!(id, BUILTIN_ID | LION_ID | KAZUKI_ID)
+    matches!(id, BUILTIN_ID | LION_ID | TURTLE_ID)
 }
 const MAX_FILE: u64 = 4_000_000;
 const MAX_TOTAL: u64 = 24_000_000;
@@ -454,7 +455,7 @@ fn sample_step<T>(samples: &[Sample<T>], time: f32) -> Option<&T> {
 }
 
 pub fn installed() -> Vec<Pack> {
-    let mut found = vec![Pack::builtin(), lion_pack().clone(), kazuki_pack().clone()];
+    let mut found = vec![Pack::builtin(), lion_pack().clone(), turtle_pack().clone()];
     let Ok(entries) = fs::read_dir(chibi_dir()) else {
         return found;
     };
@@ -523,9 +524,9 @@ fn lion_pack() -> &'static Pack {
     PACK.get_or_init(|| load_builtin(LION_ID).unwrap_or_else(|error| panic!("{error}")))
 }
 
-fn kazuki_pack() -> &'static Pack {
+fn turtle_pack() -> &'static Pack {
     static PACK: OnceLock<Pack> = OnceLock::new();
-    PACK.get_or_init(|| load_builtin(KAZUKI_ID).unwrap_or_else(|error| panic!("{error}")))
+    PACK.get_or_init(|| load_builtin(TURTLE_ID).unwrap_or_else(|error| panic!("{error}")))
 }
 
 struct BuiltinArt {
@@ -550,7 +551,7 @@ fn load_builtin(id: &str) -> Result<Pack, Fault> {
     }
     let art = match id {
         LION_ID => artwork!("lion-girl", LION_IMAGES),
-        KAZUKI_ID => artwork!("kazuki-yasaka", KAZUKI_IMAGES),
+        TURTLE_ID => artwork!("kazuki-yasaka", TURTLE_IMAGES),
         _ => artwork!("bear-girl", BUILTIN_IMAGES),
     };
     let mut images = HashMap::new();
@@ -678,7 +679,7 @@ const LION_IMAGES: &[(&str, &[u8])] = costume_images!("lion-girl";
     "tail",
 );
 
-const KAZUKI_IMAGES: &[(&str, &[u8])] = costume_images!("kazuki-yasaka";
+const TURTLE_IMAGES: &[(&str, &[u8])] = costume_images!("kazuki-yasaka";
     "head", "eyes-open", "eyes-closed", "eyes-shock", "mouth", "mouth-shock",
     "mouth-talk", "torso", "shell",
 );
@@ -1473,12 +1474,12 @@ mod tests {
 }
 #[test]
 fn builtins_are_protected_and_costumes_render_the_core_poses() {
-    for id in [BUILTIN_ID, LION_ID, KAZUKI_ID, "../outside"] {
+    for id in [BUILTIN_ID, LION_ID, TURTLE_ID, "../outside"] {
         assert_eq!(uninstall(id).unwrap_err().code, "MAKO-IMPORT-0004");
     }
     for (pack, id, detail) in [
         (lion_pack(), LION_ID, "tail"),
-        (kazuki_pack(), KAZUKI_ID, "shell"),
+        (turtle_pack(), TURTLE_ID, "shell"),
     ] {
         assert_eq!(pack.id, id);
         assert!(pack.sprite(detail).is_some());

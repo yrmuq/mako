@@ -3,7 +3,7 @@
 
 use std::collections::HashSet;
 
-use tiny_skia::{IntRect, Point};
+use tiny_skia::{IntRect, Point, Rect};
 
 use crate::app::App;
 use crate::game::Instance;
@@ -16,6 +16,7 @@ const SEAT_HEIGHT: f32 = 20.0;
 const WAIT_SECONDS: f32 = 10.0;
 const FETCH_SPEED: f32 = 180.0;
 const PULL_SPEED: f32 = 90.0;
+const SLED_HALF: f32 = 53.0;
 
 #[derive(Clone, Copy)]
 struct Span {
@@ -118,9 +119,16 @@ enum Journey {
     },
 }
 
+struct RopeGrip {
+    point: Point,
+    span: Span,
+}
+
 #[derive(Default)]
 pub struct SledScene {
     journey: Journey,
+    rope_grip: Option<RopeGrip>,
+    manual_rider: Option<u64>,
     nearby: HashSet<u64>,
     at: Option<f32>,
     direction: f32,
@@ -145,6 +153,159 @@ impl SledScene {
         *self = Self::default();
     }
 
+    pub fn rope_cursor(&self) -> Option<Point> {
+        self.rope_grip.as_ref().map(|grip| grip.point)
+    }
+
+    fn rope_points(&self) -> Option<(Point, Point)> {
+        let x = self.at?;
+        let side = if self.direction < 0.0 { -1.0 } else { 1.0 };
+        let from = Point::from_xy(x + side * 44.0, self.floor - 16.0);
+        let to = self
+            .rope_cursor()
+            .unwrap_or_else(|| Point::from_xy(x + side * 83.0, self.floor - 4.0));
+        Some((from, to))
+    }
+
+    pub fn rope_bounds(&self) -> Option<Rect> {
+        let (from, to) = self.rope_points()?;
+        Rect::from_ltrb(
+            from.x.min(to.x) - 6.0,
+            from.y.min(to.y) - 6.0,
+            from.x.max(to.x) + 6.0,
+            from.y.max(to.y) + 8.0,
+        )
+    }
+
+    pub fn grab_rope(
+        &mut self,
+        pets: &mut [Instance],
+        world: &World,
+        cursor: Point,
+        width: u32,
+        monitors: &[(f32, f32)],
+    ) -> bool {
+        let Some(x) = world.winter().sled.map(|sled| sled.position * width as f32) else {
+            return false;
+        };
+        if !self.rope_bounds().is_some_and(|rect| {
+            (rect.left()..rect.right()).contains(&cursor.x)
+                && (rect.top()..rect.bottom()).contains(&cursor.y)
+        }) {
+            return false;
+        }
+        let rider = self.pause_journey(pets);
+        self.manual_rider = self.manual_rider.or(rider);
+        self.rope_grip = Some(RopeGrip {
+            point: cursor,
+            span: Span::for_x(x, width as f32, monitors),
+        });
+        true
+    }
+
+    pub fn pull_rope(&mut self, world: &mut World, cursor: Point, width: u32) {
+        let Some((grip, sled)) = self
+            .rope_grip
+            .as_mut()
+            .zip(world.winter_mut().sled.as_mut())
+        else {
+            return;
+        };
+        let delta = cursor.x - grip.point.x;
+        grip.point = cursor;
+        if delta.abs() <= 0.01 {
+            return;
+        }
+        let width = width.max(1) as f32;
+        let inset = SLED_HALF.min((grip.span.right - grip.span.left) * 0.5);
+        let position =
+            (sled.position * width + delta).clamp(grip.span.left + inset, grip.span.right - inset);
+        sled.position = position / width;
+        self.at = Some(position);
+        self.direction = delta.signum();
+        world.changed();
+    }
+
+    pub fn release_rope(&mut self, world: &mut World) {
+        if self.rope_grip.take().is_some() {
+            world.save_now();
+        }
+    }
+
+    pub fn board_manual(&mut self, pets: &mut [Instance], id: u64, bag_mounted: bool) -> bool {
+        let Some(x) = self.at else { return false };
+        let occupied = self.manual_rider.or(match self.journey {
+            Journey::Wait { rider, .. } => Some(rider),
+            Journey::Ride(ride) => Some(ride.rider),
+            _ => None,
+        });
+        if occupied
+            .is_some_and(|rider| rider != id && active(pets, rider, Special::RideSled).is_some())
+        {
+            return false;
+        }
+        let Some(index) = pets.iter().position(|pet| {
+            let actor = &pet.app.pet;
+            pet.id == id
+                && (actor.x - x).abs() <= 42.0
+                && (self.floor - 64.0..=self.floor + 5.0).contains(&actor.y)
+                && actor.vx.abs() < 700.0
+                && actor.vy.abs() < 700.0
+        }) else {
+            return false;
+        };
+        self.pause_journey(pets);
+        self.manual_rider = Some(id);
+        let app = &mut pets[index].app;
+        app.sit_on_sled();
+        seat(
+            app,
+            rider_x(x, self.direction, bag_mounted),
+            self.floor,
+            self.direction,
+        );
+        true
+    }
+
+    fn pause_journey(&mut self, pets: &mut [Instance]) -> Option<u64> {
+        let (rider, helper) = match std::mem::take(&mut self.journey) {
+            Journey::Wait { rider, helper, .. } => (Some(rider), helper),
+            Journey::Ride(ride) => (Some(ride.rider), Some(ride.helper)),
+            Journey::StepOff { rider, .. } => {
+                if let Some(actor) = pets
+                    .iter_mut()
+                    .find(|pet| pet.id == rider && pet.app.pet.activity == Activity::Approach)
+                {
+                    idle(&mut actor.app);
+                }
+                (None, None)
+            }
+            _ => (None, None),
+        };
+        if let Some(index) = helper.and_then(|id| {
+            active(pets, id, Special::PullSled).or_else(|| active(pets, id, Special::FetchSled))
+        }) {
+            idle(&mut pets[index].app);
+        }
+        rider.filter(|&id| active(pets, id, Special::RideSled).is_some())
+    }
+
+    pub fn bag_mount(&self) -> Option<Point> {
+        let x = self.at?;
+        let direction = if self.direction < 0.0 { -1.0 } else { 1.0 };
+        Some(Point::from_xy(
+            x - direction * 25.0,
+            self.floor - SEAT_HEIGHT,
+        ))
+    }
+
+    pub fn bag_target(&self, at: Point) -> Option<Point> {
+        let mount = self.bag_mount()?;
+        let x = self.at?;
+        ((at.x - x).abs() <= 50.0 && (mount.y - 42.0..=self.floor + 4.0).contains(&at.y))
+            .then_some(mount)
+    }
+
     pub fn tick(&mut self, pets: &mut [Instance], world: &mut World, frame: SledFrame<'_>) {
         if !frame.winter || frame.width == 0 {
             return;
@@ -153,7 +314,21 @@ impl SledScene {
         let dt = frame.elapsed.clamp(0.0, 0.05);
         self.floor = frame.floor;
         self.at = world.winter().sled.map(|sled| sled.position * width);
+        let bag_mounted = world.winter().santa_bag_on_sled;
         self.art.rope_origin = None;
+        if let Some((x, rider)) = self.at.zip(
+            self.manual_rider
+                .and_then(|id| active(pets, id, Special::RideSled)),
+        ) {
+            seat(
+                &mut pets[rider].app,
+                rider_x(x, self.direction, bag_mounted),
+                frame.floor,
+                self.direction,
+            );
+        } else {
+            self.manual_rider = None;
+        }
         if let Some((_, age)) = self.broken.as_mut() {
             *age += dt;
             if *age >= 0.45 {
@@ -162,9 +337,12 @@ impl SledScene {
         }
         let mut hand = None;
         self.journey = match self.journey {
+            Journey::Parked if self.rope_grip.is_some() || self.manual_rider.is_some() => {
+                Journey::Parked
+            }
             Journey::Parked => {
                 if let Some(x) = self.at {
-                    self.try_board(pets, x)
+                    self.try_board(pets, x, bag_mounted)
                 } else if self.broken.is_none() {
                     pets.iter_mut()
                         .filter(|pet| pet.app.pet.activity.routine())
@@ -250,7 +428,7 @@ impl SledScene {
                 rider,
                 helper,
                 seconds,
-            } => self.wait(pets, &frame, rider, helper, seconds),
+            } => self.wait(pets, &frame, rider, helper, seconds, bag_mounted),
             Journey::Ride(ride) => self.pull(pets, world, &frame, ride, &mut hand),
             Journey::StepOff { rider, goal } => {
                 if let Some(pet) = pets
@@ -271,16 +449,12 @@ impl SledScene {
         if self.at.is_some() || self.broken.is_some() {
             self.art.update(frame.scale);
         }
-        let direction = if self.direction < 0.0 { -1.0 } else { 1.0 };
-        if let Some((x, hand)) = self.at.zip(hand) {
-            self.art.rope(
-                Point::from_xy(x + direction * 44.0, frame.floor - 16.0),
-                hand,
-            );
+        if let Some((from, tip)) = self.rope_points() {
+            self.art.rope(from, hand.unwrap_or(tip));
         }
     }
 
-    fn try_board(&mut self, pets: &mut [Instance], x: f32) -> Journey {
+    fn try_board(&mut self, pets: &mut [Instance], x: f32, bag_mounted: bool) -> Journey {
         self.nearby.retain(|id| {
             pets.iter().any(|pet| {
                 pet.id == *id && (pet.app.pet.x - x).abs() <= boarding_distance(&pet.app)
@@ -295,7 +469,12 @@ impl SledScene {
                 && fastrand::u8(0..100) < 5
             {
                 pet.app.pet.start(Activity::Special(Special::RideSled));
-                seat(&mut pet.app, x, self.floor, self.direction);
+                seat(
+                    &mut pet.app,
+                    rider_x(x, self.direction, bag_mounted),
+                    self.floor,
+                    self.direction,
+                );
                 chosen = Some(Journey::Wait {
                     rider: pet.id,
                     helper: None,
@@ -313,6 +492,7 @@ impl SledScene {
         rider: u64,
         helper: Option<u64>,
         seconds: f32,
+        bag_mounted: bool,
     ) -> Journey {
         let rider_index = active(pets, rider, Special::RideSled);
         let helper_index = helper.and_then(|id| active(pets, id, Special::FetchSled));
@@ -327,7 +507,12 @@ impl SledScene {
             }
             return Journey::Parked;
         };
-        seat(&mut pets[rider_index].app, x, frame.floor, self.direction);
+        seat(
+            &mut pets[rider_index].app,
+            rider_x(x, self.direction, bag_mounted),
+            frame.floor,
+            self.direction,
+        );
         let span = Span::for_x(x, frame.width as f32, frame.monitors);
         let edge = span.toward_edge(x);
         let helper_index = helper_index.or_else(|| {
@@ -437,7 +622,12 @@ impl SledScene {
         };
         pets[helper].app.pet.face = direction;
         self.direction = direction;
-        seat(&mut pets[rider].app, x, frame.floor, direction);
+        seat(
+            &mut pets[rider].app,
+            rider_x(x, direction, world.winter().santa_bag_on_sled),
+            frame.floor,
+            direction,
+        );
         *hand = Some(pets[helper].app.snowball_position());
         self.at = Some(x);
         if let Some(sled) = world.winter_mut().sled.as_mut() {
@@ -514,6 +704,14 @@ impl SledScene {
 fn active(pets: &[Instance], id: u64, special: Special) -> Option<usize> {
     pets.iter()
         .position(|pet| pet.id == id && pet.app.pet.activity == Activity::Special(special))
+}
+
+fn rider_x(x: f32, direction: f32, bag_mounted: bool) -> f32 {
+    if bag_mounted {
+        x + if direction < 0.0 { -18.0 } else { 18.0 }
+    } else {
+        x
+    }
 }
 
 fn seat(app: &mut App, x: f32, floor: f32, direction: f32) {

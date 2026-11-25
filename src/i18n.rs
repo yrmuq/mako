@@ -176,7 +176,7 @@ mod tests {
     fn russian_catalog_translates_quit() {
         let catalog = parse(RUSSIAN);
         assert_eq!(catalog.text(ID_QUIT), "Выход");
-        assert_eq!(catalog.text(ID_NAME), "девочка-медведь");
+        assert_eq!(catalog.text(ID_NAME), "Медведь");
         assert_eq!(catalog.text(11), "Размер");
     }
 

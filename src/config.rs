@@ -6,6 +6,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::sim::SPRITE_H;
+use crate::weather::Location;
 use crate::Fault;
 
 const MIN_SCALE: f32 = 0.2;
@@ -42,16 +43,41 @@ impl InputMode {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrecipitationMode {
+    Off,
+    On,
+    Auto,
+}
+
+impl PrecipitationMode {
+    pub fn index(self) -> i32 {
+        match self {
+            Self::Off => 0,
+            Self::On => 1,
+            Self::Auto => 2,
+        }
+    }
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::On => "on",
+            Self::Auto => "auto",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
     pub preview_date: Option<crate::season::Date>,
     pub language: LanguagePref,
     pub theme: ThemePref,
     pub input_mode: InputMode,
-    pub precipitation: bool,
+    pub precipitation: PrecipitationMode,
+    pub weather_location: Option<Location>,
     pub snow_size: u32,
     pub snow_speed: u32,
-    pub tiles: bool,
     pub chibi: String,
     pub scale: String,
     pub width: u32,
@@ -66,14 +92,14 @@ impl Default for Settings {
             language: LanguagePref::System,
             theme: ThemePref::System,
             input_mode: InputMode::Main,
-            precipitation: true,
+            precipitation: PrecipitationMode::On,
+            weather_location: None,
             snow_size: 100,
             snow_speed: 100,
-            tiles: false,
             chibi: "bear-girl".to_string(),
-            scale: "0.5".to_string(),
-            width: 80,
-            height: 80,
+            scale: (99.0 / SPRITE_H).to_string(),
+            width: 100,
+            height: 100,
             favorites: vec![crate::pack::BUILTIN_ID.into()],
         }
     }
@@ -88,20 +114,15 @@ impl Settings {
     }
 
     fn from_config(text: &str) -> Self {
-        // Keep the original sizing defaults for existing files with missing fields.
-        let mut settings = Self {
-            scale: "1".into(),
-            width: 100,
-            height: 100,
-            ..Self::default()
-        };
+        let mut settings = Self::default();
         let mut has_favorites = false;
         for line in text.lines() {
             let line = line.trim();
             let Some((key, value)) = line.split_once('=') else {
                 continue;
             };
-            let value = value.trim().trim_matches('"');
+            let raw = value.trim();
+            let value = raw.trim_matches('"');
             match key.trim() {
                 "language" => {
                     settings.language = match value {
@@ -126,8 +147,19 @@ impl Settings {
                 }
                 "snow_size" => settings.snow_size = proportion(value),
                 "snow_speed" => settings.snow_speed = proportion(value),
-                "precipitation" => settings.precipitation = value != "false",
-                "tiles" => settings.tiles = value == "true",
+                "precipitation" => {
+                    settings.precipitation = match value {
+                        "false" | "off" => PrecipitationMode::Off,
+                        "auto" => PrecipitationMode::Auto,
+                        _ => PrecipitationMode::On,
+                    }
+                }
+                "weather_location" => {
+                    settings.weather_location = serde_json::from_str::<String>(raw)
+                        .ok()
+                        .and_then(|json| serde_json::from_str::<Location>(&json).ok())
+                        .filter(Location::valid);
+                }
                 "chibi" if crate::pack::safe_id(value) => settings.chibi = value.to_string(),
                 "scale" => settings.scale = value.to_owned(),
                 "width" => settings.width = proportion(value),
@@ -164,8 +196,16 @@ impl Settings {
                 format!("Could not create the config directory: {error}"),
             )
         })?;
+        let weather_location = self
+            .weather_location
+            .as_ref()
+            .map_or_else(String::new, |place| {
+                serde_json::to_string(place).expect("serializable weather location")
+            });
+        let weather_location =
+            serde_json::to_string(&weather_location).expect("quoted config string");
         let body = format!(
-            "language = \"{}\"\ntheme = \"{}\"\ninput_mode = \"{}\"\ntiles = {}\nchibi = \"{}\"\nscale = \"{}\"\nwidth = {}\nheight = {}\nfavorites = \"{}\"\nprecipitation = {}\nsnow_size = {}\nsnow_speed = {}\n",
+            "language = \"{}\"\ntheme = \"{}\"\ninput_mode = \"{}\"\nchibi = \"{}\"\nscale = \"{}\"\nwidth = {}\nheight = {}\nfavorites = \"{}\"\nprecipitation = \"{}\"\nweather_location = {}\nsnow_size = {}\nsnow_speed = {}\n",
             match self.language {
                 LanguagePref::System => "system",
                 LanguagePref::En => "en",
@@ -181,13 +221,13 @@ impl Settings {
                 InputMode::Background => "background",
                 InputMode::Auto => "auto",
             },
-            self.tiles,
             self.chibi,
             self.pet_scale(),
             self.width,
             self.height,
             self.favorites.join(","),
-            self.precipitation,
+            self.precipitation.key(),
+            weather_location,
             self.snow_size,
             self.snow_speed,
         );
@@ -415,20 +455,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_size_matches_the_previous_manual_scale_and_proportions() {
+    fn defaults_use_ninety_nine_pixels_at_full_proportions() {
         let settings = Settings::default();
-        let manual = Settings::from_config("scale = \"0.5\"\nwidth = 80\nheight = 80\n");
-        assert_eq!(settings.scales(), manual.scales());
-        assert_eq!(crate::draw::scene_size(settings.scales()), (115, 108));
-        assert_eq!(settings.size_px(), 108.0);
+        assert_eq!((settings.width, settings.height), (100, 100));
+        assert_eq!(settings.size_px(), 99.0);
     }
 
     #[test]
-    fn saved_configs_keep_their_scale_and_partial_configs_keep_the_old_defaults() {
-        let settings = Settings::from_config("scale = \"0.75\"\nwidth = 90\n");
+    fn existing_sizes_and_precipitation_preferences_are_kept() {
+        let settings =
+            Settings::from_config("scale = \"0.75\"\nwidth = 90\nprecipitation = false\n");
         assert_eq!(settings.pet_scale(), 0.75);
         assert_eq!((settings.width, settings.height), (90, 100));
-        assert_eq!(Settings::from_config("tiles = true").scales(), (1.0, 1.0));
+        assert_eq!(settings.precipitation, PrecipitationMode::Off);
+        assert_eq!(
+            Settings::from_config("precipitation = true").precipitation,
+            PrecipitationMode::On
+        );
+        assert_eq!(
+            Settings::from_config("precipitation = \"auto\"").precipitation,
+            PrecipitationMode::Auto
+        );
+    }
+
+    #[test]
+    fn a_saved_weather_city_round_trips_through_the_config() {
+        let json =
+            r#"{"id":11,"name":"Воронеж","country":"Россия","latitude":51.67,"longitude":39.2}"#;
+        let value = serde_json::to_string(json).unwrap();
+        let settings = Settings::from_config(&format!("weather_location = {value}"));
+        assert_eq!(settings.weather_location.unwrap().country, "Россия");
     }
 
     #[test]

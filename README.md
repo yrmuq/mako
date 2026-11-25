@@ -12,13 +12,13 @@
 
 ---
 
-`mako` is a desktop pet for KDE Plasma. bear girl walks along the bottom edge of the screen in a three-quarter view. It is a native Wayland client on a Wayland session and a native X11 client on an X11 session, without using XWayland as a fallback. Each frame is drawn from separate parts on one skeleton, not from a sprite sheet.
+`mako` is a desktop pet for KDE Plasma. Bear girl walks along the bottom edge of the screen in a three-quarter view. It is a native Wayland client on a Wayland session and a native X11 client on an X11 session, without using XWayland as a fallback. Each frame is drawn from separate parts on one skeleton, not from a sprite sheet.
 
 ---
 
 ## Features
 
-- Bear girl, Lion girl and Kazuki Yasaka in his kappa form, with separately animated body parts and point-based mouse grabs.
+- Bear girl, Lion girl and Turtle boy, with separately animated body parts and point-based mouse grabs.
 - Multiple live chibis, ZIP character packs and a quick list in the KDE tray.
 - English and Russian settings with native Wayland and X11 support.
 
@@ -32,7 +32,7 @@
 | Left button | Grab a chibi by its visible silhouette. Flick to throw and tumble or throw down for a series of diminishing bounces. |
 | Tray icon | Open the quick panel. Use `+` or `−` to add or remove one copy of a chibi. |
 | Gear and pin | Open Settings or keep the quick panel open when it loses focus. |
-| General | Choose the language, theme, interaction mode and tray layout (List or Tiles). Toggle precipitation to show or hide falling snow. The Size slider shows the chibi's base height in logical pixels, including its Dev height proportion. The default size is 115 × 108 px. |
+| General | Choose the language, theme, interaction mode and precipitation. The Size slider shows the chibi's base height in logical pixels, including its Dev height proportion. The default height is 99 px at 100% Width and Height. |
 | Chibis | Use `+` and `−` on a tile to add or remove a chibi in the tray list. Drag a marked tile to reorder it. A red `×` opens the confirmation for uninstalling a custom chibi and removing its active copies. |
 | About | View the project details and check for updates. Click the logo five times to reveal Dev. |
 | Dev | Adjust chibi proportions and snowfall from 25% to 200%. Set a custom day, month and year to try a separate scene for the current session. Turn off the custom date to return to the ordinary scene. Use the Santa and UFO buttons to trigger their visits. |
@@ -43,7 +43,9 @@
 | Background | Clicks pass through the chibis and their props. |
 | Auto | Clicks pass through on monitors with a fullscreen window. |
 
-Bear girl randomly walks, sits or pauses on the upper edge of the bottom panel. Each walk lasts three to five animation cycles. She looks shocked while grabbed or flying, and a thrown chibi can send others tumbling on impact. Chibis bounce slightly when they hit the floor after a fall or a snowball hit. After landing on their front or back, a knocked-down chibi lies for 1.5–3 seconds and then gets back up in 1–2 seconds. A chibi becomes vulnerable again after getting back up. She pushes herself into a seated position from her back or onto her knees from her front before standing. Her hands and legs use the same parts while she types. The laptop rests on the same edge with its screen facing her.
+In General, **Precipitation → On** follows the winter calendar. **Off** hides falling particles. In **Auto**, choose a city from the suggestions. Mako uses that city's coordinates to check rain and snow through [Open-Meteo](https://open-meteo.com/) when the city is selected, at startup, and once an hour while running. A green check appears after the API returns weather data. The city selection stays in the local config. Seasonal objects still follow the calendar.
+
+Bear girl randomly walks, sits or pauses on the upper edge of the bottom panel. Each walk lasts three to five animation cycles. She looks shocked while grabbed or flying, and a thrown chibi can send others tumbling on impact. Chibis bounce slightly when they hit the floor after a fall or a snowball hit. After landing on their front or back, a knocked-down chibi lies for 1.5–3 seconds and then gets back up in 1–2 seconds. A chibi becomes vulnerable again after getting back up. She pushes herself into a seated position from her back or onto her knees from her front before standing. Her hands and legs use the same parts while she types. Bear girl also unfolds a phone, types on it and folds it away. Lion girl runs on all fours, and Turtle boy spins on his shell before tumbling and getting back up. A lying chibi has crossed-out eyes.
 
 Chibis have a 10% chance to climb when they reach a screen edge. They grip the wall with hands and feet and pull themselves upward. When they reach the ceiling, they usually parachute down. In 5% of climbs that reach the ceiling, the chibi crawls to the center and a hand carries it down. Nearby chibis sometimes stop and take turns talking and gesturing.
 
@@ -51,7 +53,7 @@ Snow falls to the top of the bottom panel in the festive period (November 20–J
 
 Chibis build one shared snow wall in short shifts. Existing scenes with two walls keep both until they break or melt. A completed wall has a square window and a slide with a ladder. A chibi that tries to climb the slope can slip and tumble down. Drag a wall to move it or drop it from high up to break it. The original thrower runs to a completed wall within 300 logical pixels when another chibi prepares a counterthrow. A wall that blocks the shot gives the chibi two more seconds in cover. Without nearby cover, the original thrower has a 50% chance to bat the snowball back. Snowballs can reach wall climbers and leave a flattened mark for five seconds on impact. A direct hit can cause one additional chibi to fall. A thrower is protected from their own snowball. Three hits within 30 seconds arm a snowball cannon that fires for 2.5 seconds.
 
-During either snowy season, a chibi reaching a screen edge has a 5% chance to fetch a sled. A chibi passing a parked sled has a 5% chance to sit on it and wait up to ten seconds for the nearest available helper. The helper pulls the rider to one edge and then the other on the same screen. The sled breaks after two completed rides.
+During either snowy season, a chibi reaching a screen edge has a 5% chance to fetch a sled. A chibi passing a parked sled has a 5% chance to sit on it and wait up to ten seconds for the nearest available helper. The helper pulls the rider to one edge and then the other on the same screen. Pull the visible rope with the mouse to move the sled. Drop a chibi near the seat to board or a gift bag onto the deck to carry it along. The sled breaks after two completed chibi-led rides.
 
 Chibis can plant one potted fir from November 20 through January 1. The seed starts to sprout on December 1. With a month/day system date it matures on December 10, gets its star on December 18 and has gifts on December 25. With a day/month date those milestones fall on December 15, 24 and 31. Drag the potted fir to move it and its gifts. During calendar growth, the chibis have a 5% chance to water it when choosing an activity. Later plantings mature with watering, which occurs half as often as snowman work and requires twice as much active time. On the gift day, one watering and one decorating visit finish a late planting and unlock gifts immediately. Gifts contain confetti and sometimes an oversized candy. Opened gifts reappear on the gift day. Chibis remove the decorations on January 14 and carry the fir offscreen on March 1.
 
@@ -116,3 +118,4 @@ The development draft has no update metadata and no `.zsync` file. It is not ins
 | `smithay-client-toolkit` | [Smithay/client-toolkit](https://github.com/Smithay/client-toolkit) | `MIT` | Wayland layer-shell host. |
 | `x11rb` | [psychon/x11rb](https://github.com/psychon/x11rb) | `MIT OR Apache-2.0` | X11 host. |
 | `tiny-skia` | [linebender/tiny-skia](https://github.com/linebender/tiny-skia) | `BSD-3-Clause` | CPU drawing. |
+| Weather data | [Open-Meteo](https://open-meteo.com/) | CC BY 4.0 | City suggestions and current precipitation. |

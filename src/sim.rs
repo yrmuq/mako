@@ -54,6 +54,10 @@ pub enum Special {
     RampSlide,
     RampTumble,
     Captive,
+    FoldPhone,
+    LionCrouch,
+    LionRun,
+    TurtleSpin,
 }
 
 impl Special {
@@ -81,6 +85,10 @@ impl Special {
             Self::RampSlide => "ride-sled",
             Self::RampTumble => "idle",
             Self::Captive => "drag",
+            Self::FoldPhone => "fold-phone",
+            Self::LionCrouch => "lion-crouch",
+            Self::LionRun => "lion-run",
+            Self::TurtleSpin => "turtle-spin",
         }
     }
 

@@ -5,8 +5,9 @@ use std::time::{Duration, Instant};
 
 use tiny_skia::{Paint, PathBuilder, Pixmap, Stroke, Transform};
 
-use crate::config::Settings;
+use crate::config::{PrecipitationMode, Settings};
 use crate::draw::rgba_to_bgra;
+use crate::weather::Kind;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Season {
@@ -81,6 +82,8 @@ pub struct Snow {
     geometry: (u32, u32),
     art: Vec<OverlayImage>,
     art_scale: (u32, u32),
+    observed: Kind,
+    falling: Kind,
 }
 
 struct Flake {
@@ -142,6 +145,8 @@ impl Snow {
             geometry: (0, 0),
             art: Vec::new(),
             art_scale: (0, 0),
+            observed: Kind::Dry,
+            falling: Kind::Dry,
         }
     }
 
@@ -170,37 +175,82 @@ impl Snow {
         self.check_at = now + Duration::from_secs(10);
     }
 
+    pub fn set_weather(&mut self, kind: Kind) {
+        self.observed = kind;
+    }
+
+    pub fn falling(&self) -> bool {
+        self.falling != Kind::Dry
+    }
+
     pub fn tick(&mut self, dt: f32, width: u32, floor: u32, scale: u32, settings: &Settings) {
         let now = Instant::now();
         if now >= self.check_at {
             self.refresh_date(now);
         }
-        if !self.active() || !settings.precipitation || width == 0 || floor == 0 {
+        let desired = if width == 0 || floor == 0 {
+            Kind::Dry
+        } else {
+            match settings.precipitation {
+                PrecipitationMode::On if self.active() => Kind::Snow,
+                PrecipitationMode::Auto => self.observed,
+                _ => Kind::Dry,
+            }
+        };
+        if self.falling != desired {
+            self.falling = desired;
             self.flakes.clear();
+            self.art_scale = (0, 0);
+        }
+        if desired == Kind::Dry {
             return;
         }
-        let art_scale = (scale, settings.snow_size);
+        let rain = desired == Kind::Rain;
+        let art_scale = (scale, if rain { 100 } else { settings.snow_size });
         if self.art_scale != art_scale {
             self.art_scale = art_scale;
             self.art = (0..6)
-                .map(|kind| flake_art(kind, scale, settings.snow_size))
+                .map(|kind| {
+                    if rain {
+                        rain_art(kind, scale)
+                    } else {
+                        flake_art(kind, scale, settings.snow_size)
+                    }
+                })
                 .collect();
         }
         if self.flakes.is_empty() || self.geometry != (width, floor) {
             self.geometry = (width, floor);
-            let count = (width / 43).clamp(12, 48);
+            let count = if rain {
+                (width / 16).clamp(35, 130)
+            } else {
+                (width / 43).clamp(12, 48)
+            };
             self.flakes = (0..count)
-                .map(|_| Flake::new(width, -4.0 - fastrand::f32() * 135.0))
+                .map(|_| {
+                    Flake::new(
+                        width,
+                        -fastrand::f32() * if rain { floor as f32 } else { 135.0 } - 4.0,
+                        rain,
+                    )
+                })
                 .collect();
         }
         let dt = dt.clamp(0.0, 0.05);
-        let speed = settings.snow_speed as f32 / 100.0;
+        let speed = if rain {
+            1.0
+        } else {
+            settings.snow_speed as f32 / 100.0
+        };
         for flake in &mut self.flakes {
             let radius = self.art[flake.kind].height as f32 / (2.0 * scale as f32);
             flake.y += flake.speed * speed * dt;
             flake.phase += dt * 1.15;
+            if rain {
+                flake.x = (flake.x + flake.speed * dt * 0.16).rem_euclid(width as f32);
+            }
             if flake.y + radius >= floor as f32 {
-                *flake = Flake::new(width, -12.0 - fastrand::f32() * 48.0);
+                *flake = Flake::new(width, -12.0 - fastrand::f32() * 48.0, rain);
             }
         }
     }
@@ -209,24 +259,55 @@ impl Snow {
         let scale = self.art_scale.0 as f32;
         self.flakes.iter().map(move |flake| {
             let image = &self.art[flake.kind];
-            let half = image.width as f32 * 0.5;
-            let x = ((flake.x + flake.phase.sin() * 9.0) * scale - half).round() as i32;
-            let y = (flake.y * scale - half).round() as i32;
+            let drift = if self.falling == Kind::Rain {
+                0.0
+            } else {
+                flake.phase.sin() * 9.0
+            };
+            let x = ((flake.x + drift) * scale - image.width as f32 * 0.5).round() as i32;
+            let y = (flake.y * scale - image.height as f32 * 0.5).round() as i32;
             (x, y, image)
         })
     }
 }
 
 impl Flake {
-    fn new(width: u32, y: f32) -> Self {
+    fn new(width: u32, y: f32, rain: bool) -> Self {
         Self {
             x: fastrand::f32() * width as f32,
             y,
             phase: fastrand::f32() * std::f32::consts::TAU,
-            speed: 23.0 + fastrand::f32() * 27.0,
+            speed: if rain {
+                490.0 + fastrand::f32() * 230.0
+            } else {
+                23.0 + fastrand::f32() * 27.0
+            },
             kind: fastrand::usize(0..6),
         }
     }
+}
+
+fn rain_art(kind: usize, scale: u32) -> OverlayImage {
+    let mut image = Pixmap::new(7 * scale, (12 + kind as u32) * scale).unwrap();
+    let s = scale as f32;
+    let end = image.height() as f32 - s;
+    let mut path = PathBuilder::new();
+    path.move_to(s, s);
+    path.line_to(4.0 * s, end);
+    let mut paint = Paint::default();
+    paint.set_color_rgba8(133, 193, 232, 118 + kind as u8 * 12);
+    image.stroke_path(
+        &path.finish().unwrap(),
+        &paint,
+        &Stroke {
+            width: (0.9 + kind as f32 * 0.12) * s,
+            line_cap: tiny_skia::LineCap::Round,
+            ..Stroke::default()
+        },
+        Transform::identity(),
+        None,
+    );
+    image.into()
 }
 
 fn flake_art(kind: usize, scale: u32, size_percent: u32) -> OverlayImage {
@@ -296,6 +377,27 @@ mod tests {
     }
 
     #[test]
+    fn auto_precipitation_is_separate_from_the_calendar() {
+        let mut snow = Snow::new();
+        snow.set_date(Some(Date::new(12, 6, 2040)));
+        let mut settings = Settings {
+            precipitation: PrecipitationMode::Auto,
+            ..Settings::default()
+        };
+        snow.set_weather(Kind::Rain);
+        snow.tick(0.05, 800, 550, 1, &settings);
+        assert!(!snow.active());
+        assert!(snow.falling());
+        assert!(snow.images().next().is_some());
+        snow.set_weather(Kind::Snow);
+        snow.tick(0.05, 800, 550, 1, &settings);
+        assert!(snow.falling());
+        settings.precipitation = PrecipitationMode::Off;
+        snow.tick(0.05, 800, 550, 1, &settings);
+        assert!(!snow.falling());
+    }
+
+    #[test]
     fn snowfall_controls_apply_and_flakes_restart_above_the_panel() {
         let mut snow = Snow::new();
         snow.winter_year = Some(2027);
@@ -313,7 +415,7 @@ mod tests {
         snow.flakes[0].y = 550.0;
         snow.tick(0.05, 800, 550, 1, &settings);
         assert!(snow.flakes[0].y < 0.0);
-        settings.precipitation = false;
+        settings.precipitation = PrecipitationMode::Off;
         snow.tick(0.05, 800, 550, 1, &settings);
         assert!(snow.active());
         assert!(snow.images().next().is_none());

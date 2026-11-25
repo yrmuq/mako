@@ -1192,6 +1192,7 @@ impl Interactions {
                 );
                 if pets[index].app.hit_with_snowball(
                     at,
+                    Point::from_xy(ball.vx, ball.vy - BALL_GRAVITY * dt * (1.0 - time)),
                     (ball.vx * BALL_KNOCKBACK).clamp(-1450.0, 1450.0),
                     -310.0,
                     ball.owner,

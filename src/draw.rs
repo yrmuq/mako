@@ -59,6 +59,12 @@ impl Motion {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct SnowMark {
+    joint: BonePoint,
+    incoming: Point,
+}
+
 #[derive(Clone, Debug)]
 pub struct Scene {
     pub cycle: f32,
@@ -71,7 +77,7 @@ pub struct Scene {
     pub scales: (f32, f32),
     pub pose: Vec<f32>,
     pub anchor: Option<BonePoint>,
-    pub stuck_balls: Vec<BonePoint>,
+    pub stuck_balls: Vec<SnowMark>,
     pub effect_amount: f32,
 }
 
@@ -283,13 +289,14 @@ fn frame_world_x(scene: &Scene, origin: f32, left: i32, width: f32, screen_width
     }
 }
 
-pub fn hit_anchor(
+pub fn hit_mark(
     scene: &Scene,
     pack: &Pack,
     origin: Point,
     width: f32,
     at: Point,
-) -> Option<BonePoint> {
+    incoming: Point,
+) -> Option<SnowMark> {
     let (parts, _) = pet_parts(scene, pack);
     let (left, _, right, _) = frame_bounds(scene, &parts);
     let x = frame_world_x(scene, origin.x, left, (right - left) as f32, width);
@@ -300,7 +307,8 @@ pub fn hit_anchor(
         .filter_map(|part| {
             let joint = part.joint?;
             let mut local = at;
-            part.transform.invert()?.map_point(&mut local);
+            let inverse = part.transform.invert()?;
+            inverse.map_point(&mut local);
             let nearest = part.sprite.closest_ink(local)?;
             let mut visible = nearest;
             part.transform.map_point(&mut visible);
@@ -309,10 +317,25 @@ pub fn hit_anchor(
                 bone: joint.bone,
                 local: Point::from_xy(joint.local.x + nearest.x, joint.local.y + nearest.y),
             };
-            Some((distance, anchor))
+            let direction = map_vector(inverse, incoming);
+            Some((
+                distance,
+                SnowMark {
+                    joint: anchor,
+                    incoming: direction,
+                },
+            ))
         })
         .min_by(|a, b| a.0.total_cmp(&b.0))
         .map(|(_, anchor)| anchor)
+}
+
+fn map_vector(transform: Transform, vector: Point) -> Point {
+    let mut end = vector;
+    let mut start = Point::from_xy(0.0, 0.0);
+    transform.map_point(&mut end);
+    transform.map_point(&mut start);
+    Point::from_xy(end.x - start.x, end.y - start.y)
 }
 
 pub fn scene_size((x, y): (f32, f32)) -> (u32, u32) {
@@ -442,6 +465,7 @@ fn pet_parts(scene: &Scene, pack: &Pack) -> (Vec<Part>, Option<Point>) {
         Face::Neutral
     } else {
         match scene.motion {
+            Motion::Down => Face::Neutral,
             Motion::Fall
             | Motion::Drag
             | Motion::SlideWall
@@ -559,7 +583,13 @@ fn pet_parts(scene: &Scene, pack: &Pack) -> (Vec<Part>, Option<Point>) {
                         .post_translate(pivot * (1.0 - stretch), 0.0);
                 }
             }
-            let picture = if scene.sad && bone.name == "mouth" {
+            let picture = if scene.motion == Motion::Down && bone.name == "eyes" {
+                let eyes = crate::props::cross_eyes();
+                let width = sprite.image.width() as f32 / eyes.image.width() as f32;
+                let height = sprite.image.height() as f32 / eyes.image.height() as f32;
+                transform = Transform::from_scale(width, height).post_concat(transform);
+                eyes
+            } else if scene.sad && bone.name == "mouth" {
                 let frown = crate::props::frown();
                 let size =
                     (sprite.image.width() as f32 * 0.9 / frown.image.width() as f32).max(0.12);
@@ -636,7 +666,8 @@ fn pet_parts(scene: &Scene, pack: &Pack) -> (Vec<Part>, Option<Point>) {
             });
         }
     }
-    for anchor in &scene.stuck_balls {
+    for mark in &scene.stuck_balls {
+        let anchor = mark.joint;
         if let Some((part, joint)) = parts.iter().find_map(|part| {
             let joint = part.joint.filter(|joint| joint.bone == anchor.bone)?;
             Some((part, joint))
@@ -649,14 +680,11 @@ fn pet_parts(scene: &Scene, pack: &Pack) -> (Vec<Part>, Option<Point>) {
             let sprite = crate::props::snowball_splat().clone();
             let width = sprite.image.width() as f32;
             let height = sprite.image.height() as f32;
-            let mut axis = Point::from_xy(1.0, 0.0);
-            let mut origin = Point::from_xy(0.0, 0.0);
-            part.transform.map_point(&mut axis);
-            part.transform.map_point(&mut origin);
-            let turn = (axis.y - origin.y).atan2(axis.x - origin.x).to_degrees();
+            let incoming = map_vector(part.transform, mark.incoming);
+            let turn = incoming.y.atan2(incoming.x).to_degrees();
             parts.push(Part {
                 sprite,
-                transform: Transform::from_translate(-width * 0.5, -height * 0.5)
+                transform: Transform::from_translate(1.0 - width, -height * 0.5)
                     .post_rotate(turn)
                     .post_translate(centre.x, centre.y),
                 joint: None,
@@ -921,6 +949,22 @@ fn add_special(scene: &Scene, action: Special, parts: &mut Vec<Part>, pack: &Pac
             joint: None,
         });
     }
+    if action == Special::FoldPhone && (0.34..4.0).contains(&scene.cycle) {
+        if let Some(centre) = hand {
+            let opening = ((scene.cycle - 0.54) / 0.52).clamp(0.0, 1.0);
+            let closing = ((3.83 - scene.cycle) / 0.56).clamp(0.0, 1.0);
+            let phone = crate::props::fold_phone((opening.min(closing) * 5.0).round() as usize);
+            let scale = 55.0 * scene.scales.0 / 40.0;
+            parts.push(Part {
+                sprite: phone.clone(),
+                transform: Transform::from_translate(phone.x - 20.0, phone.y - 23.0)
+                    .post_scale(scale * direction, scale)
+                    .post_rotate(9.0 * direction)
+                    .post_translate(centre.x, centre.y),
+                joint: None,
+            });
+        }
+    }
     if action != Special::EatCandy || scene.cycle >= 1.72 {
         return;
     }
@@ -977,10 +1021,13 @@ fn leg(name: &str) -> bool {
 fn pose_contact(pack: &Pack, pose: &Pose, motion: Motion, view: Transform) -> Option<f32> {
     let supports = |bone: &str| match motion {
         Motion::Sit
-        | Motion::Special(Special::RideSled | Special::RampSlide | Special::WallRecover) => {
-            bone == "torso" || leg(bone)
+        | Motion::Special(
+            Special::RideSled | Special::RampSlide | Special::WallRecover | Special::FoldPhone,
+        ) => bone == "torso" || leg(bone),
+        Motion::Special(Special::RampTumble | Special::TurtleSpin) => true,
+        Motion::Special(Special::LionRun | Special::LionCrouch) => {
+            leg(bone) || bone.ends_with("hand")
         }
-        Motion::Special(Special::RampTumble) => true,
         Motion::Idle
         | Motion::Walk
         | Motion::HandRelease
