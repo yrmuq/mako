@@ -40,11 +40,20 @@ pub enum Special {
     CarryTree,
     Parry,
     RunCover,
+    LeaveCover,
     Hide,
     Cannon,
     FetchSled,
     PullSled,
     RideSled,
+    WallRecover,
+    RampClimb,
+    RampScramble,
+    RampWave,
+    RampSlide,
+    RampSlipFront,
+    RampSlipBack,
+    Captive,
 }
 
 impl Special {
@@ -59,17 +68,23 @@ impl Special {
             Self::EatCandy => "eat-candy",
             Self::CarryTree => "carry-tree",
             Self::Parry => "parry-snow",
-            Self::RunCover => "walk",
+            Self::RunCover | Self::LeaveCover => "walk",
             Self::Hide => "hide-snow",
             Self::Cannon => "snow-cannon",
             Self::FetchSled => "walk",
             Self::PullSled => "pull-sled",
             Self::RideSled => "ride-sled",
+            Self::WallRecover => "wall-recover",
+            Self::RampClimb | Self::RampScramble => "climb",
+            Self::RampWave => "ramp-wave",
+            Self::RampSlide => "ride-sled",
+            Self::RampSlipFront | Self::RampSlipBack => "idle",
+            Self::Captive => "drag",
         }
     }
 
     pub fn crosses_screen_edge(self) -> bool {
-        matches!(self, Self::FetchSled | Self::PullSled)
+        matches!(self, Self::FetchSled | Self::PullSled | Self::Captive)
     }
 }
 
@@ -188,6 +203,25 @@ impl Pet {
                     self.start(Activity::Idle);
                 }
             }
+            Activity::Special(Special::WallRecover) => {
+                self.vx = 0.0;
+                self.vy = 0.0;
+                self.y = room.floor;
+                if self.time >= 1.18 {
+                    self.face = -self.face;
+                    self.walk_for = 3.0 * self.walk_cycle;
+                    self.start(Activity::Walk);
+                }
+            }
+            Activity::Special(
+                Special::Captive
+                | Special::RampClimb
+                | Special::RampScramble
+                | Special::RampWave
+                | Special::RampSlide
+                | Special::RampSlipFront
+                | Special::RampSlipBack,
+            ) => {}
             Activity::Approach
             | Activity::Talk
             | Activity::Listen
@@ -487,8 +521,7 @@ impl Pet {
     fn slide_wall(&mut self, room: &Room, dt: f32) {
         self.y = (self.y + SLIDE_SPEED * dt).min(room.floor);
         if self.y >= room.floor {
-            self.face = -self.face;
-            self.start(Activity::Idle);
+            self.start(Activity::Special(Special::WallRecover));
         }
     }
 
@@ -789,14 +822,20 @@ mod tests {
             pet.leave_wall(slippery, roll);
             assert_eq!(pet.activity, expected);
             let mut used_hand = false;
+            let mut crouched = false;
+            let mut walked_after_crouching = false;
             for _ in 0..600 {
                 used_hand |= pet.activity == Activity::Hand;
+                crouched |= pet.activity == Activity::Special(Special::WallRecover);
+                walked_after_crouching |= crouched && pet.activity == Activity::Walk;
                 pet.step(&room, 1.0 / 60.0, slippery);
                 if pet.activity == Activity::Idle {
                     break;
                 }
             }
             assert_eq!(used_hand, expected == Activity::ClimbCeiling);
+            assert_eq!(crouched, expected == Activity::SlideWall);
+            assert_eq!(walked_after_crouching, crouched);
             assert_eq!(pet.y, room.floor);
             assert_eq!(pet.activity, Activity::Idle);
             if used_hand {

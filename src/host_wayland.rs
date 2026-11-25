@@ -122,7 +122,7 @@ pub fn run(
                 state.game.tick_snow(0.0, width);
             }
         }
-        if (changed || state.game.snow.active()) && state.configured && !state.frame_requested {
+        if (changed || state.game.wants_frames()) && state.configured && !state.frame_requested {
             state.present(&qh);
         }
         queue.dispatch_pending(&mut state).map_err(dispatch_error)?;
@@ -330,7 +330,7 @@ impl Host {
             surface.damage_buffer(damage.x, damage.y, damage.w, damage.h);
         }
         self.needs_full_damage = false;
-        self.frame_requested = !next.is_empty() || self.game.snow.active();
+        self.frame_requested = !next.is_empty() || self.game.wants_frames();
         if self.frame_requested {
             surface.frame(qh, surface.clone());
         }

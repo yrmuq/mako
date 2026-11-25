@@ -454,6 +454,8 @@ export component SettingsWindow inherits Window {
     callback move-favorite(int, int);
     callback uninstall-chibi(string);
     callback preview-selected(bool);
+    callback call-santa();
+    callback call-ufo();
     callback date-selected(int, int, int);
     callback import-zip();
     callback logo-tapped();
@@ -735,6 +737,11 @@ export component SettingsWindow inherits Window {
                         edited(value) => { root.date-selected(root.date-day, root.date-month, value); }
                     }
                 }
+            }
+            HorizontalLayout {
+                spacing: 10px;
+                Button { text: Translations.tr(66); clicked => { root.call-santa(); } }
+                Button { text: Translations.tr(67); clicked => { root.call-ufo(); } }
             }
         }
     }

@@ -22,6 +22,7 @@ use crate::icons;
 use crate::pack::{self, Pack};
 use crate::season::Date;
 use crate::updates::{self, Status};
+use crate::visitors::{Kind as VisitorKind, LostChibi};
 use crate::{Fault, Session};
 
 slint::include_modules!();
@@ -81,6 +82,7 @@ enum Action {
     Scale(f32),
     Proportions(i32, i32),
     Preview(bool),
+    CallVisitor(VisitorKind),
     Date(i32, i32, i32),
     Logo,
     Check,
@@ -215,6 +217,7 @@ struct Desktop {
     entries: Vec<Entry>,
     counts: HashMap<String, i32>,
     ordinary_counts: Option<HashMap<String, i32>>,
+    preview_generation: u64,
     tray: Option<ksni::blocking::Handle<Tray>>,
     tray_icons: TrayIcons,
     next_icon_check: Instant,
@@ -234,6 +237,23 @@ struct Desktop {
 }
 
 impl Desktop {
+    fn lose_chibi(&mut self, lost: LostChibi) {
+        if lost.preview == 0 {
+            if let Some(counts) = &mut self.ordinary_counts {
+                if let Some(count) = counts.get_mut(&lost.pack) {
+                    *count = (*count - 1).max(0);
+                }
+                return;
+            }
+        } else if self.ordinary_counts.is_none() || self.preview_generation != lost.preview {
+            return;
+        }
+        if let Some(count) = self.counts.get_mut(&lost.pack) {
+            *count = (*count - 1).max(0);
+            self.refresh_rows();
+        }
+    }
+
     fn handle(&mut self, action: Action) {
         match action {
             Action::Toggle(x, y) => {
@@ -443,9 +463,13 @@ impl Desktop {
                 self.refresh_size_controls();
                 self.apply_settings();
             }
+            Action::CallVisitor(guest) => {
+                let _ = self.commands.send(Command::Visit(guest));
+            }
             Action::Preview(enabled) => {
                 if enabled != self.config.preview_date.is_some() {
                     if enabled {
+                        self.preview_generation += 1;
                         self.ordinary_counts = Some(self.counts.clone());
                         self.config.preview_date = Some(Date::today());
                     } else {
@@ -711,6 +735,8 @@ impl Desktop {
             connect!(on_import_zip, Action::Import);
             connect!(on_uninstall_chibi, Action::Uninstall(id.to_string()), id);
             connect!(on_preview_selected, Action::Preview(enabled), enabled);
+            connect!(on_call_santa, Action::CallVisitor(VisitorKind::Santa));
+            connect!(on_call_ufo, Action::CallVisitor(VisitorKind::Ufo));
             let date_tx = tx.clone();
             window.on_date_selected(move |day, month, year| {
                 let _ = date_tx.send(Action::Date(day, month, year));
@@ -843,7 +869,7 @@ impl Desktop {
     }
 
     fn translations(&self) -> ModelRc<SharedString> {
-        model((0..=65).map(|id| self.catalog.text(id).into()).collect())
+        model((0..=67).map(|id| self.catalog.text(id).into()).collect())
     }
 
     fn refresh_style(&self) {
@@ -1021,7 +1047,12 @@ pub(crate) fn run(session: Session, open_settings: bool) -> Result<(), Fault> {
     for pack in &packs {
         *counts.entry(pack.id.clone()).or_default() += 1;
     }
-    let startup = Startup { packs, world };
+    let (lost_tx, lost_rx) = mpsc::channel();
+    let startup = Startup {
+        packs,
+        world,
+        lost_chibi: Some(lost_tx),
+    };
     let game_config = config.clone();
     let game_tx = tx.clone();
     let host = std::thread::spawn(move || {
@@ -1042,6 +1073,7 @@ pub(crate) fn run(session: Session, open_settings: bool) -> Result<(), Fault> {
         entries,
         counts,
         ordinary_counts: None,
+        preview_generation: 0,
         tray,
         tray_icons,
         next_icon_check: Instant::now() + Duration::from_secs(1),
@@ -1067,6 +1099,9 @@ pub(crate) fn run(session: Session, open_settings: bool) -> Result<(), Fault> {
         move || {
             if let Some(state) = weak.upgrade() {
                 let mut state = state.borrow_mut();
+                while let Ok(lost) = lost_rx.try_recv() {
+                    state.lose_chibi(lost);
+                }
                 while let Ok(action) = rx.try_recv() {
                     state.handle(action);
                 }

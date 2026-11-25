@@ -26,6 +26,10 @@ pub struct WinterObjects {
     pub walls: Vec<SnowWall>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sled: Option<Sled>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub santa_bag: Option<f32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub santa_gifts: Vec<VisitorGift>,
 }
 
 impl WinterObjects {
@@ -50,9 +54,18 @@ impl WinterObjects {
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct VisitorGift {
+    pub position: f32,
+    pub box_color: u8,
+    pub ribbon_color: u8,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub struct SnowWall {
     pub position: f32,
     pub seconds: f32,
+    #[serde(default)]
+    pub slope_right: bool,
 }
 
 pub const MAX_SNOW_WALLS: usize = 2;
@@ -127,6 +140,10 @@ impl Save {
             .winter
             .sled
             .filter(|sled| (0.0..=1.0).contains(&sled.position) && sled.rides < 2);
+        saved.winter.santa_bag = saved.winter.santa_bag.filter(|x| (0.0..=1.0).contains(x));
+        saved.winter.santa_gifts.retain(|gift| {
+            (0.0..=1.0).contains(&gift.position) && gift.box_color < 4 && gift.ribbon_color < 4
+        });
         saved.tree = saved.tree.filter(|tree| tree.valid());
         Ok(saved)
     }
@@ -364,6 +381,7 @@ mod tests {
                 seconds: 356.0,
             });
             world.winter_mut().walls.push(SnowWall {
+                slope_right: true,
                 position: 0.2,
                 seconds: 347.0,
             });

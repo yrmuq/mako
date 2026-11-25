@@ -127,7 +127,7 @@ fn hand_outline(p: &mut PathBuilder) {
     p.close();
 }
 
-fn paint(
+pub(crate) fn paint(
     image: &mut Pixmap,
     color: [u8; 4],
     width: Option<f32>,
@@ -163,9 +163,9 @@ pub fn snowball() -> &'static Sprite {
 }
 
 pub fn ball_image(scale: u32) -> Pixmap {
-    let mut image = Pixmap::new(12 * scale, 12 * scale).expect("snowball dimensions");
+    let mut image = Pixmap::new(24 * scale, 24 * scale).expect("snowball dimensions");
     let s = scale as f32;
-    snow_oval(&mut image, (0.4 * s, 0.4 * s, 11.2 * s, 11.2 * s));
+    snow_oval(&mut image, (0.8 * s, 0.8 * s, 22.4 * s, 22.4 * s));
     image
 }
 
@@ -376,13 +376,13 @@ fn snow_oval(image: &mut Pixmap, (x, y, w, h): (f32, f32, f32, f32)) {
     );
 }
 
-fn oval(image: &mut Pixmap, (x, y, w, h): (f32, f32, f32, f32), color: [u8; 4]) {
+pub(crate) fn oval(image: &mut Pixmap, (x, y, w, h): (f32, f32, f32, f32), color: [u8; 4]) {
     paint(image, color, None, |p| {
         p.push_oval(tiny_skia::Rect::from_xywh(x, y, w, h).expect("oval bounds"));
     });
 }
 
-fn resize_art(image: Pixmap, scale: u32) -> Pixmap {
+pub(crate) fn resize_art(image: Pixmap, scale: u32) -> Pixmap {
     if scale == 1 {
         return image;
     }
@@ -399,49 +399,57 @@ fn resize_art(image: Pixmap, scale: u32) -> Pixmap {
     large
 }
 
-pub fn snow_wall(step: u8, scale: u32) -> Pixmap {
-    let mut image = Pixmap::new(112, 86).expect("wall dimensions");
-    let height = 8.0 + 76.0 * f32::from(step) / f32::from(SNOWMAN_STEPS);
-    let top = 86.0 - height;
-    let outline = |p: &mut PathBuilder| {
-        p.move_to(2.0, 86.0);
-        p.line_to(8.0, top + 7.0);
-        p.quad_to(11.0, top, 19.0, top);
-        p.line_to(93.0, top);
-        p.quad_to(101.0, top, 104.0, top + 7.0);
-        p.line_to(110.0, 86.0);
-        p.close();
-    };
-    paint(&mut image, [169, 205, 228, 255], None, outline);
-    paint(&mut image, [223, 241, 251, 255], None, |p| {
-        p.move_to(8.0, 85.0);
-        p.line_to(13.0, top + 8.0);
-        p.quad_to(15.0, top + 3.0, 23.0, top + 3.0);
-        p.line_to(89.0, top + 3.0);
-        p.quad_to(96.0, top + 3.0, 100.0, top + 10.0);
-        p.line_to(105.0, 83.0);
+pub fn snow_wall(step: u8, slope_right: bool, scale: u32) -> Pixmap {
+    use crate::ramps::{Cover, ART_WIDTH, HALF, HEIGHT, RUN};
+    let mut image = Pixmap::new(ART_WIDTH, 86).expect("wall dimensions");
+    let centre = ART_WIDTH as f32 * 0.5;
+    let floor = 86.0;
+    let complete = step >= SNOWMAN_STEPS;
+    let top = floor - (8.0 + (HEIGHT - 8.0) * f32::from(step) / f32::from(SNOWMAN_STEPS));
+    let side = if slope_right { 1.0 } else { -1.0 };
+    let start = centre - side * HALF;
+    let crest = centre + side * HALF;
+    let end = crest + side * if complete { RUN } else { 0.0 };
+    paint(&mut image, [164, 201, 226, 255], None, |p| {
+        p.move_to(start, floor);
+        p.line_to(start, top);
+        p.line_to(crest, top);
+        p.line_to(end, floor);
         p.close();
     });
-    paint(&mut image, [252, 254, 255, 255], Some(3.2), |p| {
-        p.move_to(18.0, top + 5.0);
-        p.quad_to(53.0, top + 2.0, 90.0, top + 5.0);
+    paint(&mut image, [226, 243, 252, 255], None, |p| {
+        p.move_to(start + side * 3.0, floor - 1.0);
+        p.line_to(start + side * 3.0, top + 3.0);
+        p.line_to(crest, top + 3.0);
+        p.line_to(end - side * 5.0, floor - 1.0);
+        p.close();
     });
-    if height > 25.0 {
-        paint(&mut image, [173, 207, 229, 255], Some(1.4), |p| {
-            for (n, y) in (1..=3)
-                .map(|n| (n, top + n as f32 * 19.0))
-                .filter(|(_, y)| *y < 82.0)
-            {
-                p.move_to(14.0, y);
-                p.quad_to(55.0, y + 2.0, 100.0, y);
-                for x in if n % 2 == 0 {
-                    [38.0, 76.0]
-                } else {
-                    [26.0, 65.0]
-                } {
-                    p.move_to(x, y - 14.0);
-                    p.line_to(x + 1.0, y);
-                }
+    paint(&mut image, [250, 254, 255, 255], Some(2.4), |p| {
+        p.move_to(start + side * 2.0, top + 2.0);
+        p.line_to(crest, top + 2.0);
+        if complete {
+            p.line_to(end - side * 4.0, floor - 2.0);
+        }
+    });
+    if complete {
+        let hole = Cover::new(centre, floor, slope_right).window;
+        paint(&mut image, [148, 190, 218, 255], Some(3.5), |p| {
+            p.push_rect(hole)
+        });
+        let clear = tiny_skia::PremultipliedColorU8::from_rgba(0, 0, 0, 0).unwrap();
+        for y in hole.top() as usize..hole.bottom() as usize {
+            let start = y * ART_WIDTH as usize + hole.left() as usize;
+            image.pixels_mut()[start..start + hole.width() as usize].fill(clear);
+        }
+        paint(&mut image, [104, 76, 63, 255], Some(3.5), |p| {
+            let at = start - side * 8.0;
+            for x in [at - 6.0, at + 6.0] {
+                p.move_to(x, top + 1.0);
+                p.line_to(x, floor);
+            }
+            for y in (11..85).step_by(10) {
+                p.move_to(at - 6.0, y as f32);
+                p.line_to(at + 6.0, y as f32);
             }
         });
     }
@@ -617,6 +625,10 @@ pub const FESTIVE_COLORS: [[u8; 4]; 4] = [
 ];
 
 pub fn gift(kind: usize, scale: u32) -> Pixmap {
+    colored_gift(kind, [255, 226, 153, 255], scale)
+}
+
+pub fn colored_gift(kind: usize, ribbon: [u8; 4], scale: u32) -> Pixmap {
     let mut image = Pixmap::new(33, 33).expect("gift dimensions");
     let color = FESTIVE_COLORS[kind % FESTIVE_COLORS.len()];
     paint(&mut image, color, None, |p| {
@@ -626,7 +638,6 @@ pub fn gift(kind: usize, scale: u32) -> Pixmap {
         p.line_to(5.0, 33.0);
         p.close();
     });
-    let ribbon = [255, 226, 153, 255];
     paint(&mut image, ribbon, Some(3.0), |p| {
         p.move_to(16.0, 32.0);
         p.line_to(16.0, 10.0);

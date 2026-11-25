@@ -164,6 +164,10 @@ rot torso 0 20 0.7 20
 rot head 0 -13 0.7 -13
 rot left-hand 0 -27 0.7 -27
 rot right-hand 0 -27 0.7 -27
+rot left-leg 0 -42 0.7 -42
+rot right-leg 0 -49 0.7 -49
+rot left-foot 0 29 0.7 29
+rot right-foot 0 33 0.7 33
 
 anim snow-cannon 0.24
 rot torso 0 -3 0.085 -10 0.24 -3
@@ -189,3 +193,19 @@ rot left-leg 0 -76 0.55 -80 1.1 -76
 rot right-leg 0 -85 0.55 -82 1.1 -85
 rot left-foot 0 12 1.1 12
 rot right-foot 0 22 1.1 22
+
+anim wall-recover 1.19
+rot torso 0 19 0.19 22 0.53 14 0.82 7 1.18 0
+rot head 0 -8 0.24 -10 0.63 -4 1.18 2
+rot left-hand 0 -32 0.18 -69 0.53 -42 0.92 -13 1.18 5
+rot right-hand 0 -23 0.18 -51 0.52 -28 0.92 -12 1.18 -5
+rot left-leg 0 -63 0.26 -80 0.50 -62 0.81 -35 1.18 0
+rot right-leg 0 -54 0.24 -72 0.50 -50 0.81 -24 1.18 0
+rot left-foot 0 46 0.24 52 0.56 40 1.18 0
+rot right-foot 0 37 0.24 49 0.56 32 1.18 0
+
+anim ramp-wave 0.94
+rot torso 0 -4 0.32 5 0.64 -2 0.94 -4
+rot head 0 4 0.36 -7 0.72 3 0.94 4
+rot left-hand 0 -62 0.20 -148 0.36 -119 0.55 -149 0.73 -116 0.94 -52
+rot right-hand 0 57 0.20 144 0.35 111 0.53 141 0.74 113 0.94 43

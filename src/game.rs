@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use std::collections::HashSet;
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, Sender};
 use std::time::Instant;
 
 use tiny_skia::{Point, Rect};
@@ -12,10 +12,13 @@ use crate::config::{InputMode, Settings};
 use crate::festive::{Festive, FrameInfo};
 use crate::interactions::{Interactions, WinterArt};
 use crate::pack::Pack;
+use crate::ramps::Ramps;
 use crate::season::{OverlayImage, Snow};
 use crate::sim::Room;
+use crate::sim::{Activity, Special};
 use crate::sled::{SledFrame, SledScene};
 use crate::snowman::{Fall, Grab, Motion as SnowmanMotion};
+use crate::visitors::{Frame as VisitorFrame, Gifts, Kind, LostChibi, Visitors};
 use crate::world::{World, MAX_SNOWMEN, MAX_SNOW_WALLS};
 
 pub enum Command {
@@ -23,6 +26,7 @@ pub enum Command {
     Remove(String),
     Uninstall(String),
     Appearance(Settings),
+    Visit(Kind),
 }
 
 pub struct Instance {
@@ -33,6 +37,7 @@ pub struct Instance {
 pub struct Startup {
     pub packs: Vec<Pack>,
     pub world: World,
+    pub lost_chibi: Option<Sender<LostChibi>>,
 }
 
 #[cfg(test)]
@@ -42,6 +47,7 @@ impl Startup {
         Self {
             packs: vec![pack],
             world,
+            lost_chibi: None,
         }
     }
 }
@@ -51,6 +57,7 @@ struct CollisionBody {
     velocity: Option<Point>,
     vulnerable: bool,
     snowball_owner: Option<u64>,
+    on_ramp: bool,
 }
 
 struct OrdinaryScene {
@@ -59,6 +66,9 @@ struct OrdinaryScene {
     snowmen: [SnowmanMotion; MAX_SNOWMEN],
     festive: Festive,
     sled: SledScene,
+    ramps: Ramps,
+    visitors: Visitors,
+    gifts: Gifts,
 }
 
 pub struct Game {
@@ -68,6 +78,9 @@ pub struct Game {
     interactions: Interactions,
     festive: Festive,
     sled: SledScene,
+    ramps: Ramps,
+    visitors: Visitors,
+    gifts: Gifts,
     sled_monitors: Vec<(f32, f32)>,
     winter_art: WinterArt,
     width: u32,
@@ -77,6 +90,8 @@ pub struct Game {
     bottom: f32,
     scale: u32,
     next_id: u64,
+    preview_generation: u64,
+    lost_chibi: Option<Sender<LostChibi>>,
     held: Option<u64>,
     snowman_motion: [SnowmanMotion; MAX_SNOWMEN],
     ordinary: Option<OrdinaryScene>,
@@ -99,6 +114,9 @@ impl Game {
             interactions: Interactions::new(),
             festive: Festive::new(),
             sled: SledScene::default(),
+            ramps: Ramps::default(),
+            visitors: Visitors::default(),
+            gifts: Gifts::default(),
             sled_monitors: Vec::new(),
             winter_art: WinterArt::default(),
             width: 0,
@@ -108,6 +126,8 @@ impl Game {
             bottom: 0.0,
             scale: 1,
             next_id: 0,
+            preview_generation: 0,
+            lost_chibi: startup.lost_chibi,
             held: None,
             snowman_motion: Default::default(),
             ordinary: None,
@@ -156,6 +176,7 @@ impl Game {
                         self.world.remove(&id);
                     }
                 }
+                Ok(Command::Visit(guest)) => self.visitors.call(guest),
                 Ok(Command::Appearance(settings)) => {
                     self.appearance(settings);
                 }
@@ -194,6 +215,7 @@ impl Game {
             self.cancel_grab(|_, _| false);
             self.contacts.clear();
             if preview {
+                self.preview_generation += 1;
                 self.world.start_preview();
                 let pets = std::mem::take(&mut self.pets);
                 for pack in pets.iter().map(|pet| pet.app.pack()) {
@@ -205,6 +227,9 @@ impl Game {
                     snowmen: std::mem::take(&mut self.snowman_motion),
                     festive: std::mem::replace(&mut self.festive, Festive::new()),
                     sled: std::mem::take(&mut self.sled),
+                    ramps: std::mem::take(&mut self.ramps),
+                    visitors: std::mem::take(&mut self.visitors),
+                    gifts: std::mem::take(&mut self.gifts),
                 });
             } else {
                 self.world.stop_preview();
@@ -214,6 +239,9 @@ impl Game {
                 self.snowman_motion = scene.snowmen;
                 self.festive = scene.festive;
                 self.sled = scene.sled;
+                self.ramps = scene.ramps;
+                self.visitors = scene.visitors;
+                self.gifts = scene.gifts;
                 for pet in &mut self.pets {
                     pet.app.set_bottom(self.bottom);
                     pet.app.set_room(self.room.clone());
@@ -256,7 +284,18 @@ impl Game {
         self.settings.input_mode
     }
 
+    pub fn wants_frames(&self) -> bool {
+        self.snow.active() || self.visitors.active()
+    }
+
     pub fn cancel_grab(&mut self, input_at: impl Fn(f32, f32) -> bool) {
+        if self
+            .gifts
+            .grabbed_at()
+            .is_some_and(|point| !input_at(point.x, point.y))
+        {
+            self.gifts.release(&mut self.world, None);
+        }
         if let Some((slot, point)) = self.interactions.grabbed_wall() {
             if !input_at(point.x, point.y) {
                 self.interactions.release_wall(&mut self.world, slot);
@@ -298,6 +337,8 @@ impl Game {
         self.snow.tick(dt, width, floor, self.scale, &self.settings);
         if self.world.update_season(self.snow.winter_year()) {
             self.snowman_motion = Default::default();
+            self.ramps.clear(&mut self.pets);
+            self.gifts.reset(&mut self.pets);
             self.interactions.clear_winter(&mut self.pets);
             self.sled.clear(&mut self.pets);
         }
@@ -321,13 +362,20 @@ impl Game {
             .chain(self.interactions.fragment_images(&self.winter_art))
             .chain(self.sled.images())
             .chain(self.festive.images(self.world.tree()))
+            .chain(self.gifts.images(&self.world, self.width, floor))
+            .chain(self.visitors.images())
     }
 
     pub fn prop_input_bounds(&self) -> impl Iterator<Item = Rect> + '_ {
         (0..MAX_SNOWMEN)
             .filter_map(|slot| self.snowman_bounds(slot))
-            .chain((0..MAX_SNOW_WALLS).filter_map(|slot| self.wall_bounds(slot)))
+            .chain((0..MAX_SNOW_WALLS).flat_map(|slot| self.wall_ink(slot)))
             .chain(self.festive.input_rects())
+            .chain(self.gifts.input_rects(
+                &self.world,
+                self.width,
+                (self.room.floor - self.bottom).max(0.0),
+            ))
     }
 
     fn snowman_bounds(&self, slot: usize) -> Option<Rect> {
@@ -337,6 +385,22 @@ impl Game {
             self.width,
             (self.room.floor - self.bottom).max(0.0) - self.snowman_motion[slot].lift(),
         )
+    }
+
+    fn wall_ink(&self, slot: usize) -> impl Iterator<Item = Rect> + '_ {
+        self.world
+            .winter()
+            .walls
+            .get(slot)
+            .into_iter()
+            .flat_map(move |wall| {
+                self.winter_art.wall_ink(
+                    slot,
+                    *wall,
+                    self.width,
+                    (self.room.floor - self.bottom).max(0.0) - self.interactions.wall_lift(slot),
+                )
+            })
     }
 
     fn wall_bounds(&self, slot: usize) -> Option<Rect> {
@@ -387,22 +451,20 @@ impl Game {
                 }
             }
         }
-        let check_collisions =
-            self.pets.len() > 1 && self.pets.iter().any(|pet| pet.app.pet.can_strike());
+        let check_collisions = self.pets.len() > 1
+            && self
+                .pets
+                .iter()
+                .any(|pet| pet.app.strike_velocity().is_some());
         let before = check_collisions.then(|| {
             self.pets
                 .iter()
-                .map(|pet| {
-                    let body = &pet.app.pet;
-                    let velocity = body
-                        .can_strike()
-                        .then_some(Point::from_xy(body.vx, body.vy));
-                    CollisionBody {
-                        bounds: pet.app.collision_bounds(),
-                        velocity,
-                        vulnerable: pet.app.can_be_struck(),
-                        snowball_owner: pet.app.snowball_owner,
-                    }
+                .map(|pet| CollisionBody {
+                    bounds: pet.app.collision_bounds(),
+                    velocity: pet.app.strike_velocity(),
+                    vulnerable: pet.app.can_be_struck(),
+                    snowball_owner: pet.app.snowball_owner,
+                    on_ramp: pet.app.pet.activity == Activity::Special(Special::RampSlide),
                 })
                 .collect::<Vec<_>>()
         });
@@ -422,6 +484,15 @@ impl Game {
                 monitors: &self.sled_monitors,
             },
         );
+        if self.snow.active() && self.width > 0 {
+            self.ramps.tick(
+                &mut self.pets,
+                &self.world.winter().walls,
+                std::array::from_fn(|slot| self.interactions.wall_grounded(slot)),
+                self.width as f32,
+                dt,
+            );
+        }
         if let Some(before) = before {
             self.resolve_collisions(&before);
         } else {
@@ -445,6 +516,38 @@ impl Game {
             floor,
             dt,
             self.snow.active(),
+        );
+        let kidnapped = self.visitors.tick(
+            &mut self.pets,
+            &mut self.world,
+            VisitorFrame {
+                width: self.width,
+                floor,
+                scale: self.scale,
+                elapsed: dt,
+            },
+            self.snow.active(),
+        );
+        if let Some(index) = kidnapped.and_then(|id| self.pets.iter().position(|pet| pet.id == id))
+        {
+            let pack = self.pets.remove(index).app.pack_id().to_owned();
+            self.world.remove(&pack);
+            if let Some(tx) = &self.lost_chibi {
+                let preview = if self.settings.preview_date.is_some() {
+                    self.preview_generation
+                } else {
+                    0
+                };
+                let _ = tx.send(LostChibi { pack, preview });
+            }
+        }
+        self.gifts.tick(
+            &mut self.pets,
+            &mut self.world,
+            self.width,
+            floor,
+            self.scale,
+            dt,
         );
         if self.snow.active() && self.width != 0 {
             self.winter_art.update(self.world.winter(), self.scale);
@@ -494,6 +597,9 @@ impl Game {
         hits.sort_by(|a, b| a.0.total_cmp(&b.0));
         let mut remaining = vec![1.0_f32; before.len()];
         for (_, source, target, velocity) in hits {
+            if self.pets[source].app.body_hits_left == Some(0) {
+                continue;
+            }
             let power = remaining[source];
             let speed = velocity.x.hypot(velocity.y) * power;
             let vx = if velocity.x.abs() < 100.0 {
@@ -516,6 +622,12 @@ impl Game {
                 .app
                 .knock_back(vx, vy, before[source].snowball_owner)
             {
+                if let Some(limit) = &mut self.pets[source].app.body_hits_left {
+                    *limit = limit.saturating_sub(1);
+                }
+                if before[source].on_ramp {
+                    self.pets[target].app.body_hits_left = Some(0);
+                }
                 self.pets[source].app.pet.vx *= 0.84;
                 remaining[source] *= 0.84;
             }
@@ -527,6 +639,11 @@ impl Game {
         let now = Instant::now();
         let point = Point::from_xy(screen_x, screen_y);
         let floor = (self.room.floor - self.bottom).max(0.0);
+        if self.gifts.grabbed_at().is_some() {
+            self.gifts
+                .drag(&mut self.world, point, now, self.width, floor, kind);
+            return;
+        }
         if self.festive.grabbed_at().is_some() {
             self.festive
                 .drag(&mut self.world, point, now, self.width, floor, kind);
@@ -595,6 +712,16 @@ impl Game {
             }
             pet.app.pointer(x, y, kind);
         } else if self.held.is_none() && matches!(kind, Pointer::LeftDown) && self.width > 0 {
+            if self.gifts.click(
+                &mut self.pets,
+                &mut self.world,
+                point,
+                now,
+                self.width,
+                floor,
+            ) {
+                return;
+            }
             if self.festive.start_drag(&mut self.pets, point, now) {
                 return;
             }
@@ -604,7 +731,7 @@ impl Game {
             };
             if let Some(slot) = (0..MAX_SNOW_WALLS)
                 .rev()
-                .find(|&slot| self.wall_bounds(slot).is_some_and(hit))
+                .find(|&slot| self.wall_ink(slot).any(hit))
             {
                 let wall = self.world.winter().walls[slot];
                 let lift = self.interactions.wall_lift(slot);
@@ -655,6 +782,61 @@ pub(crate) fn swept_contact(a: Rect, next_a: Rect, b: Rect, next_b: Rect) -> Opt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manual_visitors_remove_one_instance_from_the_test_scene_and_report_its_pack() {
+        use crate::season::Date;
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (report, lost) = std::sync::mpsc::channel();
+        let pack = Pack::builtin();
+        let mut startup = Startup::test(pack.clone());
+        startup.lost_chibi = Some(report);
+        let mut game = Game::new(
+            crate::startup_room(960.0, 640.0),
+            Settings::default(),
+            startup,
+            rx,
+        );
+        game.tick_snow(0.0, 960);
+        tx.send(Command::Add(pack.clone())).unwrap();
+        game.commands();
+        for (generation, guest) in [(1, Kind::Ufo), (2, Kind::Santa)] {
+            tx.send(Command::Appearance(Settings {
+                preview_date: Some(Date::new(15, 6, 2042)),
+                ..Settings::default()
+            }))
+            .unwrap();
+            tx.send(Command::Visit(guest)).unwrap();
+            game.commands();
+            assert!(game.wants_frames());
+            let id = game.pets[0].id;
+            for _ in 0..160 {
+                for (pet, x) in game.pets.iter_mut().zip([340.0, 690.0]) {
+                    if pet.app.pet.activity.routine() {
+                        pet.app.pet.start(Activity::Idle);
+                        pet.app.pet.x = x;
+                    }
+                }
+                game.tick(0.04);
+                if game.pets.len() == 1 {
+                    break;
+                }
+            }
+            assert_eq!(game.pets.len(), 1);
+            assert_ne!(game.pets[0].id, id);
+            assert_eq!(game.world.chibis().len(), 1);
+            let event = lost.try_recv().unwrap();
+            assert_eq!(event.pack, pack.id);
+            assert_eq!(event.preview, generation);
+            assert!(lost.try_recv().is_err());
+
+            tx.send(Command::Appearance(Settings::default())).unwrap();
+            game.commands();
+            assert_eq!(game.world.chibis().len(), 2);
+            assert_eq!(game.pets.len(), 2);
+        }
+    }
 
     #[test]
     fn changing_the_dev_date_parks_and_restores_the_ordinary_pets() {
@@ -768,7 +950,7 @@ mod tests {
     }
 
     #[test]
-    fn snowball_knockback_spares_the_thrower_and_still_spreads_to_other_chibis() {
+    fn snowball_knockback_spares_the_thrower_and_topples_only_one_bystander() {
         use crate::sim::Activity;
 
         let (_tx, rx) = std::sync::mpsc::channel();
@@ -783,17 +965,24 @@ mod tests {
         );
         game.add(Pack::builtin());
         game.add(Pack::builtin());
+        game.add(Pack::builtin());
         let shooter = game.pets[0].id;
-        for (pet, x) in game.pets.iter_mut().zip([250.0, 200.0, 315.0]) {
+        for (pet, x) in game.pets.iter_mut().zip([250.0, 200.0, 315.0, 393.0]) {
             pet.app.pet.x = x;
         }
         let victim = &mut game.pets[1].app;
         victim.pet.y -= 15.0;
-        assert!(victim.knock_back(3600.0, -80.0, Some(shooter)));
+        let body = victim.collision_bounds().unwrap();
+        let impact = Point::from_xy(body.left(), (body.top() + body.bottom()) * 0.5);
+        assert!(victim.hit_with_snowball(impact, 3600.0, -80.0, shooter));
         game.tick(0.05);
         assert!(game.pets[0].app.pet.activity.routine());
         assert_eq!(game.pets[2].app.pet.activity, Activity::Fall);
         assert_eq!(game.pets[2].app.snowball_owner, Some(shooter));
+        assert_eq!(game.pets[2].app.body_hits_left, Some(0));
+        assert_eq!(game.pets[3].app.pet.activity, Activity::Idle);
+        game.tick(0.05);
+        assert_eq!(game.pets[3].app.pet.activity, Activity::Idle);
     }
 
     #[test]
@@ -850,6 +1039,7 @@ mod tests {
         game.snow.set_date(Some(Date::new(15, 1, 2041)));
         game.tick_snow(0.0, 1200);
         game.world.winter_mut().walls.push(SnowWall {
+            slope_right: true,
             position: 0.26,
             seconds: 347.0,
         });

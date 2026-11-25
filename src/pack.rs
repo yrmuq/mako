@@ -64,6 +64,27 @@ impl Sprite {
             })
             .max_by(f32::total_cmp)
     }
+
+    pub fn closest_ink(&self, point: Point) -> Option<Point> {
+        self.ink
+            .iter()
+            .flat_map(|row| {
+                let last = row.right - 1;
+                let x = point.x.floor().clamp(row.left as f32, last as f32) as u32;
+                [x, row.left, last]
+                    .into_iter()
+                    .filter(move |&x| {
+                        self.image
+                            .pixel(x, row.y)
+                            .is_some_and(|pixel| pixel.alpha() >= 32)
+                    })
+                    .map(|x| Point::from_xy(x as f32 + 0.5, row.y as f32 + 0.5))
+            })
+            .min_by(|a, b| {
+                let distance = |p: &Point| (p.x - point.x).powi(2) + (p.y - point.y).powi(2);
+                distance(a).total_cmp(&distance(b))
+            })
+    }
 }
 
 #[derive(Clone)]
@@ -297,6 +318,8 @@ impl Pack {
                 | "snow-cannon"
                 | "pull-sled"
                 | "ride-sled"
+                | "wall-recover"
+                | "ramp-wave"
         ) && self.animation_length(anim_name).is_none()
         {
             if let Some(anim) = builtin_pack()

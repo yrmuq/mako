@@ -14,7 +14,8 @@ use crate::world::{Sled, World};
 
 const SEAT_HEIGHT: f32 = 20.0;
 const WAIT_SECONDS: f32 = 10.0;
-const PULL_SPEED: f32 = 180.0;
+const FETCH_SPEED: f32 = 180.0;
+const PULL_SPEED: f32 = 90.0;
 
 #[derive(Clone, Copy)]
 struct Span {
@@ -207,7 +208,7 @@ impl SledScene {
                         let (left, right) = span.walking_bounds(app);
                         let goal =
                             (boundary - edge * (170.0 + span.sled_gap(app))).clamp(left, right);
-                        let arrived = move_to(&mut app.pet.x, goal, PULL_SPEED * dt);
+                        let arrived = move_to(&mut app.pet.x, goal, FETCH_SPEED * dt);
                         let x = app.pet.x + edge * span.sled_gap(app);
                         self.at = Some(x);
                         hand = Some(app.snowball_position());
@@ -704,7 +705,7 @@ mod tests {
             assert!(matches!(scene.journey, Journey::Wait { rider: 0, .. }));
             let (mut left, mut right) = (600.0_f32, 0.0_f32);
             let mut rope = false;
-            for _ in 0..200 {
+            for _ in 0..380 {
                 scene.tick(&mut pets, &mut world, frame(0.05));
                 if let Some(x) = scene.at {
                     assert!((0.0..=600.0).contains(&x));

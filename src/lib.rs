@@ -17,11 +17,14 @@ mod pack;
 mod place;
 mod props;
 mod rag;
+mod ramps;
 mod season;
 mod sim;
 mod sled;
 mod snowman;
 mod updates;
+mod visitor_art;
+mod visitors;
 mod world;
 mod x11_input;
 

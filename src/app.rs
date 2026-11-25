@@ -7,7 +7,8 @@ use crate::config::Settings;
 use crate::draw::{self, Frame, Motion, Part, Scene};
 use crate::pack::{BonePoint, Pack};
 use crate::props::SculptStage;
-use crate::rag::Ragdoll;
+use crate::rag::{Lying, Ragdoll};
+use crate::ramps::Cover;
 use crate::sim::{
     Activity, Pet, Room, Special, FEET_X, FEET_Y, GRAVITY, HAND_REACH, HAND_RELEASE,
     REFERENCE_RISE, SPRITE_H, SPRITE_W,
@@ -22,15 +23,16 @@ pub struct App {
     pub pet: Pet,
     pub room: Room,
     pub sculpt_stage: SculptStage,
-    pub cover: Option<Rect>,
+    pub cover: Option<Cover>,
     pub snowball_owner: Option<u64>,
+    pub body_hits_left: Option<u8>,
     settings: Settings,
     pack: Pack,
     rag: Ragdoll,
     grip: Option<Grip>,
     committed_x: i32,
     committed_y: i32,
-    committed_cover: Option<Rect>,
+    committed_cover: Option<Cover>,
     parts: Vec<Part>,
     committed_parts: Vec<Part>,
     trail: Vec<(f32, f32, f32)>,
@@ -47,6 +49,7 @@ pub struct App {
     sad_until: f32,
     blink_at: f32,
     blink_length: f32,
+    stuck_balls: Vec<(BonePoint, f32)>,
 }
 
 impl App {
@@ -61,6 +64,7 @@ impl App {
             sculpt_stage: SculptStage::default(),
             cover: None,
             snowball_owner: None,
+            body_hits_left: None,
             settings,
             pack,
             rag,
@@ -84,6 +88,7 @@ impl App {
             sad_until: 0.0,
             blink_at: next_blink(0.0),
             blink_length,
+            stuck_balls: Vec::new(),
         };
         app.fit_room();
         app.pet.y = app.room.floor;
@@ -122,6 +127,7 @@ impl App {
 
     pub fn tick(&mut self, dt: f32, slippery: bool) {
         self.clock += dt;
+        self.stuck_balls.retain(|(_, until)| self.clock < *until);
         if self.clock >= self.blink_at + self.blink_length {
             self.blink_at = next_blink(self.clock);
         }
@@ -173,6 +179,7 @@ impl App {
         }
         if !matches!(self.pet.activity, Activity::Fall | Activity::Down) {
             self.snowball_owner = None;
+            self.body_hits_left = None;
         }
     }
 
@@ -191,6 +198,7 @@ impl App {
         match kind {
             Pointer::LeftDown => {
                 if self.grip.is_some()
+                    || self.pet.activity == Activity::Special(Special::Captive)
                     || self.occluded(lx + self.committed_x as f32, ly + self.committed_y as f32)
                 {
                     return;
@@ -199,6 +207,7 @@ impl App {
                     return;
                 };
                 self.snowball_owner = None;
+                self.body_hits_left = None;
                 self.sync_rag();
                 self.rag.clear_plant();
                 if self.pet.activity == Activity::Rise || !self.rag.live {
@@ -281,6 +290,19 @@ impl App {
     fn scene(&self) -> Scene {
         let (tilt, pose) = if self.pet.activity == Activity::Rise {
             self.rise_pose()
+        } else if matches!(
+            self.pet.activity,
+            Activity::Special(Special::RampSlipFront | Special::RampSlipBack)
+        ) {
+            let side = if self.pet.activity == Activity::Special(Special::RampSlipFront) {
+                Lying::Front
+            } else {
+                Lying::Back
+            };
+            (
+                side.tilt(),
+                self.pack.rise_degrees(side.rise_animation(), 0.0),
+            )
         } else if self.rag.live {
             (self.rag.turn(), self.rag.degrees())
         } else {
@@ -289,7 +311,11 @@ impl App {
         Scene {
             cycle: self.motion_phase(),
             blink: (self.clock >= self.blink_at).then_some(self.clock - self.blink_at),
-            sad: self.clock < self.sad_until,
+            sad: self.clock < self.sad_until
+                && !matches!(
+                    self.pet.activity,
+                    Activity::Special(Special::RunCover | Special::Captive)
+                ),
             grounded: match self.pet.activity {
                 Activity::Down => self.rag.floor_contact(),
                 Activity::Rise => 1.0 - smoothstep(self.pet.time / self.pet.rise_for / 0.28),
@@ -301,6 +327,7 @@ impl App {
             scales: self.settings.scales(),
             pose,
             anchor: self.grip.as_ref().map(|grip| grip.point),
+            stuck_balls: self.stuck_balls.iter().map(|(point, _)| *point).collect(),
             effect_amount: match self.pet.activity {
                 Activity::Parachute => smoothstep(self.pet.time / 0.28),
                 Activity::Hand => smoothstep(self.pet.time / HAND_REACH),
@@ -378,6 +405,7 @@ impl App {
                         | Activity::ClimbWall
                         | Activity::Special(_)
                 ))
+            && self.pet.activity != Activity::Special(Special::Captive)
     }
 
     pub fn knock_back(&mut self, vx: f32, vy: f32, snowball_owner: Option<u64>) -> bool {
@@ -394,7 +422,31 @@ impl App {
             .impact((vx * self.pet.face / 85.0).clamp(-12.0, 12.0));
         self.pet.knock_back(vx, vy);
         self.snowball_owner = snowball_owner;
+        self.body_hits_left = snowball_owner.map(|_| 0);
         true
+    }
+
+    pub fn hit_with_snowball(&mut self, at: Point, vx: f32, vy: f32, owner: u64) -> bool {
+        if !self.can_be_struck() {
+            return false;
+        }
+        let origin = Point::from_xy(self.pet.x - self.feet_x(), self.pet.y - self.feet_y());
+        let anchor = draw::hit_anchor(&self.scene(), &self.pack, origin, self.screen.0, at);
+        if self.knock_back(vx, vy, Some(owner)) {
+            if let Some(anchor) = anchor {
+                self.stuck_balls.push((anchor, self.clock + 5.0));
+            }
+            self.body_hits_left = Some(1);
+            return true;
+        }
+        false
+    }
+
+    pub fn strike_velocity(&self) -> Option<Point> {
+        let sliding = self.pet.activity == Activity::Special(Special::RampSlide);
+        (self.body_hits_left != Some(0) && (self.pet.can_strike() || sliding))
+            .then(|| Point::from_xy(self.pet.vx, self.pet.vy))
+            .filter(|v| v.x.hypot(v.y) >= 100.0)
     }
 
     pub fn render(&mut self) -> Frame {
@@ -434,10 +486,7 @@ impl App {
                 self.origin_y = 0;
             }
         }
-        if let Some(bounds) = self
-            .cover
-            .filter(|_| self.pet.activity == Activity::Special(Special::Hide))
-        {
+        if let Some(cover) = self.visible_cover() {
             let scale = self.scale as f32;
             let x = |x: f32| {
                 ((x - self.origin_x as f32) * scale)
@@ -449,13 +498,25 @@ impl App {
                     .round()
                     .clamp(0.0, frame.height as f32) as usize
             };
-            for row in frame
+            for (line, row) in frame
                 .bgra
                 .chunks_exact_mut(frame.width as usize * 4)
-                .take(y(bounds.bottom()))
-                .skip(y(bounds.top()))
+                .enumerate()
             {
-                row[x(bounds.left()) * 4..x(bounds.right()) * 4].fill(0);
+                let at = self.origin_y as f32 + (line as f32 + 0.5) / scale;
+                if let Some((left, right)) = cover.slope_span(at) {
+                    row[x(left) * 4..x(right) * 4].fill(0);
+                }
+            }
+            for bounds in cover.solids() {
+                for row in frame
+                    .bgra
+                    .chunks_exact_mut(frame.width as usize * 4)
+                    .take(y(bounds.bottom()))
+                    .skip(y(bounds.top()))
+                {
+                    row[x(bounds.left()) * 4..x(bounds.right()) * 4].fill(0);
+                }
             }
         }
         frame
@@ -464,9 +525,7 @@ impl App {
     pub fn note_committed(&mut self) {
         self.committed_x = self.origin_x;
         self.committed_y = self.origin_y;
-        self.committed_cover = self
-            .cover
-            .filter(|_| self.pet.activity == Activity::Special(Special::Hide));
+        self.committed_cover = self.visible_cover();
         self.committed_parts = std::mem::take(&mut self.parts);
     }
 
@@ -490,13 +549,23 @@ impl App {
 
     pub fn hit_body(&self, screen_x: f32, screen_y: f32) -> bool {
         let (x, y) = self.pointer_from_screen(screen_x, screen_y);
-        !self.occluded(screen_x, screen_y) && draw::pick(&self.committed_parts, x, y).is_some()
+        self.pet.activity != Activity::Special(Special::Captive)
+            && !self.occluded(screen_x, screen_y)
+            && draw::pick(&self.committed_parts, x, y).is_some()
+    }
+
+    fn visible_cover(&self) -> Option<Cover> {
+        self.cover.filter(|_| {
+            matches!(
+                self.pet.activity,
+                Activity::Special(Special::RunCover | Special::Hide | Special::LeaveCover)
+            )
+        })
     }
 
     fn occluded(&self, x: f32, y: f32) -> bool {
-        self.committed_cover.is_some_and(|cover| {
-            (cover.left()..cover.right()).contains(&x) && (cover.top()..cover.bottom()).contains(&y)
-        })
+        self.committed_cover
+            .is_some_and(|cover| cover.contains(x, y))
     }
 
     fn feet_x(&self) -> f32 {
@@ -643,6 +712,23 @@ mod tests {
             }
         }
         panic!("no visible part named {name}");
+    }
+
+    #[test]
+    fn snowball_marks_follow_the_hit_bone_for_five_seconds() {
+        let mut app = App::new(
+            startup_room(960.0, 600.0),
+            Settings::default(),
+            Pack::builtin(),
+        );
+        let bounds = app.collision_bounds().unwrap();
+        let at = Point::from_xy(bounds.left(), (bounds.top() + bounds.bottom()) * 0.5);
+        assert!(app.hit_with_snowball(at, 750.0, -310.0, 1));
+        assert_eq!(app.scene().stuck_balls.len(), 1);
+        app.tick(4.99, false);
+        assert_eq!(app.scene().stuck_balls.len(), 1);
+        app.tick(0.02, false);
+        assert!(app.scene().stuck_balls.is_empty());
     }
 
     #[test]

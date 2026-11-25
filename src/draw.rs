@@ -71,6 +71,7 @@ pub struct Scene {
     pub scales: (f32, f32),
     pub pose: Vec<f32>,
     pub anchor: Option<BonePoint>,
+    pub stuck_balls: Vec<BonePoint>,
     pub effect_amount: f32,
 }
 
@@ -248,20 +249,9 @@ pub fn collision_bounds(
     let (left, top, right, bottom) = frame_bounds(scene, &parts);
     let width = (right - left) as f32;
     let visible = Rect::from_xywh(left as f32, top as f32, width, (bottom - top) as f32)?;
-    let rightmost = (screen_width - width).max(0.0);
     let crosses_edge =
         matches!(scene.motion, Motion::Special(action) if action.crosses_screen_edge());
-    let x = if crosses_edge {
-        (origin.x + left as f32).round()
-    } else if matches!(scene.motion, Motion::ClimbWall | Motion::SlideWall) {
-        if scene.facing_left {
-            0.0
-        } else {
-            rightmost
-        }
-    } else {
-        (origin.x + left as f32).round().clamp(0.0, rightmost)
-    };
+    let x = frame_world_x(scene, origin.x, left, width, screen_width);
     let world_body = body
         .intersect(&visible)?
         .transform(Transform::from_translate(x - left as f32, origin.y.round()))?;
@@ -275,6 +265,54 @@ pub fn collision_bounds(
     } else {
         Some(world_body)
     }
+}
+
+fn frame_world_x(scene: &Scene, origin: f32, left: i32, width: f32, screen_width: f32) -> f32 {
+    let x = (origin + left as f32).round();
+    let rightmost = (screen_width - width).max(0.0);
+    match scene.motion {
+        Motion::Special(action) if action.crosses_screen_edge() => x,
+        Motion::ClimbWall | Motion::SlideWall => {
+            if scene.facing_left {
+                0.0
+            } else {
+                rightmost
+            }
+        }
+        _ => x.clamp(0.0, rightmost),
+    }
+}
+
+pub fn hit_anchor(
+    scene: &Scene,
+    pack: &Pack,
+    origin: Point,
+    width: f32,
+    at: Point,
+) -> Option<BonePoint> {
+    let (parts, _) = pet_parts(scene, pack);
+    let (left, _, right, _) = frame_bounds(scene, &parts);
+    let x = frame_world_x(scene, origin.x, left, (right - left) as f32, width);
+    let at = Point::from_xy(at.x - x + left as f32, at.y - origin.y.round());
+    parts
+        .iter()
+        .rev()
+        .filter_map(|part| {
+            let joint = part.joint?;
+            let mut local = at;
+            part.transform.invert()?.map_point(&mut local);
+            let nearest = part.sprite.closest_ink(local)?;
+            let mut visible = nearest;
+            part.transform.map_point(&mut visible);
+            let distance = (visible.x - at.x).powi(2) + (visible.y - at.y).powi(2);
+            let anchor = BonePoint {
+                bone: joint.bone,
+                local: Point::from_xy(joint.local.x + nearest.x, joint.local.y + nearest.y),
+            };
+            Some((distance, anchor))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, anchor)| anchor)
 }
 
 pub fn scene_size((x, y): (f32, f32)) -> (u32, u32) {
@@ -356,7 +394,8 @@ fn frame_bounds(scene: &Scene, parts: &[Part]) -> (i32, i32, i32, i32) {
     let dynamic_pose = matches!(
         scene.motion,
         Motion::Drag | Motion::Fall | Motion::Down | Motion::Sculpt(_)
-    ) || !scene.pose.is_empty();
+    ) || !scene.pose.is_empty()
+        || !scene.stuck_balls.is_empty();
     if dynamic_pose {
         let bounds = surface_bounds();
         if scene.motion == Motion::Drag {
@@ -403,7 +442,15 @@ fn pet_parts(scene: &Scene, pack: &Pack) -> (Vec<Part>, Option<Point>) {
         Face::Neutral
     } else {
         match scene.motion {
-            Motion::Fall | Motion::Drag | Motion::SlideWall => Face::Shock,
+            Motion::Fall
+            | Motion::Drag
+            | Motion::SlideWall
+            | Motion::Special(
+                Special::RunCover
+                | Special::Captive
+                | Special::RampSlipFront
+                | Special::RampSlipBack,
+            ) => Face::Shock,
             _ => scene.blink.map_or(Face::Neutral, Face::Blink),
         }
     };
@@ -574,7 +621,28 @@ fn pet_parts(scene: &Scene, pack: &Pack) -> (Vec<Part>, Option<Point>) {
     {
         if let Some(centre) = snowball_centre(&parts, pack) {
             let sprite = crate::props::snowball().clone();
-            let size = (28.0 * scale_x.min(scale_y)).max(4.0);
+            let size = (56.0 * scale_x.min(scale_y)).max(8.0);
+            let scale = size / sprite.image.width() as f32;
+            parts.push(Part {
+                sprite,
+                transform: Transform::from_scale(scale, scale)
+                    .post_translate(centre.x - size * 0.5, centre.y - size * 0.5),
+                joint: None,
+            });
+        }
+    }
+    for anchor in &scene.stuck_balls {
+        if let Some((part, joint)) = parts.iter().find_map(|part| {
+            let joint = part.joint.filter(|joint| joint.bone == anchor.bone)?;
+            Some((part, joint))
+        }) {
+            let mut centre = Point::from_xy(
+                anchor.local.x - joint.local.x,
+                anchor.local.y - joint.local.y,
+            );
+            part.transform.map_point(&mut centre);
+            let sprite = crate::props::snowball().clone();
+            let size = 24.0;
             let scale = size / sprite.image.width() as f32;
             parts.push(Part {
                 sprite,
@@ -897,7 +965,11 @@ fn leg(name: &str) -> bool {
 
 fn pose_contact(pack: &Pack, pose: &Pose, motion: Motion, view: Transform) -> Option<f32> {
     let supports = |bone: &str| match motion {
-        Motion::Sit | Motion::Special(Special::RideSled) => bone == "torso" || leg(bone),
+        Motion::Sit
+        | Motion::Special(Special::RideSled | Special::RampSlide | Special::WallRecover) => {
+            bone == "torso" || leg(bone)
+        }
+        Motion::Special(Special::RampSlipFront | Special::RampSlipBack) => true,
         Motion::Idle
         | Motion::Walk
         | Motion::HandRelease
@@ -1003,6 +1075,7 @@ mod tests {
             scales: (1.0, 1.0),
             pose: Vec::new(),
             anchor: None,
+            stuck_balls: Vec::new(),
             effect_amount: 0.0,
         }
     }

@@ -8,6 +8,8 @@
 - `src/festive.rs` — fir and gift dates, planting, watering, decoration, opening gifts and spring disposal.
 - `src/interactions.rs` — conversations, snowball combat, snowman and wall building, and ground snow rendering.
 - `src/sled.rs` — sled fetching, passenger and helper activities, the two-edge route, and sled rendering.
+- `src/ramps.rs` — snow wall window, slope geometry, ladder and sliding activities.
+- `src/visitors.rs`, `src/visitor_art.rs` and `src/visitors/gifts.rs` — Santa and UFO visits, flight artwork and presents from Santa’s bag.
 - `src/world.rs` — ordinary scene save, temporary test scene, chibi rosters and snow objects.
 - `src/snowman.rs` — snowman drag speed and fragments.
 - `src/rag.rs` — suspended and free ragdoll motion, joint limits and landing pose.
@@ -18,7 +20,7 @@
 - `src/place.rs` and `ui/place.js` — tray popup positioning and fullscreen output tracking on KWin.
 - `src/game.rs` — live chibi instances, pointer routing and swept body collisions.
 - `src/app.rs` — pointer gestures and geometry for one chibi.
-- `src/host_wayland.rs` — one anchored KWin layer, input limited to live chibis, shared-memory buffer.
+- `src/host_wayland.rs` — one anchored KWin layer, input limited to interactive chibis and props, shared-memory buffer.
 - `src/host_x11.rs` — one override-redirect ARGB window per chibi on X11.
 - `src/x11_input.rs` — EWMH/RandR fullscreen detection and X Shape input regions.
 - `packaging/appimage/` — `x86_64` AppImage build and draft checks.

@@ -9,6 +9,7 @@ use tiny_skia::{Point, Rect};
 use crate::festive::Tree;
 use crate::game::{swept_contact, Instance};
 use crate::props::{self, SculptStage};
+use crate::ramps::{self, Cover};
 use crate::season::OverlayImage;
 use crate::sim::{Activity, Special};
 use crate::snowman::{Fall, Fragment, Grab, Motion};
@@ -20,10 +21,8 @@ pub const RELEASE_AT: f32 = 0.44;
 const PACK_FOR: f32 = 0.87;
 const THROW_FOR: f32 = 0.76;
 const BALL_GRAVITY: f32 = 750.0;
-const BALL_RADIUS: f32 = 5.5;
+const BALL_RADIUS: f32 = 11.0;
 const BALL_KNOCKBACK: f32 = 0.68 * 2.0;
-const WALL_HEIGHT: f32 = 84.0;
-const WALL_HALF_WIDTH: f32 = 50.0;
 const HIT_WINDOW: f64 = 30.0;
 const CANNON_DURATION: f32 = 2.5;
 
@@ -114,6 +113,10 @@ enum Guard {
         wall: usize,
         side: f32,
         hidden: bool,
+    },
+    Leave {
+        wall: usize,
+        side: f32,
     },
     Parry,
 }
@@ -348,6 +351,7 @@ impl Interactions {
                 });
                 let reconsider = match defence.guard {
                     Guard::Run { wall, .. } => !grounded[wall],
+                    Guard::Leave { .. } => true,
                     Guard::Parry => objects
                         .walls
                         .iter()
@@ -376,14 +380,15 @@ impl Interactions {
                                 app.pet.start(Activity::Special(Special::Hide));
                             }
                         }
-                        if *hidden {
-                            app.cover = wall_bounds(objects.walls[*wall], width, floor);
-                        }
+                        app.cover = wall_bounds(objects.walls[*wall], width, floor);
                     }
+                    Guard::Leave { .. } => unreachable!("active defence replaced exit"),
                     Guard::Parry => {
                         if matches!(
                             app.pet.activity,
-                            Activity::Special(Special::Hide | Special::RunCover)
+                            Activity::Special(
+                                Special::Hide | Special::RunCover | Special::LeaveCover
+                            )
                         ) {
                             app.pet.start(Activity::Idle);
                         }
@@ -401,8 +406,34 @@ impl Interactions {
                         }
                     }
                 }
-            } else if self.defences.remove(&id).is_some() && defending(app.pet.activity) {
-                app.pet.start(Activity::Idle);
+            } else if let Some(defence) = self.defences.get_mut(&id) {
+                match defence.guard {
+                    Guard::Run { wall, side, .. } | Guard::Leave { wall, side }
+                        if defending(app.pet.activity) && grounded[wall] =>
+                    {
+                        let object = objects.walls[wall];
+                        defence.guard = Guard::Leave { wall, side };
+                        app.cover = wall_bounds(object, width, floor);
+                        if app.pet.activity != Activity::Special(Special::LeaveCover) {
+                            app.pet.start(Activity::Special(Special::LeaveCover));
+                        }
+                        let depth = if (side > 0.0) == object.slope_right {
+                            ramps::RUN
+                        } else {
+                            0.0
+                        };
+                        let exit = object.position * width + side * (ramps::HALF + depth + 38.0);
+                        if !app.pet.approach_at(&app.room, exit, 155.0, dt) {
+                            continue;
+                        }
+                        app.cover = None;
+                    }
+                    _ => {}
+                }
+                self.defences.remove(&id);
+                if defending(app.pet.activity) {
+                    app.pet.start(Activity::Idle);
+                }
             }
         }
         self.defences
@@ -594,6 +625,7 @@ impl Interactions {
                 return;
             };
             world.winter_mut().walls.push(SnowWall {
+                slope_right: fastrand::bool(),
                 position,
                 seconds: 0.0,
             });
@@ -608,7 +640,7 @@ impl Interactions {
         self.tasks.insert(pet.id, task);
     }
 
-    fn wall_grounded(&self, slot: usize) -> bool {
+    pub fn wall_grounded(&self, slot: usize) -> bool {
         matches!(self.wall_motion[slot], Motion::Grounded)
     }
 
@@ -654,8 +686,17 @@ impl Interactions {
         let (width, floor, height) = room;
         if let Motion::Held { grab, lift } = &mut self.wall_motion[slot] {
             let base = grab.move_to(point, now);
-            let margin = (56.0 / width).min(0.5);
-            wall.position = (base.x / width).clamp(margin, 1.0 - margin);
+            let ladder_span = ramps::HALF + 15.0;
+            let slope_span = ramps::HALF + ramps::RUN;
+            let (left, right) = if !wall.finished() {
+                (ramps::HALF, ramps::HALF)
+            } else if wall.slope_right {
+                (ladder_span, slope_span)
+            } else {
+                (slope_span, ladder_span)
+            };
+            wall.position =
+                (base.x / width).clamp((left / width).min(0.5), 1.0 - (right / width).min(0.5));
             *lift = (floor - base.y).clamp(0.0, (floor - height).max(0.0));
         }
     }
@@ -998,6 +1039,7 @@ impl Interactions {
             .enumerate()
             .filter(|(slot, _)| self.wall_grounded(*slot))
             .filter_map(|(_, &wall)| wall_bounds(wall, width, floor))
+            .flat_map(Cover::solids)
             .collect();
         let retaliations = &mut self.retaliations;
         let snow_hits = &mut self.snow_hits;
@@ -1063,10 +1105,15 @@ impl Interactions {
                     }
                     return true;
                 }
-                if pets[index].app.knock_back(
+                let at = Point::from_xy(
+                    before.x + (ball.position.x - before.x) * time,
+                    before.y + (ball.position.y - before.y) * time,
+                );
+                if pets[index].app.hit_with_snowball(
+                    at,
                     (ball.vx * BALL_KNOCKBACK).clamp(-1450.0, 1450.0),
                     -310.0,
-                    Some(ball.owner),
+                    ball.owner,
                 ) {
                     let hits = snow_hits.entry(id).or_default();
                     hits.retain(|time| now - time <= HIT_WINDOW);
@@ -1152,7 +1199,7 @@ impl Snowball {
 fn defending(activity: Activity) -> bool {
     matches!(
         activity,
-        Activity::Special(Special::RunCover | Special::Hide | Special::Parry)
+        Activity::Special(Special::RunCover | Special::Hide | Special::LeaveCover | Special::Parry)
     )
 }
 
@@ -1183,16 +1230,9 @@ fn cover_for(
         })
 }
 
-fn wall_bounds(wall: SnowWall, width: f32, floor: f32) -> Option<Rect> {
-    wall.finished().then(|| {
-        Rect::from_xywh(
-            wall.position * width - WALL_HALF_WIDTH,
-            floor - WALL_HEIGHT,
-            WALL_HALF_WIDTH * 2.0,
-            WALL_HEIGHT,
-        )
-        .expect("wall collision dimensions")
-    })
+fn wall_bounds(wall: SnowWall, width: f32, floor: f32) -> Option<Cover> {
+    wall.finished()
+        .then(|| Cover::new(wall.position * width, floor, wall.slope_right))
 }
 
 fn wall_pose(seconds: f32) -> SculptStage {
@@ -1272,7 +1312,7 @@ pub struct WinterArt {
     ball: Option<OverlayImage>,
     men: [Option<(u8, OverlayImage)>; MAX_SNOWMEN],
     fragments: Vec<OverlayImage>,
-    walls: Vec<(u8, OverlayImage)>,
+    walls: Vec<((u8, bool), OverlayImage)>,
 }
 
 fn snowman_step(seconds: f32) -> u8 {
@@ -1295,15 +1335,15 @@ impl WinterArt {
         }
         self.walls.truncate(objects.walls.len());
         for (index, wall) in objects.walls.iter().enumerate() {
-            let step = snowman_step(wall.seconds);
+            let key = (snowman_step(wall.seconds), wall.slope_right);
             if let Some((old, image)) = self.walls.get_mut(index) {
-                if *old != step {
-                    *old = step;
-                    *image = props::snow_wall(step, scale).into();
+                if *old != key {
+                    *old = key;
+                    *image = props::snow_wall(key.0, key.1, scale).into();
                 }
             } else {
                 self.walls
-                    .push((step, props::snow_wall(step, scale).into()));
+                    .push((key, props::snow_wall(key.0, key.1, scale).into()));
             }
         }
         for (slot, cached) in self.men.iter_mut().enumerate() {
@@ -1332,6 +1372,35 @@ impl WinterArt {
     pub fn wall_bounds(&self, slot: usize, wall: SnowWall, width: u32, floor: f32) -> Option<Rect> {
         let (_, image) = self.walls.get(slot)?;
         self.prop_bounds(image, wall.position * width as f32, floor)
+    }
+
+    pub fn wall_ink(
+        &self,
+        slot: usize,
+        wall: SnowWall,
+        width: u32,
+        floor: f32,
+    ) -> impl Iterator<Item = Rect> + '_ {
+        let scale = self.scale.max(1);
+        self.walls
+            .get(slot)
+            .into_iter()
+            .flat_map(move |(_, image)| {
+                let scale_f = scale as f32;
+                let left = wall.position * width as f32 - image.width as f32 / (2.0 * scale_f);
+                let top = floor - image.height as f32 / scale_f;
+                image.ink.iter().filter_map(move |&(x, y, width)| {
+                    if y as u32 % scale != scale / 2 {
+                        return None;
+                    }
+                    Rect::from_xywh(
+                        left + f32::from(x) / scale_f,
+                        top + (y as u32 / scale) as f32,
+                        f32::from(width) / scale_f,
+                        1.0,
+                    )
+                })
+            })
     }
 
     fn prop_bounds(&self, image: &OverlayImage, centre: f32, floor: f32) -> Option<Rect> {
@@ -1459,6 +1528,7 @@ mod tests {
     fn a_counter_is_parried_without_cover_or_blocked_by_a_finished_wall() {
         let mut objects = WinterObjects::default();
         objects.walls.push(SnowWall {
+            slope_right: true,
             position: 0.5,
             seconds: 450.0,
         });
@@ -1494,11 +1564,19 @@ mod tests {
         interactions.balls.clear();
         interactions.counters.insert(0, 1);
         objects.walls[0].seconds = SNOWMAN_SECONDS;
+        interactions.defend(&mut pets, &objects, 1000.0, 650.0, 0.01);
+        assert_eq!(
+            pets[1].app.pet.activity,
+            Activity::Special(Special::RunCover)
+        );
+        assert!(pets[1].app.cover.is_some());
         for _ in 0..10 {
             interactions.defend(&mut pets, &objects, 1000.0, 650.0, 0.05);
         }
         assert_eq!(pets[1].app.pet.activity, Activity::Special(Special::Hide));
-        assert!(pets[1].app.cover.is_some());
+        let cover = pets[1].app.cover.unwrap();
+        assert!(cover.contains(475.0, 600.0));
+        assert!(!cover.contains(500.0, 600.0));
         interactions.balls.push(Snowball {
             owner: 0,
             position: Point::from_xy(400.0, y),
@@ -1511,6 +1589,19 @@ mod tests {
         }
         assert!(interactions.balls.is_empty());
         assert_eq!(pets[1].app.pet.activity, Activity::Special(Special::Hide));
+        interactions.counters.clear();
+        interactions.balls.clear();
+        interactions.defend(&mut pets, &objects, 1000.0, 650.0, 0.05);
+        assert_eq!(
+            pets[1].app.pet.activity,
+            Activity::Special(Special::LeaveCover)
+        );
+        assert!(pets[1].app.cover.is_some());
+        for _ in 0..30 {
+            interactions.defend(&mut pets, &objects, 1000.0, 650.0, 0.05);
+        }
+        assert_eq!(pets[1].app.pet.activity, Activity::Idle);
+        assert!(pets[1].app.cover.is_none());
     }
 
     #[test]
