@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use std::collections::VecDeque;
+use std::time::{Duration, Instant};
 
-use tiny_skia::Point;
+use tiny_skia::{Point, Rect};
 
 use crate::game::Instance;
 use crate::season::OverlayImage;
@@ -12,6 +13,7 @@ use crate::visitor_art;
 use crate::world::World;
 
 mod gifts;
+mod rewards;
 pub use gifts::Gifts;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -89,6 +91,8 @@ pub struct Visitors {
     scene: Option<Scene>,
     art: Art,
     floor: f32,
+    santa_clicks: Option<(Instant, u8)>,
+    santa_dropped: bool,
 }
 
 impl Default for Visitors {
@@ -100,6 +104,8 @@ impl Default for Visitors {
             scene: None,
             art: Art::default(),
             floor: 0.0,
+            santa_clicks: None,
+            santa_dropped: false,
         }
     }
 }
@@ -160,11 +166,15 @@ impl Visitors {
                 automatic
             }?;
             self.scene = Some(match guest {
-                Kind::Santa => Scene::Santa {
-                    x: -visitor_art::SANTA_WIDTH * 0.5,
-                    age: 0.0,
-                    passenger: None,
-                },
+                Kind::Santa => {
+                    self.santa_clicks = None;
+                    self.santa_dropped = false;
+                    Scene::Santa {
+                        x: -visitor_art::SANTA_WIDTH * 0.5,
+                        age: 0.0,
+                        passenger: None,
+                    }
+                }
                 Kind::Ufo => {
                     let candidate = pets
                         .iter()
@@ -297,10 +307,11 @@ impl Visitors {
                     if let Some(pet) = target {
                         pet.app.pet.start(Activity::Special(Special::Captive));
                         passenger = Some((pet.id, age));
-                        if fastrand::f32() < 0.05 && world.winter().santa_bag.is_none() {
-                            world.winter_mut().santa_bag =
-                                Some(gift_position(pet.app.pet.x, width));
-                            world.save_now();
+                        if !self.santa_dropped
+                            && world.winter().santa_bag.is_none()
+                            && fastrand::f32() < 0.05
+                        {
+                            self.drop_bag(world, pet.app.pet.x, width);
                         }
                     }
                 }
@@ -323,6 +334,81 @@ impl Visitors {
             }
         }
         None
+    }
+
+    fn drop_bag(&mut self, world: &mut World, x: f32, width: f32) {
+        self.santa_dropped = true;
+        world.winter_mut().santa_bag = Some(gift_position(x, width));
+        world.save_now();
+    }
+
+    pub fn click_santa(
+        &mut self,
+        world: &mut World,
+        point: Point,
+        now: Instant,
+        width: u32,
+    ) -> Option<bool> {
+        if width == 0
+            || !self.input_rects().any(|rect| {
+                (rect.left()..rect.right()).contains(&point.x)
+                    && (rect.top()..rect.bottom()).contains(&point.y)
+            })
+        {
+            return None;
+        }
+        let Some(Scene::Santa { x, .. }) = self.scene else {
+            return None;
+        };
+        let mut dropped = false;
+        if !self.santa_dropped {
+            let (first, taps) = self
+                .santa_clicks
+                .filter(|(first, _)| {
+                    now.saturating_duration_since(*first) <= Duration::from_millis(850)
+                })
+                .unwrap_or((now, 0));
+            if taps == 2 {
+                self.drop_bag(world, x + visitor_art::SANTA_GRAB, width as f32);
+                dropped = true;
+            } else {
+                self.santa_clicks = Some((first, taps + 1));
+            }
+        }
+        Some(dropped)
+    }
+
+    pub fn input_rects(&self) -> impl Iterator<Item = Rect> + '_ {
+        self.santa_image()
+            .into_iter()
+            .flat_map(move |(x, y, image)| {
+                let scale = self.art.scale.max(1) as i32;
+                let s = scale as f32;
+                image.ink.iter().filter_map(move |&(left, top, width)| {
+                    (i32::from(top) % scale == scale / 2)
+                        .then(|| {
+                            Rect::from_xywh(
+                                (x + i32::from(left)) as f32 / s,
+                                (y + i32::from(top) - scale / 2) as f32 / s,
+                                f32::from(width) / s,
+                                1.0,
+                            )
+                        })
+                        .flatten()
+                })
+            })
+    }
+
+    fn santa_image(&self) -> Option<(i32, i32, &OverlayImage)> {
+        let Scene::Santa { x, age, passenger } = self.scene? else {
+            return None;
+        };
+        let image = self.art.santa.get((age * 12.0) as usize % 4)?;
+        Some(image_at(
+            Point::from_xy(x, self.santa_y(age, passenger)),
+            image,
+            self.art.scale as f32,
+        ))
     }
 
     fn santa_y(&self, age: f32, passenger: Option<(u64, f32)>) -> f32 {
@@ -348,15 +434,7 @@ impl Visitors {
                         });
                 }
             }
-            Some(Scene::Santa { x, age, passenger }) => {
-                guest = self.art.santa.get((age * 12.0) as usize % 4).map(|image| {
-                    image_at(
-                        Point::from_xy(x, self.santa_y(age, passenger)),
-                        image,
-                        scale,
-                    )
-                });
-            }
+            Some(Scene::Santa { .. }) => guest = self.santa_image(),
             None => {}
         }
         ray.into_iter().chain(guest)
@@ -391,4 +469,46 @@ fn image_at(point: Point, image: &OverlayImage, scale: f32) -> (i32, i32, &Overl
         (point.y * scale - image.height as f32).round() as i32,
         image,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_third_quick_click_on_santa_drops_the_bag_during_the_flight() {
+        let mut world = World::test(crate::pack::BUILTIN_ID);
+        world.winter_mut().santa_bag = Some(0.75);
+        let mut visitors = Visitors {
+            scene: Some(Scene::Santa {
+                x: 300.0,
+                age: 0.0,
+                passenger: None,
+            }),
+            floor: 500.0,
+            ..Visitors::default()
+        };
+        visitors.art.scale = 1;
+        visitors.art.santa = vec![visitor_art::santa(0, 1).into()];
+        let ink = visitors
+            .input_rects()
+            .find(|r| r.width() > 5.0)
+            .expect("visible Santa");
+        let at = Point::from_xy(ink.left() + 2.0, ink.top() + 0.5);
+        let start = Instant::now();
+        for (tap, elapsed) in [0, 160, 310].into_iter().enumerate() {
+            assert_eq!(
+                visitors.click_santa(&mut world, at, start + Duration::from_millis(elapsed), 800),
+                Some(tap == 2)
+            );
+        }
+        assert_eq!(
+            world.winter().santa_bag,
+            Some(gift_position(300.0 + visitor_art::SANTA_GRAB, 800.0))
+        );
+        assert_eq!(
+            visitors.click_santa(&mut world, at, start + Duration::from_millis(480), 800),
+            Some(false)
+        );
+    }
 }

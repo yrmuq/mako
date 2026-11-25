@@ -7,7 +7,7 @@ use crate::config::Settings;
 use crate::draw::{self, Frame, Motion, Part, Scene};
 use crate::pack::{BonePoint, Pack};
 use crate::props::SculptStage;
-use crate::rag::{Lying, Ragdoll};
+use crate::rag::Ragdoll;
 use crate::ramps::Cover;
 use crate::sim::{
     Activity, Pet, Room, Special, FEET_X, FEET_Y, GRAVITY, HAND_REACH, HAND_RELEASE,
@@ -166,6 +166,9 @@ impl App {
                 let ax = ((self.pet.vx - vx) / dt.max(0.001)).clamp(-14000.0, 14000.0);
                 let ay = ((self.pet.vy - vy) / dt.max(0.001)).clamp(-14000.0, 14000.0);
                 self.rag.step(dt, ax, ay, self.settings.pet_scale());
+            } else if self.pet.activity == Activity::Special(Special::RampTumble) {
+                self.rag
+                    .step(dt, 540.0 * self.pet.face, 870.0, self.settings.pet_scale());
             } else if self.pet.activity == Activity::Down {
                 self.rag.plant(vx * self.pet.face);
                 self.rag.settle(dt, &self.pack);
@@ -290,19 +293,6 @@ impl App {
     fn scene(&self) -> Scene {
         let (tilt, pose) = if self.pet.activity == Activity::Rise {
             self.rise_pose()
-        } else if matches!(
-            self.pet.activity,
-            Activity::Special(Special::RampSlipFront | Special::RampSlipBack)
-        ) {
-            let side = if self.pet.activity == Activity::Special(Special::RampSlipFront) {
-                Lying::Front
-            } else {
-                Lying::Back
-            };
-            (
-                side.tilt(),
-                self.pack.rise_degrees(side.rise_animation(), 0.0),
-            )
         } else if self.rag.live {
             (self.rag.turn(), self.rag.degrees())
         } else {
@@ -424,6 +414,46 @@ impl App {
         self.snowball_owner = snowball_owner;
         self.body_hits_left = snowball_owner.map(|_| 0);
         true
+    }
+
+    pub fn start_ramp_tumble(&mut self, on_back: bool) {
+        let degrees = self.pack.local_degrees(self.motion_name(), self.pet.phase);
+        let turn = if on_back { -1.0 } else { 1.0 };
+        self.rag.seed(&degrees);
+        self.rag.set_turn(turn * 0.31);
+        self.rag.impact(turn * 4.6);
+        self.pet.start(Activity::Special(Special::RampTumble));
+    }
+
+    pub fn finish_ramp_tumble(&mut self, speed: f32) {
+        self.pet.vx = speed;
+        self.pet.vy = 0.0;
+        self.rag.plant(speed * self.pet.face);
+        self.pet.start(Activity::Down);
+        self.body_hits_left = Some(0);
+    }
+
+    pub fn blast(&mut self, vx: f32, vy: f32) {
+        if self.grip.is_some() || self.pet.activity == Activity::Special(Special::Captive) {
+            return;
+        }
+        if !self.rag.live || self.pet.activity == Activity::Rise {
+            let (turn, degrees) = if self.pet.activity == Activity::Rise {
+                self.rise_pose()
+            } else {
+                (
+                    self.pet.tilt(),
+                    self.pack.local_degrees(self.motion_name(), self.pet.phase),
+                )
+            };
+            self.rag.seed(&degrees);
+            self.rag.set_turn(turn);
+        }
+        self.rag
+            .impact((vx * self.pet.face / 90.0).clamp(-12.0, 12.0));
+        self.pet.knock_back(vx, vy);
+        self.snowball_owner = None;
+        self.body_hits_left = Some(0);
     }
 
     pub fn hit_with_snowball(&mut self, at: Point, vx: f32, vy: f32, owner: u64) -> bool {

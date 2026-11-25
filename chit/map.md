@@ -9,7 +9,7 @@
 - `src/interactions.rs` — conversations, snowball combat, snowman and wall building, and ground snow rendering.
 - `src/sled.rs` — sled fetching, passenger and helper activities, the two-edge route, and sled rendering.
 - `src/ramps.rs` — snow wall window, slope geometry, ladder and sliding activities.
-- `src/visitors.rs`, `src/visitor_art.rs` and `src/visitors/gifts.rs` — Santa and UFO visits, flight artwork and presents from Santa’s bag.
+- `src/visitors.rs`, `src/visitor_art.rs` and `src/visitors/` — Santa and UFO visits, visitor artwork, and presents and rewards from Santa’s bag.
 - `src/world.rs` — ordinary scene save, temporary test scene, chibi rosters and snow objects.
 - `src/snowman.rs` — snowman drag speed and fragments.
 - `src/rag.rs` — suspended and free ragdoll motion, joint limits and landing pose.

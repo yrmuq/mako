@@ -182,3 +182,89 @@ pub fn santa(leg: usize, scale: u32) -> Pixmap {
     });
     resize_art(art, scale)
 }
+
+pub fn coal(scale: u32) -> Pixmap {
+    let mut art = Pixmap::new(19, 15).unwrap();
+    for (color, points) in [
+        (
+            [39, 37, 48, 255],
+            [
+                (0.5, 8.0),
+                (5.0, 2.0),
+                (12.0, 0.5),
+                (18.0, 5.5),
+                (17.3, 11.0),
+                (10.2, 14.5),
+                (3.5, 13.0),
+            ],
+        ),
+        (
+            [78, 76, 93, 255],
+            [
+                (2.0, 8.0),
+                (6.0, 3.0),
+                (12.0, 1.8),
+                (15.0, 5.0),
+                (10.0, 5.0),
+                (7.0, 9.0),
+                (5.0, 10.0),
+            ],
+        ),
+    ] {
+        paint(&mut art, color, None, |p| {
+            p.move_to(points[0].0, points[0].1);
+            for (x, y) in points.into_iter().skip(1) {
+                p.line_to(x, y);
+            }
+            p.close();
+        });
+    }
+    resize_art(art, scale)
+}
+
+pub fn bomb(lit: bool, scale: u32) -> Pixmap {
+    let mut art = Pixmap::new(35, 37).unwrap();
+    oval(&mut art, (3.0, 10.0, 29.0, 27.0), [35, 34, 46, 255]);
+    oval(&mut art, (7.0, 14.0, 11.0, 9.0), [85, 82, 103, 255]);
+    paint(&mut art, [128, 99, 73, 255], Some(2.4), |p| {
+        p.move_to(19.0, 13.0);
+        p.quad_to(16.0, 4.5, 28.0, 5.0);
+    });
+    let r = if lit { 5.0 } else { 3.0 };
+    paint(&mut art, [247, 149, 52, 255], Some(1.5), |p| {
+        p.move_to(28.0 - r, 5.0);
+        p.line_to(28.0 + r, 5.0);
+        p.move_to(28.0, 5.0 - r);
+        p.line_to(28.0, 5.0 + r);
+    });
+    oval(&mut art, (26.5, 3.5, 3.0, 3.0), [255, 241, 153, 255]);
+    resize_art(art, scale)
+}
+
+pub fn blast(frame: usize, scale: u32) -> Pixmap {
+    let mut art = Pixmap::new(270, 182).unwrap();
+    let radius = [44.0, 81.0, 120.0][frame];
+    let opacity = [255, 233, 145][frame];
+    let centre = Point::from_xy(135.0, 120.0);
+    for (scale, color) in [
+        (1.0, [239, 88, 52, opacity]),
+        (0.71, [255, 172, 60, opacity]),
+        (0.43, [255, 243, 157, opacity]),
+    ] {
+        paint(&mut art, color, None, |path| {
+            for point in 0..24 {
+                let turn = point as f32 * std::f32::consts::TAU / 24.0;
+                let reach = radius * scale * if point % 2 == 0 { 1.0 } else { 0.62 };
+                let x = centre.x + turn.cos() * reach;
+                let y = centre.y + turn.sin() * reach * 0.48;
+                if point == 0 {
+                    path.move_to(x, y);
+                } else {
+                    path.line_to(x, y);
+                }
+            }
+            path.close();
+        });
+    }
+    resize_art(art, scale)
+}

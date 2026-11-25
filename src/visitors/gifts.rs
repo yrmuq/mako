@@ -14,6 +14,7 @@ use crate::snowman::Grab;
 use crate::visitor_art;
 use crate::world::{VisitorGift, World};
 
+use super::rewards::{Reward, Rewards};
 use super::{gift_position, image_at};
 
 #[derive(Default)]
@@ -70,9 +71,12 @@ struct Spark {
 #[derive(Default)]
 pub struct Gifts {
     last_bag_click: Option<Instant>,
+    bag_press: Option<Point>,
+    bag_motion: Motion,
     motion: Vec<Motion>,
     opening: Option<Opening>,
-    eating: Option<(u64, f32)>,
+    eating: Vec<(u64, f32)>,
+    rewards: Rewards,
     confetti: Vec<Spark>,
     art: Art,
 }
@@ -94,7 +98,16 @@ const RIBBONS: [[u8; 4]; 4] = [
 
 impl Gifts {
     pub fn grabbed_at(&self) -> Option<Point> {
-        self.held_slot().map(|(_, cursor)| cursor)
+        match &self.bag_motion {
+            Motion::Held { grab, .. } => Some(grab.cursor()),
+            _ => self.held_slot().map(|(_, cursor)| cursor),
+        }
+    }
+
+    pub fn bag_dropped(&mut self) {
+        self.bag_motion = Motion::Ground;
+        self.bag_press = None;
+        self.last_bag_click = None;
     }
 
     fn held_slot(&self) -> Option<(usize, Point)> {
@@ -118,30 +131,6 @@ impl Gifts {
     ) -> bool {
         let width = width as f32;
         let winter = world.winter();
-        if let Some(x) = winter
-            .santa_bag
-            .filter(|x| contains(bounds(*x * width, floor, 49.0, 47.0), point))
-        {
-            if self.last_bag_click.take().is_some_and(|first| {
-                now.saturating_duration_since(first) <= Duration::from_millis(400)
-            }) {
-                let side = if x < 0.5 { 1.0 } else { -1.0 };
-                let position =
-                    gift_position(x * width + side * (45.0 + fastrand::f32() * 30.0), width);
-                world.winter_mut().santa_gifts.push(VisitorGift {
-                    position,
-                    box_color: fastrand::u8(0..4),
-                    ribbon_color: fastrand::u8(0..4),
-                });
-                self.motion.push(Motion::Ground);
-                self.art.update(self.art.scale.max(1));
-                world.save_now();
-            } else {
-                self.last_bag_click = Some(now);
-            }
-            return true;
-        }
-        self.last_bag_click = None;
         let Some(slot) = winter
             .santa_gifts
             .iter()
@@ -154,8 +143,22 @@ impl Gifts {
                 )
             })
         else {
+            if let Some(x) = winter.santa_bag {
+                let lift = self.bag_motion.lift();
+                let base = Point::from_xy(x * width, floor - lift);
+                if contains(bounds(base.x, base.y, 49.0, 47.0), point) {
+                    self.bag_motion = Motion::Held {
+                        grab: Grab::new(point, base, now),
+                        lift,
+                    };
+                    self.bag_press = Some(point);
+                    return true;
+                }
+            }
+            self.last_bag_click = None;
             return false;
         };
+        self.last_bag_click = None;
         if self.opening.as_ref().is_some_and(|job| job.slot == slot) {
             self.cancel_opening(pets);
         }
@@ -179,6 +182,32 @@ impl Gifts {
         floor: f32,
         kind: Pointer,
     ) {
+        if let Motion::Held { grab, lift } = &mut self.bag_motion {
+            if !matches!(kind, Pointer::Motion | Pointer::LeftUp) || width == 0 {
+                return;
+            }
+            let width = width as f32;
+            if self
+                .bag_press
+                .is_some_and(|start| (point.x - start.x).hypot(point.y - start.y) > 5.0)
+            {
+                self.bag_press = None;
+                self.last_bag_click = None;
+            }
+            if self.bag_press.is_none() {
+                let at = grab.move_to(point, now);
+                *lift = (floor - at.y).clamp(0.0, (floor - 47.0).max(0.0));
+                world.winter_mut().santa_bag = Some(gift_position(at.x, width));
+                world.changed();
+            }
+            if matches!(kind, Pointer::LeftUp) {
+                if self.bag_press.take().is_some() {
+                    self.click_bag(world, now, width);
+                }
+                self.release(world, None);
+            }
+            return;
+        }
         let Some((slot, _)) = self.held_slot() else {
             return;
         };
@@ -197,26 +226,51 @@ impl Gifts {
         }
     }
 
-    pub fn release(&mut self, world: &mut World, velocity: Option<Point>) {
-        if let Some((slot, _)) = self.held_slot() {
-            let lift = self.motion[slot].lift();
-            self.motion[slot] = if lift > 0.0 || velocity.is_some() {
-                Motion::Air {
-                    lift,
-                    velocity: velocity.unwrap_or_default(),
-                }
-            } else {
-                Motion::Ground
+    fn click_bag(&mut self, world: &mut World, now: Instant, width: f32) {
+        if self
+            .last_bag_click
+            .take()
+            .is_some_and(|first| now.saturating_duration_since(first) <= Duration::from_millis(400))
+        {
+            let Some(x) = world.winter().santa_bag else {
+                return;
             };
+            let side = if x < 0.5 { 1.0 } else { -1.0 };
+            let position = gift_position(x * width + side * (45.0 + fastrand::f32() * 30.0), width);
+            world.winter_mut().santa_gifts.push(VisitorGift {
+                position,
+                box_color: fastrand::u8(0..4),
+                ribbon_color: fastrand::u8(0..4),
+            });
+            self.motion
+                .resize_with(world.winter().santa_gifts.len(), Motion::default);
+            self.art.update(self.art.scale.max(1));
+            world.save_now();
+        } else {
+            self.last_bag_click = Some(now);
+        }
+    }
+
+    pub fn release(&mut self, world: &mut World, velocity: Option<Point>) {
+        if let Motion::Held { lift, .. } = self.bag_motion {
+            if self.bag_press.take().is_some() {
+                self.last_bag_click = None;
+            }
+            self.bag_motion = airborne(lift, None);
+            world.save_now();
+        } else if let Some((slot, _)) = self.held_slot() {
+            let lift = self.motion[slot].lift();
+            self.motion[slot] = airborne(lift, velocity);
             world.save_now();
         }
     }
 
     pub fn reset(&mut self, pets: &mut [Instance]) {
         self.cancel_opening(pets);
-        if let Some((id, _)) = self.eating.take() {
+        for (id, _) in self.eating.drain(..) {
             stop(pets, id, Activity::Special(Special::EatCandy));
         }
+        self.rewards.stop(pets);
         *self = Self::default();
     }
 
@@ -248,28 +302,34 @@ impl Gifts {
         {
             self.art.update(scale);
         }
-        for (slot, motion) in self.motion.iter_mut().enumerate() {
-            if let Motion::Air { lift, velocity } = motion {
-                let old = world.winter().santa_gifts[slot].position;
-                let next = gift_position(old * width + velocity.x * dt, width);
-                *lift -= (velocity.y + 450.0 * dt) * dt;
-                velocity.y += 900.0 * dt;
-                world.winter_mut().santa_gifts[slot].position = next;
-                if *lift <= 0.0 && velocity.y >= 0.0 {
-                    *motion = Motion::Ground;
-                    world.save_now();
-                } else {
-                    world.changed();
-                }
+        let mut changed = false;
+        let mut landed = false;
+        let winter = world.winter_mut();
+        if let Some(position) = &mut winter.santa_bag {
+            if let Some(grounded) = step_air(&mut self.bag_motion, position, width, dt) {
+                changed = true;
+                landed |= grounded;
             }
         }
-        if let Some((pet, left)) = &mut self.eating {
+        for (motion, gift) in self.motion.iter_mut().zip(&mut winter.santa_gifts) {
+            if let Some(grounded) = step_air(motion, &mut gift.position, width, dt) {
+                changed = true;
+                landed |= grounded;
+            }
+        }
+        if landed {
+            world.save_now();
+        } else if changed {
+            world.changed();
+        }
+        self.eating.retain_mut(|(pet, left)| {
             *left -= dt;
             if *left <= 0.0 {
                 stop(pets, *pet, Activity::Special(Special::EatCandy));
-                self.eating = None;
             }
-        }
+            *left > 0.0
+        });
+        self.rewards.tick(pets, width, floor, scale, dt);
         self.confetti.retain_mut(|spark| {
             spark.life -= dt;
             spark.speed.y += 320.0 * dt;
@@ -306,12 +366,15 @@ impl Gifts {
                     world.winter_mut().santa_gifts.remove(work.slot);
                     self.motion.remove(work.slot);
                     world.save_now();
-                    if self.eating.is_none() && fastrand::f32() < 0.20 {
-                        actor.app.pet.start(Activity::Special(Special::EatCandy));
-                        self.eating = Some((actor.id, 2.24));
-                    } else {
-                        actor.app.pet.start(Activity::Idle);
-                        self.burst(Point::from_xy(x, floor - 25.0));
+                    actor.app.pet.start(Activity::Idle);
+                    match Reward::roll(fastrand::u8(0..100)) {
+                        Reward::Candy => {
+                            actor.app.pet.start(Activity::Special(Special::EatCandy));
+                            self.eating.push((actor.id, 2.24));
+                        }
+                        Reward::Confetti => self.burst(Point::from_xy(x, floor - 25.0)),
+                        Reward::Bomb => self.rewards.bomb(Point::from_xy(x, floor)),
+                        Reward::Coal => self.rewards.throw_coal(actor),
                     }
                     return;
                 }
@@ -368,7 +431,7 @@ impl Gifts {
         winter
             .santa_bag
             .into_iter()
-            .map(move |x| bounds(x * width, floor, 49.0, 47.0))
+            .map(move |x| bounds(x * width, floor - self.bag_motion.lift(), 49.0, 47.0))
             .chain(
                 winter
                     .santa_gifts
@@ -393,7 +456,13 @@ impl Gifts {
         let bag = winter
             .santa_bag
             .zip(self.art.bag.as_ref())
-            .map(|(x, image)| image_at(Point::from_xy(x * width, floor), image, scale));
+            .map(|(x, image)| {
+                image_at(
+                    Point::from_xy(x * width, floor - self.bag_motion.lift()),
+                    image,
+                    scale,
+                )
+            });
         bag.into_iter()
             .chain(
                 winter
@@ -420,6 +489,7 @@ impl Gifts {
                     scale,
                 ))
             }))
+            .chain(self.rewards.images())
     }
 }
 
@@ -441,6 +511,31 @@ impl Art {
             .map(|color| props::confetti(color, scale).into())
             .collect();
     }
+}
+
+fn airborne(lift: f32, velocity: Option<Point>) -> Motion {
+    if lift > 0.0 || velocity.is_some() {
+        Motion::Air {
+            lift,
+            velocity: velocity.unwrap_or_default(),
+        }
+    } else {
+        Motion::Ground
+    }
+}
+
+fn step_air(motion: &mut Motion, position: &mut f32, width: f32, dt: f32) -> Option<bool> {
+    let Motion::Air { lift, velocity } = motion else {
+        return None;
+    };
+    *position = gift_position(*position * width + velocity.x * dt, width);
+    *lift -= (velocity.y + 450.0 * dt) * dt;
+    velocity.y += 900.0 * dt;
+    let landed = *lift <= 0.0 && velocity.y >= 0.0;
+    if landed {
+        *motion = Motion::Ground;
+    }
+    Some(landed)
 }
 
 fn stop(pets: &mut [Instance], id: u64, activity: Activity) {
@@ -471,19 +566,45 @@ mod tests {
         let mut gifts = Gifts::default();
         let (width, floor) = (800, 600.0);
         world.winter_mut().santa_bag = Some(0.5);
-        let click = Point::from_xy(400.0, floor - 24.0);
+        let from = Point::from_xy(400.0, floor - 24.0);
+        let up = Point::from_xy(480.0, floor - 94.0);
         let now = Instant::now();
-        assert!(gifts.click(&mut [], &mut world, click, now, width, floor));
-        assert!(world.winter().santa_gifts.is_empty());
-        assert!(gifts.click(
-            &mut [],
+        assert!(gifts.click(&mut [], &mut world, from, now, width, floor));
+        gifts.drag(
             &mut world,
-            click,
-            now + Duration::from_millis(140),
+            up,
+            now + Duration::from_millis(100),
             width,
-            floor
-        ));
-        assert_eq!(world.winter().santa_gifts.len(), 1);
+            floor,
+            Pointer::Motion,
+        );
+        assert_eq!(gifts.bag_motion.lift(), 70.0);
+        gifts.drag(
+            &mut world,
+            up,
+            now + Duration::from_millis(150),
+            width,
+            floor,
+            Pointer::LeftUp,
+        );
+        assert!(world.winter().santa_gifts.is_empty());
+        for _ in 0..20 {
+            gifts.tick(&mut [], &mut world, width, floor, 1, 0.03);
+        }
+        let click = Point::from_xy(480.0, floor - 24.0);
+        for (tap, elapsed) in [640, 790].into_iter().enumerate() {
+            let pressed = now + Duration::from_millis(elapsed);
+            assert!(gifts.click(&mut [], &mut world, click, pressed, width, floor));
+            gifts.drag(
+                &mut world,
+                click,
+                pressed + Duration::from_millis(40),
+                width,
+                floor,
+                Pointer::LeftUp,
+            );
+            assert_eq!(world.winter().santa_gifts.len(), tap);
+        }
         let initial = world.winter().santa_gifts[0].position * width as f32;
         let gift = Point::from_xy(initial, floor - 15.0);
         assert!(gifts.click(&mut [], &mut world, gift, now, width, floor));
@@ -518,6 +639,6 @@ mod tests {
             gifts.tick(&mut pets, &mut world, width, floor, 1, 0.04);
         }
         assert!(world.winter().santa_gifts.is_empty());
-        assert_eq!(world.winter().santa_bag, Some(0.5));
+        assert_eq!(world.winter().santa_bag, Some(0.6));
     }
 }

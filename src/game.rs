@@ -371,6 +371,7 @@ impl Game {
             .filter_map(|slot| self.snowman_bounds(slot))
             .chain((0..MAX_SNOW_WALLS).flat_map(|slot| self.wall_ink(slot)))
             .chain(self.festive.input_rects())
+            .chain(self.visitors.input_rects())
             .chain(self.gifts.input_rects(
                 &self.world,
                 self.width,
@@ -451,6 +452,20 @@ impl Game {
                 }
             }
         }
+        let floor = (self.room.floor - self.bottom).max(0.0);
+        for slot in (0..self.world.winter().walls.len()).rev() {
+            if let Some(speed) = self.interactions.wall_impact(slot, dt) {
+                let height = self
+                    .wall_bounds(slot)
+                    .map_or(crate::ramps::HEIGHT, |bounds| bounds.height());
+                let wall = self.world.winter_mut().walls.remove(slot);
+                let at = Point::from_xy(wall.position * self.width as f32, floor);
+                self.interactions
+                    .remove_wall(&mut self.pets, slot, at, speed, height);
+                self.ramps.remove_wall(slot, &mut self.pets);
+                self.world.save_now();
+            }
+        }
         let check_collisions = self.pets.len() > 1
             && self
                 .pets
@@ -471,7 +486,6 @@ impl Game {
         for pet in &mut self.pets {
             pet.app.tick(dt, self.snow.active());
         }
-        let floor = (self.room.floor - self.bottom).max(0.0);
         self.sled.tick(
             &mut self.pets,
             &mut self.world,
@@ -712,6 +726,15 @@ impl Game {
             }
             pet.app.pointer(x, y, kind);
         } else if self.held.is_none() && matches!(kind, Pointer::LeftDown) && self.width > 0 {
+            if let Some(dropped) =
+                self.visitors
+                    .click_santa(&mut self.world, point, now, self.width)
+            {
+                if dropped {
+                    self.gifts.bag_dropped();
+                }
+                return;
+            }
             if self.gifts.click(
                 &mut self.pets,
                 &mut self.world,
@@ -1025,7 +1048,7 @@ mod tests {
     }
 
     #[test]
-    fn a_wall_can_be_lifted_and_keeps_its_construction_progress() {
+    fn a_wall_survives_a_small_drop_and_a_high_drop_preserves_the_other_wall() {
         use crate::season::Date;
         use crate::world::SnowWall;
 
@@ -1058,6 +1081,24 @@ mod tests {
         assert!((wall.position - (0.26 + 145.0 / 1200.0)).abs() < 1.0e-4);
         assert_eq!(wall.seconds, 347.0);
         assert_eq!(game.interactions.wall_lift(0), 0.0);
+        game.world.winter_mut().walls.push(SnowWall {
+            slope_right: false,
+            position: 0.72,
+            seconds: crate::world::SNOWMAN_SECONDS,
+        });
+        game.tick_snow(0.0, 1200);
+        game.pointer(x + 145.0, y, Pointer::LeftDown);
+        game.pointer(x + 145.0, y - 240.0, Pointer::LeftUp);
+        for _ in 0..35 {
+            game.tick(0.02);
+        }
+        assert_eq!(game.world.winter().walls.len(), 1);
+        assert_eq!(game.world.winter().walls[0].position, 0.72);
+        assert!(game
+            .interactions
+            .fragment_images(&game.winter_art)
+            .next()
+            .is_some());
     }
 
     #[test]

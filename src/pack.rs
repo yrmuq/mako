@@ -19,9 +19,10 @@ use crate::Fault;
 pub const BUILTIN_ID: &str = "bear-girl";
 // The importer has always replaced dots, so existing imported IDs stay distinct.
 pub const LION_ID: &str = "builtin.lion-girl";
+pub const KAZUKI_ID: &str = "builtin.kazuki-yasaka";
 
 pub fn is_builtin(id: &str) -> bool {
-    matches!(id, BUILTIN_ID | LION_ID)
+    matches!(id, BUILTIN_ID | LION_ID | KAZUKI_ID)
 }
 const MAX_FILE: u64 = 4_000_000;
 const MAX_TOTAL: u64 = 24_000_000;
@@ -453,7 +454,7 @@ fn sample_step<T>(samples: &[Sample<T>], time: f32) -> Option<&T> {
 }
 
 pub fn installed() -> Vec<Pack> {
-    let mut found = vec![Pack::builtin(), lion_pack().clone()];
+    let mut found = vec![Pack::builtin(), lion_pack().clone(), kazuki_pack().clone()];
     let Ok(entries) = fs::read_dir(chibi_dir()) else {
         return found;
     };
@@ -522,24 +523,41 @@ fn lion_pack() -> &'static Pack {
     PACK.get_or_init(|| load_builtin(LION_ID).unwrap_or_else(|error| panic!("{error}")))
 }
 
+fn kazuki_pack() -> &'static Pack {
+    static PACK: OnceLock<Pack> = OnceLock::new();
+    PACK.get_or_init(|| load_builtin(KAZUKI_ID).unwrap_or_else(|error| panic!("{error}")))
+}
+
+struct BuiltinArt {
+    heart: &'static str,
+    body: &'static str,
+    images: &'static [(&'static str, &'static [u8])],
+    arm: &'static [u8],
+    leg: &'static [u8],
+}
+
 fn load_builtin(id: &str) -> Result<Pack, Fault> {
-    let lion = id == LION_ID;
-    let (heart, body) = if lion {
-        (
-            include_str!("../assets/lion-girl/heart"),
-            include_str!("../assets/lion-girl/body"),
-        )
-    } else {
-        (
-            include_str!("../assets/bear-girl/heart"),
-            include_str!("../assets/bear-girl/body"),
-        )
+    macro_rules! artwork {
+        ($directory:literal, $images:expr) => {
+            BuiltinArt {
+                heart: include_str!(concat!("../assets/", $directory, "/heart")),
+                body: include_str!(concat!("../assets/", $directory, "/body")),
+                images: $images,
+                arm: include_bytes!(concat!("../assets/", $directory, "/creature/arm.png")),
+                leg: include_bytes!(concat!("../assets/", $directory, "/creature/leg.png")),
+            }
+        };
+    }
+    let art = match id {
+        LION_ID => artwork!("lion-girl", LION_IMAGES),
+        KAZUKI_ID => artwork!("kazuki-yasaka", KAZUKI_IMAGES),
+        _ => artwork!("bear-girl", BUILTIN_IMAGES),
     };
     let mut images = HashMap::new();
-    for (name, bytes) in if lion { LION_IMAGES } else { BUILTIN_IMAGES } {
-        images.insert((*name).to_string(), crop(decode(bytes)?)?);
+    for (name, bytes) in art.images {
+        images.insert((*name).to_owned(), crop(decode(bytes)?)?);
     }
-    if !lion {
+    if id == BUILTIN_ID {
         images.insert("mouth-talk".into(), crate::props::talk_mouth());
     }
     images.insert(
@@ -550,33 +568,13 @@ fn load_builtin(id: &str) -> Result<Pack, Fault> {
     );
     let mut pack = assemble(
         id,
-        heart,
-        body,
+        art.heart,
+        art.body,
         include_str!("../assets/bear-girl/anima"),
         images,
     )?;
-    add_shared_limb(
-        &mut pack,
-        "hand",
-        "",
-        (40.0, 26.0),
-        if lion {
-            include_bytes!("../assets/lion-girl/creature/arm.png")
-        } else {
-            include_bytes!("../assets/bear-girl/creature/arm.png")
-        },
-    )?;
-    add_shared_limb(
-        &mut pack,
-        "leg",
-        "",
-        (49.0, 47.0),
-        if lion {
-            include_bytes!("../assets/lion-girl/creature/leg.png")
-        } else {
-            include_bytes!("../assets/bear-girl/creature/leg.png")
-        },
-    )?;
+    add_shared_limb(&mut pack, "hand", "", (40.0, 26.0), art.arm)?;
+    add_shared_limb(&mut pack, "leg", "", (49.0, 47.0), art.leg)?;
     add_knees(&mut pack)?;
     Ok(pack)
 }
@@ -662,13 +660,13 @@ const BUILTIN_IMAGES: &[(&str, &[u8])] = &[
     ),
 ];
 
-macro_rules! lion_images {
-    ($($name:literal),+ $(,)?) => {
-        &[$(($name, include_bytes!(concat!("../assets/lion-girl/creature/", $name, ".png")))),+]
+macro_rules! costume_images {
+    ($directory:literal; $($name:literal),+ $(,)?) => {
+        &[$(($name, include_bytes!(concat!("../assets/", $directory, "/creature/", $name, ".png")))),+]
     };
 }
 
-const LION_IMAGES: &[(&str, &[u8])] = lion_images!(
+const LION_IMAGES: &[(&str, &[u8])] = costume_images!("lion-girl";
     "head",
     "eyes-open",
     "eyes-closed",
@@ -678,6 +676,11 @@ const LION_IMAGES: &[(&str, &[u8])] = lion_images!(
     "mouth-talk",
     "torso",
     "tail",
+);
+
+const KAZUKI_IMAGES: &[(&str, &[u8])] = costume_images!("kazuki-yasaka";
+    "head", "eyes-open", "eyes-closed", "eyes-shock", "mouth", "mouth-shock",
+    "mouth-talk", "torso", "shell",
 );
 
 fn from_path(path: &Path, id: &str) -> Result<Pack, Fault> {
@@ -1469,27 +1472,31 @@ mod tests {
     }
 }
 #[test]
-fn both_builtins_are_protected_and_lion_renders_all_core_poses() {
-    for id in [BUILTIN_ID, LION_ID, "../outside"] {
+fn builtins_are_protected_and_costumes_render_the_core_poses() {
+    for id in [BUILTIN_ID, LION_ID, KAZUKI_ID, "../outside"] {
         assert_eq!(uninstall(id).unwrap_err().code, "MAKO-IMPORT-0004");
     }
-    let lion = lion_pack();
-    assert_eq!(lion.id, LION_ID);
-    assert!(lion.sprite("tail").is_some());
-    assert!(crate::draw::portrait(lion).is_some());
-    for motion in [
-        "idle",
-        "walk",
-        "climb",
-        "talk",
-        "pack-snow",
-        "sculpt",
-        "rise-back",
+    for (pack, id, detail) in [
+        (lion_pack(), LION_ID, "tail"),
+        (kazuki_pack(), KAZUKI_ID, "shell"),
     ] {
-        assert!(lion.animation_length(motion).is_some());
-        assert_eq!(
-            lion.pose_for(motion, 0.2, None, Face::Shock).image.len(),
-            lion.bones.len()
-        );
+        assert_eq!(pack.id, id);
+        assert!(pack.sprite(detail).is_some());
+        assert!(crate::draw::portrait(pack).is_some());
+        for motion in [
+            "idle",
+            "walk",
+            "climb",
+            "talk",
+            "pack-snow",
+            "sculpt",
+            "rise-back",
+        ] {
+            assert!(pack.animation_length(motion).is_some());
+            assert_eq!(
+                pack.pose_for(motion, 0.2, None, Face::Shock).image.len(),
+                pack.bones.len()
+            );
+        }
     }
 }

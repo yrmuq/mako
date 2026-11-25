@@ -18,7 +18,7 @@
 
 ## Features
 
-- Bear girl and Lion girl with separately animated body parts and point-based mouse grabs.
+- Bear girl, Lion girl and Kazuki Yasaka in his kappa form, with separately animated body parts and point-based mouse grabs.
 - Multiple live chibis, ZIP character packs and a quick list in the KDE tray.
 - English and Russian settings with native Wayland and X11 support.
 
@@ -35,7 +35,7 @@
 | General | Choose the language, theme, interaction mode and tray layout (List or Tiles). Toggle precipitation to show or hide falling snow. The Size slider shows the chibi's base height in logical pixels, including its Dev height proportion. The default size is 115 × 108 px. |
 | Chibis | Use `+` and `−` on a tile to add or remove a chibi in the tray list. Drag a marked tile to reorder it. A red `×` opens the confirmation for uninstalling a custom chibi and removing its active copies. |
 | About | View the project details and check for updates. Click the logo five times to reveal Dev. |
-| Dev | Adjust chibi proportions and snowfall from 25% to 200%. Set a custom day, month and year to try a separate scene for the current session. Turn off the custom date to return to the ordinary scene. |
+| Dev | Adjust chibi proportions and snowfall from 25% to 200%. Set a custom day, month and year to try a separate scene for the current session. Turn off the custom date to return to the ordinary scene. Use the Santa and UFO buttons to trigger their visits. |
 
 | Interaction mode | Pointer input |
 | --- | --- |
@@ -49,11 +49,13 @@ Chibis have a 10% chance to climb when they reach a screen edge. They grip the w
 
 Snow falls to the top of the bottom panel in the festive period (November 20–January 13) and winter period (January 14–February 28), using local dates. Both periods have slippery walls, snow piles and up to two shared snowmen. Chibis make snowballs from the piles and can knock each other over. A hit chibi has a 50% chance of going for a snowball to throw back after getting up. Any chibi can work on a snowman for 3–5 seconds at a time. Each snowman takes about ten minutes of active work to finish. Chibis bend to shape the base with both feet on the ground, stand upright for the middle, and raise their hands for the head. Drag either snowman to lift it and move it. A short drop keeps it intact and the chibis resume building at the new spot. A hard landing or a flick breaks it. Turning off precipitation keeps the snow piles and winter activities available.
 
-Chibis share up to two snow walls and build them in short shifts like the snowman. The original thrower runs for a completed wall when another chibi prepares a counterthrow. With no completed wall, the original thrower has a 50% chance to hit the counterthrow back with a baseball bat. Snowballs can reach wall climbers, who make more likely targets. A thrower is protected from its own snowball and the resulting chain of knockdowns. After three snowball hits within 30 seconds, a chibi gets up and briefly fires a snowball cannon at the other chibis. The cannon fires for 2.5 seconds and keeps firing while the other chibis recover. Drag either snow wall to move it. Chibis continue building at its new location and use completed walls as cover once they land.
+Chibis build one shared snow wall in short shifts. Existing scenes with two walls keep both until they break or melt. A completed wall has a square window and a slide with a ladder. A chibi that tries to climb the slope can slip and tumble down. Drag a wall to move it or drop it from high up to break it. The original thrower runs to a completed wall within 300 logical pixels when another chibi prepares a counterthrow. A wall that blocks the shot gives the chibi two more seconds in cover. Without nearby cover, the original thrower has a 50% chance to bat the snowball back. Snowballs can reach wall climbers and leave a flattened mark for five seconds on impact. A direct hit can cause one additional chibi to fall. A thrower is protected from their own snowball. Three hits within 30 seconds arm a snowball cannon that fires for 2.5 seconds.
 
 During either snowy season, a chibi reaching a screen edge has a 5% chance to fetch a sled. A chibi passing a parked sled has a 5% chance to sit on it and wait up to ten seconds for the nearest available helper. The helper pulls the rider to one edge and then the other on the same screen. The sled breaks after two completed rides.
 
 Chibis can plant one potted fir from November 20 through January 1. The seed starts to sprout on December 1. With a month/day system date it matures on December 10, gets its star on December 18 and has gifts on December 25. With a day/month date those milestones fall on December 15, 24 and 31. Drag the potted fir to move it and its gifts. During calendar growth, the chibis have a 5% chance to water it when choosing an activity. Later plantings mature with watering, which occurs half as often as snowman work and requires twice as much active time. On the gift day, one watering and one decorating visit finish a late planting and unlock gifts immediately. Gifts contain confetti and sometimes an oversized candy. Opened gifts reappear on the gift day. Chibis remove the decorations on January 14 and carry the fir offscreen on March 1.
+
+Santa flies through in either snowy period. Three quick clicks on him drop his red bag. Drag the bag to move it and double-click it to make a present. Presents from the bag can contain confetti, a giant candy, a cartoon bomb that knocks nearby chibis away, or coal that a chibi throws. Gifts under the fir contain confetti or candy. The UFO visits year-round. Both visitors can carry away one active copy of a chibi.
 
 The active chibis, winter objects and fir are saved to `$XDG_STATE_HOME/mako/scene.json` (default `~/.local/state/mako/scene.json`). Chibis start on the floor. Snow piles, walls and snowmen keep their places and progress until the snow season ends. The sled keeps its position and completed ride count.
 

@@ -445,12 +445,9 @@ fn pet_parts(scene: &Scene, pack: &Pack) -> (Vec<Part>, Option<Point>) {
             Motion::Fall
             | Motion::Drag
             | Motion::SlideWall
-            | Motion::Special(
-                Special::RunCover
-                | Special::Captive
-                | Special::RampSlipFront
-                | Special::RampSlipBack,
-            ) => Face::Shock,
+            | Motion::Special(Special::RunCover | Special::Captive | Special::RampTumble) => {
+                Face::Shock
+            }
             _ => scene.blink.map_or(Face::Neutral, Face::Blink),
         }
     };
@@ -616,17 +613,25 @@ fn pet_parts(scene: &Scene, pack: &Pack) -> (Vec<Part>, Option<Point>) {
     if let Motion::Special(action) = scene.motion {
         add_special(scene, action, &mut parts, pack);
     }
+    let throwing_coal = scene.motion == Motion::Special(Special::ThrowCoal);
     if (scene.motion == Motion::PackSnow && scene.cycle > 0.25)
-        || (scene.motion == Motion::ThrowSnow && scene.cycle < crate::interactions::RELEASE_AT)
+        || ((scene.motion == Motion::ThrowSnow || throwing_coal)
+            && scene.cycle < crate::interactions::RELEASE_AT)
     {
         if let Some(centre) = snowball_centre(&parts, pack) {
-            let sprite = crate::props::snowball().clone();
-            let size = (56.0 * scale_x.min(scale_y)).max(8.0);
+            let (sprite, logical_size) = if throwing_coal {
+                (crate::props::coal(), 42.0)
+            } else {
+                (crate::props::snowball(), 56.0)
+            };
+            let sprite = sprite.clone();
+            let size = (logical_size * scale_x.min(scale_y)).max(8.0);
+            let height = size * sprite.image.height() as f32 / sprite.image.width() as f32;
             let scale = size / sprite.image.width() as f32;
             parts.push(Part {
                 sprite,
                 transform: Transform::from_scale(scale, scale)
-                    .post_translate(centre.x - size * 0.5, centre.y - size * 0.5),
+                    .post_translate(centre.x - size * 0.5, centre.y - height * 0.5),
                 joint: None,
             });
         }
@@ -641,13 +646,19 @@ fn pet_parts(scene: &Scene, pack: &Pack) -> (Vec<Part>, Option<Point>) {
                 anchor.local.y - joint.local.y,
             );
             part.transform.map_point(&mut centre);
-            let sprite = crate::props::snowball().clone();
-            let size = 24.0;
-            let scale = size / sprite.image.width() as f32;
+            let sprite = crate::props::snowball_splat().clone();
+            let width = sprite.image.width() as f32;
+            let height = sprite.image.height() as f32;
+            let mut axis = Point::from_xy(1.0, 0.0);
+            let mut origin = Point::from_xy(0.0, 0.0);
+            part.transform.map_point(&mut axis);
+            part.transform.map_point(&mut origin);
+            let turn = (axis.y - origin.y).atan2(axis.x - origin.x).to_degrees();
             parts.push(Part {
                 sprite,
-                transform: Transform::from_scale(scale, scale)
-                    .post_translate(centre.x - size * 0.5, centre.y - size * 0.5),
+                transform: Transform::from_translate(-width * 0.5, -height * 0.5)
+                    .post_rotate(turn)
+                    .post_translate(centre.x, centre.y),
                 joint: None,
             });
         }
@@ -969,7 +980,7 @@ fn pose_contact(pack: &Pack, pose: &Pose, motion: Motion, view: Transform) -> Op
         | Motion::Special(Special::RideSled | Special::RampSlide | Special::WallRecover) => {
             bone == "torso" || leg(bone)
         }
-        Motion::Special(Special::RampSlipFront | Special::RampSlipBack) => true,
+        Motion::Special(Special::RampTumble) => true,
         Motion::Idle
         | Motion::Walk
         | Motion::HandRelease

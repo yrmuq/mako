@@ -37,6 +37,7 @@ pub enum Special {
     UntrimTree,
     OpenGift,
     EatCandy,
+    ThrowCoal,
     CarryTree,
     Parry,
     RunCover,
@@ -51,8 +52,7 @@ pub enum Special {
     RampScramble,
     RampWave,
     RampSlide,
-    RampSlipFront,
-    RampSlipBack,
+    RampTumble,
     Captive,
 }
 
@@ -66,6 +66,7 @@ impl Special {
             }
             Self::OpenGift => "open-gift",
             Self::EatCandy => "eat-candy",
+            Self::ThrowCoal => "throw-snow",
             Self::CarryTree => "carry-tree",
             Self::Parry => "parry-snow",
             Self::RunCover | Self::LeaveCover => "walk",
@@ -78,7 +79,7 @@ impl Special {
             Self::RampClimb | Self::RampScramble => "climb",
             Self::RampWave => "ramp-wave",
             Self::RampSlide => "ride-sled",
-            Self::RampSlipFront | Self::RampSlipBack => "idle",
+            Self::RampTumble => "idle",
             Self::Captive => "drag",
         }
     }
@@ -219,8 +220,7 @@ impl Pet {
                 | Special::RampScramble
                 | Special::RampWave
                 | Special::RampSlide
-                | Special::RampSlipFront
-                | Special::RampSlipBack,
+                | Special::RampTumble,
             ) => {}
             Activity::Approach
             | Activity::Talk

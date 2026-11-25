@@ -68,7 +68,7 @@ enum Phase {
     Wave(f32),
     Slide(f32),
     Scramble { progress: f32, limit: f32 },
-    Slip { progress: f32, pose: Special },
+    Slip { progress: f32, speed: f32 },
 }
 
 impl Phase {
@@ -78,7 +78,7 @@ impl Phase {
             Self::Wave(_) => Special::RampWave,
             Self::Slide(_) => Special::RampSlide,
             Self::Scramble { .. } => Special::RampScramble,
-            Self::Slip { pose, .. } => pose,
+            Self::Slip { .. } => Special::RampTumble,
         }
     }
 }
@@ -98,13 +98,17 @@ pub struct Ramps {
 impl Ramps {
     pub fn clear(&mut self, pets: &mut [Instance]) {
         for ride in self.rides.iter().flatten() {
-            if let Some(pet) = pets.iter_mut().find(|pet| {
-                pet.id == ride.id && pet.app.pet.activity == Activity::Special(ride.phase.pose())
-            }) {
-                pet.app.pet.release(&pet.app.room, 0.0, 0.0);
-            }
+            ride.drop(pets);
         }
         *self = Self::default();
+    }
+
+    pub fn remove_wall(&mut self, slot: usize, pets: &mut [Instance]) {
+        if let Some(ride) = self.rides[slot].take() {
+            ride.drop(pets);
+        }
+        self.rides[slot..].rotate_left(1);
+        self.near.clear();
     }
 
     pub fn tick(
@@ -128,7 +132,7 @@ impl Ramps {
                                 self.rides[slot] = Some(ride);
                             }
                         } else {
-                            pet.app.pet.release(&pet.app.room, 0.0, 0.0);
+                            ride.drop(pets);
                         }
                     }
                 }
@@ -176,6 +180,19 @@ impl Ramps {
 }
 
 impl Ride {
+    fn drop(&self, pets: &mut [Instance]) {
+        if let Some(pet) = pets.iter_mut().find(|pet| {
+            pet.id == self.id && pet.app.pet.activity == Activity::Special(self.phase.pose())
+        }) {
+            let actor = &mut pet.app.pet;
+            if matches!(self.phase, Phase::Slip { .. }) {
+                actor.knock_back(actor.vx, actor.vy);
+            } else {
+                actor.release(&pet.app.room, 0.0, 0.0);
+            }
+        }
+    }
+
     fn step(&mut self, instance: &mut Instance, right: bool, dt: f32) -> bool {
         let pet = &mut instance.app.pet;
         let side = if right { 1.0 } else { -1.0 };
@@ -215,23 +232,23 @@ impl Ride {
                 let next = if p >= limit {
                     Phase::Slip {
                         progress: p,
-                        pose: if fastrand::bool() {
-                            Special::RampSlipFront
-                        } else {
-                            Special::RampSlipBack
-                        },
+                        speed: 21.0,
                     }
                 } else {
                     Phase::Scramble { progress: p, limit }
                 };
                 (HALF + RUN * (1.0 - p), HEIGHT * p, next)
             }
-            Phase::Slip { progress, pose } => {
-                let p = (progress - dt * 1.15).max(0.0);
+            Phase::Slip { progress, speed } => {
+                let next_speed = speed + 245.0 * dt;
+                let p = (progress - (speed + next_speed) * 0.5 * dt / RUN).max(0.0);
                 (
                     HALF + RUN * (1.0 - p),
                     HEIGHT * p,
-                    Phase::Slip { progress: p, pose },
+                    Phase::Slip {
+                        progress: p,
+                        speed: next_speed,
+                    },
                 )
             }
         };
@@ -242,16 +259,28 @@ impl Ride {
         } else {
             side
         };
-        if matches!(next, Phase::Slide(1.0) | Phase::Slip { progress: 0.0, .. }) {
-            pet.start(Activity::Special(Special::WallRecover));
-            pet.face = -side;
-            return false;
-        }
-        if self.phase.pose() != next.pose() {
-            pet.start(Activity::Special(next.pose()));
-        }
-        if matches!(next, Phase::Slide(_)) {
-            pet.vx = side * 150.0;
+        if let Phase::Slip { progress, speed } = next {
+            pet.vx = side * speed;
+            pet.vy = speed * HEIGHT / RUN;
+            if progress <= 0.0 {
+                instance.app.finish_ramp_tumble(side * speed);
+                return false;
+            }
+            if self.phase.pose() != next.pose() {
+                instance.app.start_ramp_tumble(fastrand::bool());
+            }
+        } else {
+            if matches!(next, Phase::Slide(1.0)) {
+                pet.start(Activity::Special(Special::WallRecover));
+                pet.face = -side;
+                return false;
+            }
+            if self.phase.pose() != next.pose() {
+                pet.start(Activity::Special(next.pose()));
+            }
+            if matches!(next, Phase::Slide(_)) {
+                pet.vx = side * 150.0;
+            }
         }
         self.phase = next;
         true
@@ -299,11 +328,16 @@ mod tests {
             assert!(ride.step(&mut pet, right, 1.0));
             assert!(matches!(
                 pet.app.pet.activity,
-                Activity::Special(Special::RampSlipFront | Special::RampSlipBack)
+                Activity::Special(Special::RampTumble)
             ));
             assert!(((floor - pet.app.pet.y) / HEIGHT - 0.51).abs() < 0.001);
-            assert!(!ride.step(&mut pet, right, 0.8));
+            assert!(ride.step(&mut pet, right, 0.25));
+            assert_eq!(pet.app.pet.activity, Activity::Special(Special::RampTumble));
+            assert!(!ride.step(&mut pet, right, 0.55));
             assert_eq!(pet.app.pet.y, floor);
+            assert_eq!(pet.app.pet.activity, Activity::Down);
+            pet.app.tick(0.05, true);
+            assert_eq!(pet.app.pet.activity, Activity::Down);
         }
     }
 }

@@ -162,6 +162,30 @@ pub fn snowball() -> &'static Sprite {
     SPRITE.get_or_init(|| crop(ball_image(1)).expect("snowball artwork"))
 }
 
+pub fn coal() -> &'static Sprite {
+    static SPRITE: OnceLock<Sprite> = OnceLock::new();
+    SPRITE.get_or_init(|| crop(crate::visitor_art::coal(1)).expect("coal artwork"))
+}
+
+pub fn snowball_splat() -> &'static Sprite {
+    static SPRITE: OnceLock<Sprite> = OnceLock::new();
+    SPRITE.get_or_init(|| {
+        let mut art = Pixmap::new(31, 17).expect("snowball splat dimensions");
+        oval(&mut art, (2.0, 3.0, 27.0, 12.0), [158, 199, 224, 255]);
+        oval(&mut art, (3.0, 2.0, 24.0, 10.0), [224, 241, 250, 255]);
+        for (x, y, w, h) in [
+            (0.0, 5.0, 10.0, 5.0),
+            (21.0, 5.0, 10.0, 6.0),
+            (11.0, 8.0, 7.0, 9.0),
+            (15.0, 0.0, 5.0, 6.0),
+        ] {
+            oval(&mut art, (x, y, w, h), [232, 246, 254, 255]);
+        }
+        oval(&mut art, (7.0, 4.0, 14.0, 4.0), [255, 255, 255, 255]);
+        crop(art).expect("snowball splat artwork")
+    })
+}
+
 pub fn ball_image(scale: u32) -> Pixmap {
     let mut image = Pixmap::new(24 * scale, 24 * scale).expect("snowball dimensions");
     let s = scale as f32;

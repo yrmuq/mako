@@ -830,6 +830,7 @@ impl Desktop {
             name: match id.as_str() {
                 pack::BUILTIN_ID => self.catalog.text(ID_NAME).into(),
                 pack::LION_ID => self.catalog.text(64).into(),
+                pack::KAZUKI_ID => self.catalog.text(68).into(),
                 _ => entry.pack.name.as_str().into(),
             },
             face: entry.face.clone(),
@@ -869,7 +870,7 @@ impl Desktop {
     }
 
     fn translations(&self) -> ModelRc<SharedString> {
-        model((0..=67).map(|id| self.catalog.text(id).into()).collect())
+        model((0..=68).map(|id| self.catalog.text(id).into()).collect())
     }
 
     fn refresh_style(&self) {

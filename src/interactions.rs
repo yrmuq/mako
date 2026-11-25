@@ -25,6 +25,8 @@ const BALL_RADIUS: f32 = 11.0;
 const BALL_KNOCKBACK: f32 = 0.68 * 2.0;
 const HIT_WINDOW: f64 = 30.0;
 const CANNON_DURATION: f32 = 2.5;
+const COVER_MAX_DISTANCE: f32 = 300.0;
+const COVER_AFTER_BLOCK: f64 = 2.0;
 
 #[derive(Clone, Copy)]
 enum Task {
@@ -124,6 +126,7 @@ enum Guard {
 struct Defence {
     attacker: u64,
     guard: Guard,
+    hold_until: f64,
 }
 
 pub struct Interactions {
@@ -209,13 +212,6 @@ impl Interactions {
         }
         self.fragments
             .retain_mut(|fragment| fragment.tick(dt, floor));
-        for motion in &mut self.wall_motion {
-            if let Motion::Falling(fall) = motion {
-                if fall.step(dt).is_some() {
-                    *motion = Motion::Grounded;
-                }
-            }
-        }
         if winter && width > 0 {
             self.drop_pile(world, dt);
             self.start_cannons(pets);
@@ -348,15 +344,21 @@ impl Interactions {
                 let defence = self.defences.entry(id).or_insert_with(|| Defence {
                     attacker,
                     guard: cover_for(app, &objects.walls, &grounded, width, from),
+                    hold_until: 0.0,
                 });
                 let reconsider = match defence.guard {
-                    Guard::Run { wall, .. } => !grounded[wall],
+                    Guard::Run { wall, side, hidden } => {
+                        !grounded[wall]
+                            || (!hidden
+                                && (objects.walls[wall].position * width + side * 23.0 - app.pet.x)
+                                    .abs()
+                                    > COVER_MAX_DISTANCE)
+                    }
                     Guard::Leave { .. } => true,
-                    Guard::Parry => objects
-                        .walls
-                        .iter()
-                        .enumerate()
-                        .any(|(slot, wall)| grounded[slot] && wall.finished()),
+                    Guard::Parry => matches!(
+                        cover_for(app, &objects.walls, &grounded, width, from),
+                        Guard::Run { .. }
+                    ),
                 };
                 if defence.attacker != attacker || reconsider {
                     defence.attacker = attacker;
@@ -408,6 +410,15 @@ impl Interactions {
                 }
             } else if let Some(defence) = self.defences.get_mut(&id) {
                 match defence.guard {
+                    Guard::Run {
+                        wall, hidden: true, ..
+                    } if self.time < defence.hold_until
+                        && grounded[wall]
+                        && app.pet.activity == Activity::Special(Special::Hide) =>
+                    {
+                        app.cover = wall_bounds(objects.walls[wall], width, floor);
+                        continue;
+                    }
                     Guard::Run { wall, side, .. } | Guard::Leave { wall, side }
                         if defending(app.pet.activity) && grounded[wall] =>
                     {
@@ -612,16 +623,10 @@ impl Interactions {
         let index = if let Some(i) = walls.iter().position(|wall| !wall.finished()) {
             i
         } else {
-            let index = walls.len();
-            if index >= MAX_SNOW_WALLS {
+            if !walls.is_empty() {
                 return;
             }
-            let (left, right) = if index == 0 {
-                (0.19, 0.37)
-            } else {
-                (0.63, 0.81)
-            };
-            let Some(position) = structure_spot(world.winter(), world.tree(), left, right) else {
+            let Some(position) = structure_spot(world.winter(), world.tree(), 0.19, 0.81) else {
                 return;
             };
             world.winter_mut().walls.push(SnowWall {
@@ -630,7 +635,7 @@ impl Interactions {
                 seconds: 0.0,
             });
             world.save_now();
-            index
+            0
         };
         if !self.wall_grounded(index) {
             return;
@@ -638,6 +643,76 @@ impl Interactions {
         let task = Task::ApproachWall { wall: index };
         pet.app.pet.start(task.activity());
         self.tasks.insert(pet.id, task);
+    }
+
+    pub fn wall_impact(&mut self, slot: usize, dt: f32) -> Option<f32> {
+        let Motion::Falling(fall) = &mut self.wall_motion[slot] else {
+            return None;
+        };
+        let speed = fall.step(dt)?;
+        self.wall_motion[slot] = Motion::Grounded;
+        (speed >= Fall::BREAK_SPEED).then_some(speed)
+    }
+
+    pub fn remove_wall(
+        &mut self,
+        pets: &mut [Instance],
+        slot: usize,
+        at: Point,
+        speed: f32,
+        height: f32,
+    ) {
+        self.wall_motion[slot..].rotate_left(1);
+        self.wall_motion[MAX_SNOW_WALLS - 1] = Motion::Grounded;
+        self.tasks.retain(|&id, task| {
+            let activity = task.activity();
+            let wall = match task {
+                Task::ApproachWall { wall } | Task::BuildWall { wall, .. } => wall,
+                _ => return true,
+            };
+            if *wall == slot {
+                if let Some(pet) = pets
+                    .iter_mut()
+                    .find(|pet| pet.id == id && pet.app.pet.activity == activity)
+                {
+                    pet.app.pet.start(Activity::Idle);
+                }
+                false
+            } else {
+                *wall -= usize::from(*wall > slot);
+                true
+            }
+        });
+        self.defences.retain(|&id, defence| {
+            let wall = match &mut defence.guard {
+                Guard::Run { wall, .. } | Guard::Leave { wall, .. } => wall,
+                Guard::Parry => return true,
+            };
+            if *wall == slot {
+                if let Some(pet) = pets.iter_mut().find(|pet| pet.id == id) {
+                    pet.app.cover = None;
+                    if defending(pet.app.pet.activity) {
+                        pet.app.pet.start(Activity::Idle);
+                    }
+                }
+                false
+            } else {
+                *wall -= usize::from(*wall > slot);
+                true
+            }
+        });
+        Fragment::scatter(
+            &mut self.fragments,
+            at,
+            Point::from_xy(-210.0, speed),
+            height,
+        );
+        Fragment::scatter(
+            &mut self.fragments,
+            at,
+            Point::from_xy(210.0, speed),
+            height,
+        );
     }
 
     pub fn wall_grounded(&self, slot: usize) -> bool {
@@ -1038,13 +1113,13 @@ impl Interactions {
             .iter()
             .enumerate()
             .filter(|(slot, _)| self.wall_grounded(*slot))
-            .filter_map(|(_, &wall)| wall_bounds(wall, width, floor))
-            .flat_map(Cover::solids)
+            .filter_map(|(slot, &wall)| Some((slot, wall_bounds(wall, width, floor)?)))
+            .flat_map(|(slot, cover)| cover.solids().map(|rect| (slot, rect)))
             .collect();
         let retaliations = &mut self.retaliations;
         let snow_hits = &mut self.snow_hits;
         let owes_cannon = &mut self.owes_cannon;
-        let defences = &self.defences;
+        let defences = &mut self.defences;
         let now = self.time;
         self.balls.retain_mut(|ball| {
             let before = ball.position;
@@ -1074,15 +1149,21 @@ impl Interactions {
                 .min_by(|a, b| a.1.total_cmp(&b.1));
             let wall = wall_bounds
                 .iter()
-                .filter_map(|&wall| swept_contact(from, to, wall, wall))
-                .min_by(f32::total_cmp);
-            if wall.is_some_and(|time| target.is_none_or(|(_, hit)| time <= hit)) {
+                .filter_map(|&(slot, rect)| Some((slot, swept_contact(from, to, rect, rect)?)))
+                .min_by(|a, b| a.1.total_cmp(&b.1));
+            if let Some((slot, _)) = wall.filter(|&(_, time)| target.is_none_or(|(_, hit)| time <= hit)) {
+                if let Some(defence) = ball.counter.and_then(|id| defences.get_mut(&id)) {
+                    if defence.attacker == ball.owner
+                        && matches!(defence.guard, Guard::Run { wall, hidden: true, .. } if wall == slot)
+                    {
+                        defence.hold_until = now + COVER_AFTER_BLOCK;
+                    }
+                }
                 return false;
             }
             if let Some((index, time)) = target {
                 let id = pets[index].id;
                 let parry = ball.counter == Some(id)
-                    && wall_bounds.is_empty()
                     && pets[index].app.pet.activity == Activity::Special(Special::Parry)
                     && fastrand::bool();
                 if parry {
@@ -1217,10 +1298,12 @@ fn cover_for(
             let x = object.position * width;
             let side = if attacker_x <= x { 1.0 } else { -1.0 };
             let goal = x + side * 23.0;
+            let distance = (app.pet.x - goal).abs();
             (grounded[wall]
                 && object.finished()
-                && (app.room.left..=app.room.right).contains(&goal))
-            .then_some((wall, side, (app.pet.x - goal).abs()))
+                && (app.room.left..=app.room.right).contains(&goal)
+                && distance <= COVER_MAX_DISTANCE)
+                .then_some((wall, side, distance))
         })
         .min_by(|a, b| a.2.total_cmp(&b.2))
         .map_or(Guard::Parry, |(wall, side, _)| Guard::Run {
@@ -1591,6 +1674,10 @@ mod tests {
         assert_eq!(pets[1].app.pet.activity, Activity::Special(Special::Hide));
         interactions.counters.clear();
         interactions.balls.clear();
+        interactions.time = COVER_AFTER_BLOCK - 0.01;
+        interactions.defend(&mut pets, &objects, 1000.0, 650.0, 0.05);
+        assert_eq!(pets[1].app.pet.activity, Activity::Special(Special::Hide));
+        interactions.time = COVER_AFTER_BLOCK;
         interactions.defend(&mut pets, &objects, 1000.0, 650.0, 0.05);
         assert_eq!(
             pets[1].app.pet.activity,
@@ -1602,6 +1689,31 @@ mod tests {
         }
         assert_eq!(pets[1].app.pet.activity, Activity::Idle);
         assert!(pets[1].app.cover.is_none());
+    }
+
+    #[test]
+    fn a_far_wall_is_not_cover_and_an_existing_wall_prevents_another_build() {
+        let mut world = World::test(crate::pack::BUILTIN_ID);
+        world.winter_mut().walls.push(SnowWall {
+            position: 0.5,
+            seconds: SNOWMAN_SECONDS,
+            slope_right: true,
+        });
+        let mut defender = pet(1, 850.0);
+        let mut interactions = Interactions::new();
+        assert!(matches!(
+            cover_for(
+                &defender.app,
+                &world.winter().walls,
+                &[true; MAX_SNOW_WALLS],
+                1000.0,
+                220.0
+            ),
+            Guard::Parry
+        ));
+        interactions.start_wall(&mut defender, &mut world);
+        assert_eq!(world.winter().walls.len(), 1);
+        assert!(interactions.tasks.is_empty());
     }
 
     #[test]
