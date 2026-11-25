@@ -186,12 +186,21 @@ impl Ramps {
                     continue;
                 }
                 let ladder = (pet.app.pet.x - left).abs() <= 18.0;
-                if (!ladder && (pet.app.pet.x - right).abs() > 18.0)
-                    || pet.app.pet.activity != Activity::Walk
-                {
+                if !ladder && (pet.app.pet.x - right).abs() > 18.0 {
                     continue;
                 }
                 let key = (pet.id, slot, ladder);
+                let activity = pet.app.pet.activity;
+                if matches!(
+                    activity,
+                    Activity::Special(Special::RampSlide | Special::RampLand)
+                ) {
+                    near.insert(key);
+                    continue;
+                }
+                if activity != Activity::Walk {
+                    continue;
+                }
                 near.insert(key);
                 if self.rides[slot].is_some() || self.near.contains(&key) {
                     continue;
@@ -351,6 +360,11 @@ mod tests {
             pets[0].app.pet.x = 450.0;
             pets[0].app.pet.y = floor - HEIGHT - 5.0;
             assert!(ramps.board(&mut pets[0], &walls, [true; MAX_SNOW_WALLS], 900));
+            // A fresh 4% roll at the foot would send the chibi straight back uphill.
+            let seed = (0..1000)
+                .find(|&seed| fastrand::Rng::with_seed(seed).f32() < 0.04)
+                .unwrap();
+            fastrand::seed(seed);
             let direction = if slope_right { 1.0 } else { -1.0 };
             let mut walked = false;
             for _ in 0..95 {
