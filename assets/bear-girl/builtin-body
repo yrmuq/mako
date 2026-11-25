@@ -1,0 +1,14 @@
+canvas 576 864
+feet 300 786
+# name image parent x y pivot_x pivot_y z
+bone torso torso - 298 532 298 532 30
+bone head head torso 9 -60 307 472 50
+bone hair hair head 0 -64 307 408 54
+bone eyes eyes-open head 17 -106 324 366 58
+bone mouth mouth head 43 -52 350 420 59
+bone left-hand left-hand torso -73 -16 225 516 40
+bone right-hand right-hand torso 91 -16 389 516 33
+bone left-leg left-leg torso -56 130 242 662 18
+bone right-leg right-leg torso 62 130 360 662 10
+bone left-foot left-foot left-leg 4 57 246 719 20
+bone right-foot right-foot right-leg -5 56 355 718 12

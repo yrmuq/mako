@@ -560,14 +560,15 @@ fn load_builtin(id: &str) -> Result<Pack, Fault> {
         LION_ID => artwork!("lion-girl", LION_IMAGES),
         TURTLE_ID => artwork!("kazuki-yasaka", TURTLE_IMAGES),
         BOB_ID => artwork!("bob", BOB_IMAGES),
-        _ => artwork!("bear-girl", BUILTIN_IMAGES),
+        _ => BuiltinArt {
+            // Imported packs without a body still use the original bone positions.
+            body: include_str!("../assets/bear-girl/builtin-body"),
+            ..artwork!("bear-girl", BUILTIN_IMAGES)
+        },
     };
     let mut images = HashMap::new();
     for (name, bytes) in art.images {
         images.insert((*name).to_owned(), crop(decode(bytes)?)?);
-    }
-    if id == BUILTIN_ID {
-        images.insert("mouth-talk".into(), crate::props::talk_mouth());
     }
     images.insert(
         "it-1".into(),
@@ -662,6 +663,10 @@ const BUILTIN_IMAGES: &[(&str, &[u8])] = &[
     (
         "mouth-shock",
         include_bytes!("../assets/bear-girl/creature/mouth-shock.png"),
+    ),
+    (
+        "mouth-talk",
+        include_bytes!("../assets/bear-girl/creature/mouth-talk.png"),
     ),
     (
         "torso",
@@ -1465,9 +1470,11 @@ mod tests {
             assert!(is_opaque(sprite, limb.pivot_x, limb.pivot_y), "{name}");
             if name.ends_with("leg") {
                 assert!(limb.z < torso.z, "{name}");
+            } else if name.ends_with("hand") {
+                let head = &pack.bones[pack.names["head"]];
+                assert!(limb.z > torso.z && limb.z < head.z, "{name}");
             }
         }
-        assert!(pack.bones[pack.names["right-hand"]].z < pack.bones[pack.names["right-leg"]].z);
     }
 
     #[test]
@@ -1485,6 +1492,26 @@ mod tests {
         }
     }
 }
+#[test]
+fn bear_girl_eye_layers_keep_both_eyes_level() {
+    let pack = Pack::builtin();
+    for name in ["eyes-open", "eyes-shock"] {
+        let image = &pack.sprite(name).unwrap().image;
+        let middle = image.width() / 2;
+        let visible_rows = |left, right| {
+            (0..image.height())
+                .filter(|&y| {
+                    (left..right)
+                        .any(|x| image.pixel(x, y).is_some_and(|pixel| pixel.alpha() >= 32))
+                })
+                .collect::<Vec<_>>()
+        };
+        let left = visible_rows(0, middle);
+        assert!(!left.is_empty());
+        assert_eq!(left, visible_rows(middle, image.width()), "{name}");
+    }
+}
+
 #[test]
 fn builtins_are_protected_and_costumes_render_the_core_poses() {
     for id in [BUILTIN_ID, LION_ID, TURTLE_ID, "../outside"] {

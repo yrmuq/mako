@@ -1249,9 +1249,10 @@ mod tests {
                         "head must hang below the torso"
                     );
                 } else if part.ends_with("hand") {
+                    let reach = grip.point.local.x.hypot(grip.point.local.y);
                     assert!(
-                        below(part) > 110.0,
-                        "shoulder must hang below the grabbed hand"
+                        below(part) > reach * 0.70,
+                        "shoulder must hang below the grabbed hand: {part}"
                     );
                 }
             }

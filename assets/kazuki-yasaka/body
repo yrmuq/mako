@@ -1,15 +1,15 @@
 canvas 440 492
 feet 228 444
 # name image parent x y pivot_x pivot_y z
-bone torso torso - 222 286 222 286 30
-bone head head torso 4 -28 226 258 50
-bone hair hair head 0 0 226 258 54
-bone eyes eyes-open head 0 0 226 258 58
-bone mouth mouth head 0 0 226 258 59
-bone left-hand left-hand torso -46 -8 176 278 42
-bone right-hand right-hand torso 72 -4 294 282 6
-bone left-leg left-leg torso -18 57 204 343 18
-bone right-leg right-leg torso 51 58 273 344 10
-bone left-foot left-foot left-leg 3 48 207 391 20
-bone right-foot right-foot right-leg -4 47 269 391 12
-bone tail shell torso 0 0 222 286 4
+bone torso torso - 221 332 221 332 30
+bone head head torso 5 -25 226 307 50
+bone hair hair head 0 -23 226 284 54
+bone eyes eyes-open head 64 -140 290 167 58
+bone mouth mouth head 74 -87 300 220 59
+bone left-hand left-hand torso -54 -6 167 326 42
+bone right-hand right-hand torso 70 -5 291 327 33
+bone left-leg left-leg torso -24 37 197 369 18
+bone right-leg right-leg torso 50 37 271 369 10
+bone left-foot left-foot left-leg 3 32 200 401 20
+bone right-foot right-foot right-leg -3 32 268 401 12
+bone tail shell torso 0 0 221 332 4

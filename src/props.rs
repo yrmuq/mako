@@ -7,23 +7,6 @@ use tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, Stroke, Transform};
 
 use crate::pack::{crop, Sprite};
 
-pub fn talk_mouth() -> Sprite {
-    let mut image = Pixmap::new(576, 864).expect("mouth artwork dimensions");
-    paint(&mut image, [78, 37, 45, 255], None, |p| {
-        p.move_to(339.0, 372.0);
-        p.quad_to(349.0, 367.5, 360.0, 372.0);
-        p.cubic_to(359.0, 388.0, 340.0, 388.0, 339.0, 372.0);
-        p.close();
-    });
-    paint(&mut image, [219, 122, 130, 255], None, |p| {
-        p.move_to(343.0, 379.0);
-        p.quad_to(349.5, 376.0, 356.0, 379.0);
-        p.quad_to(349.5, 385.0, 343.0, 379.0);
-        p.close();
-    });
-    crop(image).expect("mouth artwork")
-}
-
 pub fn frown() -> &'static Sprite {
     static SPRITE: OnceLock<Sprite> = OnceLock::new();
     SPRITE.get_or_init(|| {
