@@ -24,6 +24,8 @@ pub struct WinterObjects {
     second_snowman: Option<Snowman>,
     #[serde(default)]
     pub walls: Vec<SnowWall>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sled: Option<Sled>,
 }
 
 impl WinterObjects {
@@ -54,6 +56,12 @@ pub struct SnowWall {
 }
 
 pub const MAX_SNOW_WALLS: usize = 2;
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct Sled {
+    pub position: f32,
+    pub rides: u8,
+}
 
 impl SnowWall {
     pub fn finished(self) -> bool {
@@ -115,6 +123,10 @@ impl Save {
             (0.0..=1.0).contains(&wall.position) && (0.0..=SNOWMAN_SECONDS).contains(&wall.seconds)
         });
         saved.winter.walls.truncate(MAX_SNOW_WALLS);
+        saved.winter.sled = saved
+            .winter
+            .sled
+            .filter(|sled| (0.0..=1.0).contains(&sled.position) && sled.rides < 2);
         saved.tree = saved.tree.filter(|tree| tree.valid());
         Ok(saved)
     }
@@ -355,6 +367,10 @@ mod tests {
                 position: 0.2,
                 seconds: 347.0,
             });
+            world.winter_mut().sled = Some(Sled {
+                position: 0.56,
+                rides: 1,
+            });
             *world.tree_mut() = Some(Tree::new(0.50, 2027, true));
         }
         {
@@ -368,6 +384,8 @@ mod tests {
             let saved = world.winter().snowman(1).unwrap();
             assert_eq!((saved.position, saved.seconds), (0.61, 356.0));
             assert_eq!(world.winter().walls[0].seconds, 347.0);
+            let sled = world.winter().sled.unwrap();
+            assert_eq!((sled.position, sled.rides), (0.56, 1));
             assert_eq!(world.tree().unwrap().position, 0.50);
             assert!(world.update_season(Some(2028)));
             world.remove("bear-girl");
@@ -379,6 +397,7 @@ mod tests {
         assert!(world.winter().snowman.is_none());
         assert!(world.winter().snowman(1).is_none());
         assert!(world.winter().walls.is_empty());
+        assert!(world.winter().sled.is_none());
         assert!(world.tree().is_some());
     }
 }

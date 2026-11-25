@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::time::Instant;
 
 use tiny_skia::{Point, Rect};
 
@@ -10,7 +11,7 @@ use crate::game::{swept_contact, Instance};
 use crate::props::{self, SculptStage};
 use crate::season::OverlayImage;
 use crate::sim::{Activity, Special};
-use crate::snowman::Fragment;
+use crate::snowman::{Fall, Fragment, Grab, Motion};
 use crate::world::{
     Pile, SnowWall, Snowman, WinterObjects, World, MAX_SNOWMEN, MAX_SNOW_WALLS, SNOWMAN_SECONDS,
 };
@@ -24,6 +25,7 @@ const BALL_KNOCKBACK: f32 = 0.68 * 2.0;
 const WALL_HEIGHT: f32 = 84.0;
 const WALL_HALF_WIDTH: f32 = 50.0;
 const HIT_WINDOW: f64 = 30.0;
+const CANNON_DURATION: f32 = 2.5;
 
 #[derive(Clone, Copy)]
 enum Task {
@@ -83,6 +85,13 @@ impl Task {
             _ => None,
         }
     }
+
+    fn wall_slot(self) -> Option<usize> {
+        match self {
+            Self::ApproachWall { wall } | Self::BuildWall { wall, .. } => Some(wall),
+            _ => None,
+        }
+    }
 }
 
 struct Conversation {
@@ -127,6 +136,7 @@ pub struct Interactions {
     fragments: Vec<Fragment>,
     pub snowman_held: [bool; MAX_SNOWMEN],
     snowman_cooldown: [f32; MAX_SNOWMEN],
+    wall_motion: [Motion; MAX_SNOW_WALLS],
     choose_in: f32,
     pile_in: f32,
 }
@@ -146,6 +156,7 @@ impl Interactions {
             fragments: Vec::new(),
             snowman_held: [false; MAX_SNOWMEN],
             snowman_cooldown: [0.0; MAX_SNOWMEN],
+            wall_motion: Default::default(),
             choose_in: 2.0,
             pile_in: 3.0,
         }
@@ -174,6 +185,7 @@ impl Interactions {
         self.fragments.clear();
         self.snowman_held.fill(false);
         self.snowman_cooldown.fill(0.0);
+        self.wall_motion = Default::default();
         self.pile_in = 3.0;
     }
 
@@ -194,6 +206,13 @@ impl Interactions {
         }
         self.fragments
             .retain_mut(|fragment| fragment.tick(dt, floor));
+        for motion in &mut self.wall_motion {
+            if let Motion::Falling(fall) = motion {
+                if fall.step(dt).is_some() {
+                    *motion = Motion::Grounded;
+                }
+            }
+        }
         if winter && width > 0 {
             self.drop_pile(world, dt);
             self.start_cannons(pets);
@@ -207,6 +226,9 @@ impl Interactions {
                         if task
                             .snowman_slot()
                             .is_some_and(|slot| self.snowman_held[slot])
+                            || task
+                                .wall_slot()
+                                .is_some_and(|slot| !self.wall_grounded(slot))
                         {
                             self.tasks.insert(id, task);
                         } else if let Some(next) =
@@ -268,7 +290,7 @@ impl Interactions {
             }
             self.retaliations.remove(&pet.id);
             let task = Task::Cannon {
-                remaining: 5.0,
+                remaining: CANNON_DURATION,
                 next_shot: 0.18,
                 cursor: 0,
             };
@@ -303,6 +325,7 @@ impl Interactions {
             .collect();
         threats.sort_unstable();
         threats.dedup();
+        let grounded = std::array::from_fn(|slot| self.wall_grounded(slot));
         for index in 0..pets.len() {
             let id = pets[index].id;
             let threat = threats.iter().find_map(|&(attacker, target)| {
@@ -315,29 +338,39 @@ impl Interactions {
                     .flatten()
             });
             let app = &mut pets[index].app;
+            app.cover = None;
             if let Some((attacker, from)) =
                 threat.filter(|_| app.can_be_struck() && !self.counters.contains_key(&id))
             {
                 let defence = self.defences.entry(id).or_insert_with(|| Defence {
                     attacker,
-                    guard: cover_for(app, &objects.walls, width, from),
+                    guard: cover_for(app, &objects.walls, &grounded, width, from),
                 });
-                if defence.attacker != attacker
-                    || matches!(defence.guard, Guard::Parry)
-                        && objects.walls.iter().any(|wall| wall.finished())
-                {
+                let reconsider = match defence.guard {
+                    Guard::Run { wall, .. } => !grounded[wall],
+                    Guard::Parry => objects
+                        .walls
+                        .iter()
+                        .enumerate()
+                        .any(|(slot, wall)| grounded[slot] && wall.finished()),
+                };
+                if defence.attacker != attacker || reconsider {
                     defence.attacker = attacker;
-                    defence.guard = cover_for(app, &objects.walls, width, from);
+                    defence.guard = cover_for(app, &objects.walls, &grounded, width, from);
                 }
                 match &mut defence.guard {
                     Guard::Run { wall, side, hidden } => {
                         let x = objects.walls[*wall].position * width;
+                        let goal = x + *side * 23.0;
+                        if (app.pet.x - goal.clamp(app.room.left, app.room.right)).abs() > 1.0 {
+                            *hidden = false;
+                        }
                         if !*hidden {
                             if app.pet.activity != Activity::Special(Special::RunCover) {
                                 self.tasks.remove(&id);
                                 app.pet.start(Activity::Special(Special::RunCover));
                             }
-                            *hidden = app.pet.approach_at(&app.room, x + *side * 23.0, 258.0, dt);
+                            *hidden = app.pet.approach_at(&app.room, goal, 258.0, dt);
                             if *hidden {
                                 app.pet.face = -*side;
                                 app.pet.start(Activity::Special(Special::Hide));
@@ -348,6 +381,12 @@ impl Interactions {
                         }
                     }
                     Guard::Parry => {
+                        if matches!(
+                            app.pet.activity,
+                            Activity::Special(Special::Hide | Special::RunCover)
+                        ) {
+                            app.pet.start(Activity::Idle);
+                        }
                         let nearby = self.balls.iter().any(|ball| {
                             ball.counter == Some(id)
                                 && ball.owner == attacker
@@ -362,11 +401,8 @@ impl Interactions {
                         }
                     }
                 }
-            } else if self.defences.remove(&id).is_some() {
-                if defending(app.pet.activity) {
-                    app.pet.start(Activity::Idle);
-                }
-                app.cover = None;
+            } else if self.defences.remove(&id).is_some() && defending(app.pet.activity) {
+                app.pet.start(Activity::Idle);
             }
         }
         self.defences
@@ -538,11 +574,7 @@ impl Interactions {
     }
 
     fn start_wall(&mut self, pet: &mut Instance, world: &mut World) {
-        if self
-            .tasks
-            .values()
-            .any(|task| matches!(task, Task::ApproachWall { .. } | Task::BuildWall { .. }))
-        {
+        if self.tasks.values().any(|task| task.wall_slot().is_some()) {
             return;
         }
         let walls = &world.winter().walls;
@@ -568,9 +600,74 @@ impl Interactions {
             world.save_now();
             index
         };
+        if !self.wall_grounded(index) {
+            return;
+        }
         let task = Task::ApproachWall { wall: index };
         pet.app.pet.start(task.activity());
         self.tasks.insert(pet.id, task);
+    }
+
+    fn wall_grounded(&self, slot: usize) -> bool {
+        matches!(self.wall_motion[slot], Motion::Grounded)
+    }
+
+    pub fn wall_lift(&self, slot: usize) -> f32 {
+        self.wall_motion[slot].lift()
+    }
+
+    pub fn grabbed_wall(&self) -> Option<(usize, Point)> {
+        self.wall_motion
+            .iter()
+            .enumerate()
+            .find_map(|(slot, motion)| {
+                if let Motion::Held { grab, .. } = motion {
+                    Some((slot, grab.cursor()))
+                } else {
+                    None
+                }
+            })
+    }
+
+    pub fn grab_wall(&mut self, pets: &mut [Instance], slot: usize, grab: Grab) {
+        let lift = self.wall_lift(slot);
+        self.wall_motion[slot] = Motion::Held { grab, lift };
+        for pet in pets {
+            let Some(task) = self.tasks.get_mut(&pet.id) else {
+                continue;
+            };
+            if task.wall_slot() == Some(slot) && pet.app.pet.activity == task.activity() {
+                *task = Task::ApproachWall { wall: slot };
+                pet.app.pet.start(task.activity());
+            }
+        }
+    }
+
+    pub fn drag_wall(
+        &mut self,
+        wall: &mut SnowWall,
+        slot: usize,
+        point: Point,
+        now: Instant,
+        room: (f32, f32, f32),
+    ) {
+        let (width, floor, height) = room;
+        if let Motion::Held { grab, lift } = &mut self.wall_motion[slot] {
+            let base = grab.move_to(point, now);
+            let margin = (56.0 / width).min(0.5);
+            wall.position = (base.x / width).clamp(margin, 1.0 - margin);
+            *lift = (floor - base.y).clamp(0.0, (floor - height).max(0.0));
+        }
+    }
+
+    pub fn release_wall(&mut self, world: &mut World, slot: usize) {
+        let lift = self.wall_lift(slot);
+        self.wall_motion[slot] = if lift > 0.0 {
+            Motion::Falling(Fall::new(lift))
+        } else {
+            Motion::Grounded
+        };
+        world.save_now();
     }
 
     pub fn release_snowman(&mut self, pets: &mut [Instance], slot: usize, broken: bool) {
@@ -896,15 +993,17 @@ impl Interactions {
                     .flatten()
             })
             .collect();
+        let wall_bounds: Vec<_> = walls
+            .iter()
+            .enumerate()
+            .filter(|(slot, _)| self.wall_grounded(*slot))
+            .filter_map(|(_, &wall)| wall_bounds(wall, width, floor))
+            .collect();
         let retaliations = &mut self.retaliations;
         let snow_hits = &mut self.snow_hits;
         let owes_cannon = &mut self.owes_cannon;
         let defences = &self.defences;
         let now = self.time;
-        let wall_bounds: Vec<_> = walls
-            .iter()
-            .filter_map(|&wall| wall_bounds(wall, width, floor))
-            .collect();
         self.balls.retain_mut(|ball| {
             let before = ball.position;
             let from = ball.bounds();
@@ -941,7 +1040,7 @@ impl Interactions {
             if let Some((index, time)) = target {
                 let id = pets[index].id;
                 let parry = ball.counter == Some(id)
-                    && !walls.iter().any(|wall| wall.finished())
+                    && wall_bounds.is_empty()
                     && pets[index].app.pet.activity == Activity::Special(Special::Parry)
                     && fastrand::bool();
                 if parry {
@@ -1057,7 +1156,13 @@ fn defending(activity: Activity) -> bool {
     )
 }
 
-fn cover_for(app: &crate::app::App, walls: &[SnowWall], width: f32, attacker_x: f32) -> Guard {
+fn cover_for(
+    app: &crate::app::App,
+    walls: &[SnowWall],
+    grounded: &[bool; MAX_SNOW_WALLS],
+    width: f32,
+    attacker_x: f32,
+) -> Guard {
     walls
         .iter()
         .enumerate()
@@ -1065,11 +1170,10 @@ fn cover_for(app: &crate::app::App, walls: &[SnowWall], width: f32, attacker_x: 
             let x = object.position * width;
             let side = if attacker_x <= x { 1.0 } else { -1.0 };
             let goal = x + side * 23.0;
-            (object.finished() && (app.room.left..=app.room.right).contains(&goal)).then_some((
-                wall,
-                side,
-                (app.pet.x - goal).abs(),
-            ))
+            (grounded[wall]
+                && object.finished()
+                && (app.room.left..=app.room.right).contains(&goal))
+            .then_some((wall, side, (app.pet.x - goal).abs()))
         })
         .min_by(|a, b| a.2.total_cmp(&b.2))
         .map_or(Guard::Parry, |(wall, side, _)| Guard::Run {
@@ -1222,8 +1326,16 @@ impl WinterArt {
         floor: f32,
     ) -> Option<Rect> {
         let (_, image) = self.men[slot].as_ref()?;
+        self.prop_bounds(image, man.position * width as f32, floor)
+    }
+
+    pub fn wall_bounds(&self, slot: usize, wall: SnowWall, width: u32, floor: f32) -> Option<Rect> {
+        let (_, image) = self.walls.get(slot)?;
+        self.prop_bounds(image, wall.position * width as f32, floor)
+    }
+
+    fn prop_bounds(&self, image: &OverlayImage, centre: f32, floor: f32) -> Option<Rect> {
         let scale = self.scale as f32;
-        let centre = man.position * width as f32;
         let top = f32::from(image.ink.first()?.1) / scale;
         let left = image.ink.iter().map(|line| line.0).min()?;
         let right = image
@@ -1245,6 +1357,7 @@ impl WinterArt {
         width: u32,
         floor: f32,
         snowman_lift: [f32; MAX_SNOWMEN],
+        wall_lift: [f32; MAX_SNOW_WALLS],
     ) -> impl Iterator<Item = (i32, i32, &'a OverlayImage)> + Clone {
         let s = self.scale as f32;
         let at = move |position: f32, image: &'a OverlayImage| {
@@ -1269,13 +1382,12 @@ impl WinterArt {
                     (x, y - (snowman_lift[slot] * s).round() as i32, image)
                 })
             }))
-            .chain(
-                objects
-                    .walls
-                    .iter()
-                    .zip(&self.walls)
-                    .map(move |(wall, (_, image))| at(wall.position, image)),
-            )
+            .chain(objects.walls.iter().zip(&self.walls).enumerate().map(
+                move |(slot, (wall, (_, image)))| {
+                    let (x, y, image) = at(wall.position, image);
+                    (x, y - (wall_lift[slot] * s).round() as i32, image)
+                },
+            ))
     }
 }
 
@@ -1439,6 +1551,18 @@ mod tests {
         assert_eq!(pets[0].app.pet.activity, Activity::Down);
         assert_eq!(pets[1].app.pet.activity, Activity::Special(Special::Cannon));
         assert_eq!(pets[2].app.pet.activity, Activity::Down);
+
+        interactions.balls.clear();
+        let mut task = interactions.tasks.get(&1).copied();
+        while let Some(Task::Cannon {
+            remaining,
+            next_shot,
+            cursor,
+        }) = task
+        {
+            task = interactions.cannon(1, &mut pets, remaining - 0.01, next_shot - 0.01, cursor);
+        }
+        assert_eq!(interactions.balls.len(), 10);
     }
 
     #[test]

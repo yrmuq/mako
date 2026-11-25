@@ -7,6 +7,7 @@
 - `src/season.rs` — local and preview dates, seasons and snowfall.
 - `src/festive.rs` — fir and gift dates, planting, watering, decoration, opening gifts and spring disposal.
 - `src/interactions.rs` — conversations, snowball combat, snowman and wall building, and ground snow rendering.
+- `src/sled.rs` — sled fetching, passenger and helper activities, the two-edge route, and sled rendering.
 - `src/world.rs` — ordinary scene save, temporary test scene, chibi rosters and snow objects.
 - `src/snowman.rs` — snowman drag speed and fragments.
 - `src/rag.rs` — suspended and free ragdoll motion, joint limits and landing pose.

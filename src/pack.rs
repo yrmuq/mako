@@ -295,6 +295,8 @@ impl Pack {
                 | "parry-snow"
                 | "hide-snow"
                 | "snow-cannon"
+                | "pull-sled"
+                | "ride-sled"
         ) && self.animation_length(anim_name).is_none()
         {
             if let Some(anim) = builtin_pack()

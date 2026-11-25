@@ -413,7 +413,13 @@ impl App {
             self.pet.y = self.origin_y as f32 + support;
         } else {
             let rightmost_origin = (self.screen.0 as i32 - self.logical_w as i32).max(0);
-            self.origin_x = ((self.pet.x - feet_x).round() as i32).clamp(0, rightmost_origin);
+            let x = (self.pet.x - feet_x).round() as i32;
+            self.origin_x = if matches!(self.pet.activity, Activity::Special(action) if action.crosses_screen_edge())
+            {
+                x
+            } else {
+                x.clamp(0, rightmost_origin)
+            };
             self.origin_y = (self.pet.y - feet_y).round() as i32;
             if matches!(self.pet.activity, Activity::ClimbWall | Activity::SlideWall) {
                 self.origin_x = if self.pet.face < 0.0 {
@@ -506,6 +512,10 @@ impl App {
 
     pub fn height(&self) -> f32 {
         self.feet_y()
+    }
+
+    pub fn edge_clearance(&self) -> f32 {
+        16.0 + self.feet_x()
     }
 
     pub fn snowball_position(&self) -> Point {

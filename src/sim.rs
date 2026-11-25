@@ -42,6 +42,9 @@ pub enum Special {
     RunCover,
     Hide,
     Cannon,
+    FetchSled,
+    PullSled,
+    RideSled,
 }
 
 impl Special {
@@ -59,7 +62,14 @@ impl Special {
             Self::RunCover => "walk",
             Self::Hide => "hide-snow",
             Self::Cannon => "snow-cannon",
+            Self::FetchSled => "walk",
+            Self::PullSled => "pull-sled",
+            Self::RideSled => "ride-sled",
         }
+    }
+
+    pub fn crosses_screen_edge(self) -> bool {
+        matches!(self, Self::FetchSled | Self::PullSled)
     }
 }
 
@@ -124,6 +134,7 @@ pub struct Pet {
     walk_cycle: f32,
     walk_for: f32,
     down_for: f32,
+    sled_edge: Option<bool>,
 }
 
 impl Pet {
@@ -144,10 +155,12 @@ impl Pet {
             walk_cycle,
             walk_for: 4.0 * walk_cycle,
             down_for: 2.6,
+            sled_edge: None,
         }
     }
 
     pub fn step(&mut self, room: &Room, dt: f32, slippery: bool) {
+        self.sled_edge = None;
         let dt = dt.clamp(0.0, 0.05);
         self.phase += dt;
         if self.activity != Activity::Drag {
@@ -402,13 +415,21 @@ impl Pet {
         self.y = room.floor;
         if (self.face < 0.0 && self.x <= room.left) || (self.face > 0.0 && self.x >= room.right) {
             self.x = self.x.clamp(room.left, room.right);
-            if self.reach_wall(room, fastrand::u8(0..100)) {
+            let roll = fastrand::u8(0..100);
+            if (10..15).contains(&roll) {
+                self.sled_edge = Some(self.face > 0.0);
+            }
+            if self.reach_wall(room, roll) {
                 return;
             }
         }
         if self.time >= self.walk_for {
             self.start(Activity::Idle);
         }
+    }
+
+    pub fn take_sled_edge(&mut self) -> Option<bool> {
+        self.sled_edge.take()
     }
 
     fn reach_wall(&mut self, room: &Room, roll: u8) -> bool {

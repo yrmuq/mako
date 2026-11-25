@@ -7,6 +7,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use x11rb::connection::Connection;
+use x11rb::protocol::randr::ConnectionExt as _;
 use x11rb::protocol::shape::{ConnectionExt as _, SK, SO};
 use x11rb::protocol::xproto::{
     AtomEnum, ChangeWindowAttributesAux, ClipOrdering, ColormapAlloc, ConfigureWindowAux,
@@ -55,7 +56,25 @@ pub fn run(settings: Settings, startup: Startup, commands: Receiver<Command>) ->
             screen.height_in_pixels as f32,
         )
     });
+    let floor = room.floor;
     let mut game = Game::new(room, settings, startup, commands);
+    if let Some(monitors) = conn
+        .randr_get_monitors(screen.root, true)
+        .ok()
+        .and_then(|request| request.reply().ok())
+    {
+        game.set_sled_monitors(
+            monitors
+                .monitors
+                .into_iter()
+                .filter(|m| {
+                    m.width > 0
+                        && (f32::from(m.y)..=f32::from(m.y) + f32::from(m.height)).contains(&floor)
+                })
+                .map(|m| (f32::from(m.x), f32::from(m.x) + f32::from(m.width)))
+                .collect(),
+        );
+    }
     let mut fullscreen = Fullscreen::new(Atoms::new(&conn).map_err(x11)?.reply().map_err(x11)?);
     let mut windows: HashMap<u64, PetWindow> = HashMap::new();
     let mut snow = None;

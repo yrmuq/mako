@@ -19,6 +19,7 @@
 - The precipitation preference affects falling particles. Keep the seasonal ground objects and interactions available when precipitation is disabled.
 - Restore the active chibi roster on the floor, including an empty roster. Carry ground snow objects and snowman progress between launches in the same snow season and discard them after February 28, even if mako was closed.
 - Track each of the two shared snowmen separately. Only active sculpting advances its progress.
+- Keep each sled ride on its starting output. Save the sled location and count only completed rides.
 - Choose the fir and gift dates from the system date format, independently of the UI language.
 - Keep the fir separate from the melting snow objects so a chibi can visibly discard it at the start of March.
 - The Dev date uses a separate temporary scene. Restore the ordinary scene when returning to the system date and keep its winter objects out of the test scene.

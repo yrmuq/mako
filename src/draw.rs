@@ -249,7 +249,11 @@ pub fn collision_bounds(
     let width = (right - left) as f32;
     let visible = Rect::from_xywh(left as f32, top as f32, width, (bottom - top) as f32)?;
     let rightmost = (screen_width - width).max(0.0);
-    let x = if matches!(scene.motion, Motion::ClimbWall | Motion::SlideWall) {
+    let crosses_edge =
+        matches!(scene.motion, Motion::Special(action) if action.crosses_screen_edge());
+    let x = if crosses_edge {
+        (origin.x + left as f32).round()
+    } else if matches!(scene.motion, Motion::ClimbWall | Motion::SlideWall) {
         if scene.facing_left {
             0.0
         } else {
@@ -258,8 +262,19 @@ pub fn collision_bounds(
     } else {
         (origin.x + left as f32).round().clamp(0.0, rightmost)
     };
-    body.intersect(&visible)?
-        .transform(Transform::from_translate(x - left as f32, origin.y.round()))
+    let world_body = body
+        .intersect(&visible)?
+        .transform(Transform::from_translate(x - left as f32, origin.y.round()))?;
+    if crosses_edge {
+        world_body.intersect(&Rect::from_xywh(
+            0.0,
+            world_body.top(),
+            screen_width,
+            world_body.height(),
+        )?)
+    } else {
+        Some(world_body)
+    }
 }
 
 pub fn scene_size((x, y): (f32, f32)) -> (u32, u32) {
@@ -882,6 +897,7 @@ fn leg(name: &str) -> bool {
 
 fn pose_contact(pack: &Pack, pose: &Pose, motion: Motion, view: Transform) -> Option<f32> {
     let supports = |bone: &str| match motion {
+        Motion::Sit | Motion::Special(Special::RideSled) => bone == "torso" || leg(bone),
         Motion::Idle
         | Motion::Walk
         | Motion::HandRelease
@@ -891,7 +907,6 @@ fn pose_contact(pack: &Pack, pose: &Pose, motion: Motion, view: Transform) -> Op
         | Motion::ThrowSnow
         | Motion::Sculpt(_)
         | Motion::Special(_) => leg(bone),
-        Motion::Sit => bone == "torso" || leg(bone),
         Motion::Down
         | Motion::Rise
         | Motion::Fall

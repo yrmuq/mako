@@ -774,3 +774,67 @@ pub fn baseball_bat() -> &'static Sprite {
         crop(image).expect("baseball bat artwork")
     })
 }
+
+pub fn sled_image(left: bool, scale: u32) -> Pixmap {
+    let mut image = Pixmap::new(106, 32).expect("sled dimensions");
+    let steel = [150, 72, 56, 255];
+    for offset in [0.0, 4.0] {
+        paint(&mut image, steel, Some(3.9), |p| {
+            p.move_to(8.0, 24.0 + offset);
+            p.line_to(79.0, 24.0 + offset);
+            p.quad_to(99.0, 24.0 + offset, 100.0, 12.0 + offset);
+            p.quad_to(99.0, 8.0 + offset, 94.0, 9.0 + offset);
+        });
+    }
+    paint(&mut image, [122, 88, 75, 255], Some(4.4), |p| {
+        for x in [20.0, 70.0] {
+            p.move_to(x, 17.0);
+            p.line_to(x + 3.0, 25.0);
+        }
+    });
+    paint(&mut image, [184, 115, 67, 255], None, |p| {
+        p.move_to(10.0, 10.0);
+        p.line_to(84.0, 10.0);
+        p.quad_to(89.0, 13.0, 83.0, 18.0);
+        p.line_to(9.0, 18.0);
+        p.quad_to(5.0, 15.0, 10.0, 10.0);
+        p.close();
+    });
+    paint(&mut image, [236, 170, 104, 255], Some(2.0), |p| {
+        p.move_to(12.0, 12.0);
+        p.line_to(82.0, 12.0);
+        p.move_to(10.0, 15.5);
+        p.line_to(78.0, 15.5);
+    });
+    if left {
+        let mut reversed = Pixmap::new(106, 32).unwrap();
+        reversed.draw_pixmap(
+            0,
+            0,
+            image.as_ref(),
+            &tiny_skia::PixmapPaint::default(),
+            Transform::from_scale(-1.0, 1.0).post_translate(106.0, 0.0),
+            None,
+        );
+        image = reversed;
+    }
+    resize_art(image, scale)
+}
+
+pub fn sled_rope(dx: i32, dy: i32, scale: u32) -> Pixmap {
+    let width = dx.unsigned_abs() + 8;
+    let height = dy.unsigned_abs() + 12;
+    let mut image = Pixmap::new(width, height).expect("sled rope dimensions");
+    let origin = (4.0 - dx.min(0) as f32, 4.0 - dy.min(0) as f32);
+    let end = (origin.0 + dx as f32, origin.1 + dy as f32);
+    paint(&mut image, [113, 82, 68, 255], Some(1.8), |p| {
+        p.move_to(origin.0, origin.1);
+        p.quad_to(
+            (origin.0 + end.0) * 0.5,
+            (origin.1 + end.1) * 0.5 + 6.0,
+            end.0,
+            end.1,
+        );
+    });
+    resize_art(image, scale)
+}

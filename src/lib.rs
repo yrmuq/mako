@@ -19,6 +19,7 @@ mod props;
 mod rag;
 mod season;
 mod sim;
+mod sled;
 mod snowman;
 mod updates;
 mod world;
